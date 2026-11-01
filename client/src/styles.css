@@ -1,0 +1,271 @@
+:root {
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --text: #1b1f24;
+  --muted: #5b6470;
+  --border: #d7dbe0;
+  --accent: #1f5fbf;
+  --accent-text: #ffffff;
+  --focus: #1f5fbf;
+  --buy: #146c43;
+  --buy-bg: #e3f4ea;
+  --sell: #a1271c;
+  --sell-bg: #fbe7e5;
+  --error: #a1271c;
+  --error-bg: #fbe7e5;
+  --success: #146c43;
+  --success-bg: #e3f4ea;
+  --radius: 6px;
+  --font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111418;
+    --surface: #1a1e24;
+    --text: #e6e8eb;
+    --muted: #9aa3ad;
+    --border: #2e343c;
+    --accent: #5b9bf0;
+    --accent-text: #0b0d10;
+    --focus: #8bbaf5;
+    --buy: #6fd39b;
+    --buy-bg: #183326;
+    --sell: #f08a80;
+    --sell-bg: #3a1d1a;
+    --error: #f08a80;
+    --error-bg: #3a1d1a;
+    --success: #6fd39b;
+    --success-bg: #183326;
+    color-scheme: dark;
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.45 var(--font);
+}
+
+h1, h2 { margin: 0; line-height: 1.2; }
+h1 { font-size: 1.25rem; font-weight: 600; }
+h2 { font-size: 1.05rem; font-weight: 600; }
+
+.app-header {
+  padding: 14px 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.app-main {
+  display: grid;
+  gap: 20px;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 20px 24px 40px;
+}
+
+.app-entry {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: minmax(300px, 420px) 1fr;
+  align-items: start;
+}
+
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  min-width: 0;
+}
+
+.panel > h2, .panel-heading { margin-bottom: 14px; }
+
+.panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+/* Form */
+
+.field { margin: 0 0 14px; padding: 0; border: 0; min-width: 0; }
+.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+label, legend { display: block; font-weight: 500; margin-bottom: 4px; padding: 0; }
+.optional, .hint { color: var(--muted); font-weight: 400; }
+.hint { font-size: 0.85rem; margin: 4px 0 0; }
+
+input[type='text'], input[type='datetime-local'] {
+  width: 100%;
+  padding: 7px 9px;
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+input.numeric { font-family: var(--mono); text-align: right; }
+input[aria-invalid='true'], fieldset[aria-invalid='true'] .side-option { border-color: var(--error); }
+
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+.side-options { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.side-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.side-buy:has(input:checked) { border-color: var(--buy); background: var(--buy-bg); color: var(--buy); }
+.side-sell:has(input:checked) { border-color: var(--sell); background: var(--sell-bg); color: var(--sell); }
+
+.input-with-action { display: flex; gap: 8px; }
+
+.occurrence { margin: 10px 0 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); }
+.occurrence-option { display: flex; align-items: center; gap: 8px; font-weight: 400; margin: 4px 0 0; }
+
+.field-error { color: var(--error); font-size: 0.875rem; margin: 4px 0 0; }
+
+button { font: inherit; border-radius: var(--radius); cursor: pointer; }
+button:disabled { cursor: default; opacity: 0.65; }
+.button-primary {
+  width: 100%;
+  padding: 9px 14px;
+  font-weight: 600;
+  color: var(--accent-text);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+}
+.button-secondary {
+  padding: 5px 12px;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+}
+
+.alert { margin: 0 0 14px; padding: 9px 12px; border-radius: var(--radius); }
+.alert-error { color: var(--error); background: var(--error-bg); }
+.alert-success { color: var(--success); background: var(--success-bg); }
+
+.state { color: var(--muted); margin: 8px 0; }
+
+/* Tables */
+
+.table-scroll { overflow-x: auto; }
+
+.data-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.data-table th, .data-table td {
+  padding: 7px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  vertical-align: top;
+}
+.data-table thead th { color: var(--muted); font-weight: 500; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; }
+.data-table tbody th { font-weight: 600; }
+.data-table .numeric { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+/* Average costs can carry up to 50 significant digits: wrap rather than hide any. */
+.data-table .average-cost { white-space: normal; overflow-wrap: anywhere; min-width: 12ch; }
+
+.side-badge, .direction-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+.side-badge-buy, .direction-long { color: var(--buy); background: var(--buy-bg); }
+.side-badge-sell, .direction-short { color: var(--sell); background: var(--sell-bg); }
+.position-long .net-quantity { color: var(--buy); }
+.position-short .net-quantity { color: var(--sell); }
+
+.timestamp { font-family: var(--mono); font-size: 0.85rem; }
+.timestamp .offset { color: var(--muted); }
+.recorded .timestamp { color: var(--muted); }
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 860px) {
+  .app-entry { grid-template-columns: 1fr; }
+}
+
+/* Positions: the layout follows the panel's width, which depends on the page layout, not the screen alone. */
+.positions-panel { container: positions / inline-size; }
+
+/* In the table, a long symbol or net quantity wraps within its column instead of widening the table. */
+.positions-table .symbol { white-space: normal; overflow-wrap: anywhere; min-width: 8ch; }
+.positions-table .net-quantity { white-space: normal; overflow-wrap: anywhere; min-width: 12ch; }
+
+/*
+ * In a narrow panel the four columns do not fit, and the figures would be off to the side. Each
+ * position becomes a block instead: symbol and direction on the first line, then each figure on its
+ * own labelled line, wrapping where it must, so every digit stays in view. The table and its header
+ * cells remain in the markup, so assistive technology still reads a table. The visible labels are
+ * decoration (empty alternative text), because the column headers already name the cells.
+ */
+@container positions (max-width: 560px) {
+  .positions-table, .positions-table tbody { display: block; }
+  .positions-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+  .positions-table tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: baseline;
+    gap: 4px 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .positions-table tbody th, .positions-table tbody td { padding: 0; border: 0; }
+  .positions-table .symbol { min-width: 0; }
+  .positions-table .net-quantity, .positions-table .average-cost {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 12px;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .positions-table .net-quantity::before, .positions-table .average-cost::before {
+    content: attr(data-label);
+    content: attr(data-label) / '';
+    color: var(--muted);
+    font-family: var(--font);
+    font-size: 0.8rem;
+    text-align: left;
+  }
+}
+
+@media (max-width: 480px) {
+  .app-header { padding: 12px 16px; }
+  .app-main { padding: 16px 16px 32px; gap: 16px; }
+  .field-row { grid-template-columns: 1fr; }
+}

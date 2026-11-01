@@ -1,0 +1,9 @@
+{
+  // Type-checks sources, tests and test configuration. The production build uses
+  // tsconfig.build.json, which emits src/ only.
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts", "drizzle.config.ts"]
+}
