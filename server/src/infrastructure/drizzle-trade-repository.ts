@@ -1,9 +1,10 @@
-import { asc, eq } from 'drizzle-orm'
+import { and, asc, eq, gte, lte, sql, type SQL } from 'drizzle-orm'
 
 import type { TradeRepository } from '../application/ports.ts'
 import { Dec, decimalText } from '../domain/decimal.ts'
 import { positionAfterTrade } from '../domain/position.ts'
 import { parseTimestamp, type UtcTimestamp } from '../domain/timestamp.ts'
+import type { TradeFilter } from '../domain/trade-query.ts'
 import type { NewTrade, Trade } from '../domain/trade.ts'
 import type { Database } from './database/connection.ts'
 import { trades, type NewTradeRow, type TradeRow } from './database/schema.ts'
@@ -30,11 +31,30 @@ export function createDrizzleTradeRepository(db: Database): TradeRepository {
         }, { behavior: 'immediate' }))
     },
 
-    listInTradeOrder() {
+    listInTradeOrder(filter = {}) {
       return settle(() =>
-        db.select().from(trades).orderBy(asc(trades.executedAt), asc(trades.bookingSequence)).all().map(toTrade))
+        db.select().from(trades)
+          .where(matching(filter))
+          .orderBy(asc(trades.executedAt), asc(trades.bookingSequence))
+          .all()
+          .map(toTrade))
     },
   }
+}
+
+/**
+ * The WHERE condition for a filter, or undefined for an empty one. Every value is a bound
+ * parameter. Symbols and the search are both normalised, upper case included, so the symbol match
+ * is an exact substring test: instr, not LIKE, whose % and _ would be wildcards and whose case
+ * folding covers ASCII only. Timestamps are canonical UTC text, so text comparison is time order.
+ */
+function matching(filter: TradeFilter): SQL | undefined {
+  return and(
+    filter.symbolContains === undefined ? undefined : sql`instr(${trades.symbol}, ${filter.symbolContains}) > 0`,
+    filter.side === undefined ? undefined : eq(trades.side, filter.side),
+    filter.executedFrom === undefined ? undefined : gte(trades.executedAt, filter.executedFrom),
+    filter.executedTo === undefined ? undefined : lte(trades.executedAt, filter.executedTo),
+  )
 }
 
 /** Runs synchronous database work and reports its result, or what it threw, as a promise. */

@@ -14,6 +14,7 @@ interface Schema {
 interface Operation {
   readonly operationId: string
   readonly requestBody?: { content: Record<string, { schema: { $ref: string } }> }
+  readonly parameters?: { name: string; in: string; required: boolean; description: string; schema: Record<string, unknown> }[]
   readonly responses: Record<string, { description: string; content?: Record<string, { schema: unknown }> }>
 }
 
@@ -79,6 +80,26 @@ describe('API: OpenAPI document', () => {
     expect(request.description).toContain('id, bookingSequence, createdAt and updatedAt are assigned by the server')
   })
 
+  it('documents the GET /trades query parameters, all optional, with their formats and defaults', () => {
+    const parameters = operation('/trades', 'get').parameters ?? []
+    const byName = Object.fromEntries(parameters.map((parameter) => [parameter.name, parameter]))
+
+    expect(parameters.map((parameter) => [parameter.name, parameter.in, parameter.required])).toEqual([
+      ['symbol', 'query', false], ['side', 'query', false], ['executedFrom', 'query', false],
+      ['executedTo', 'query', false], ['sortBy', 'query', false], ['sortDirection', 'query', false],
+    ])
+    expect(byName['symbol']?.description).toContain('contains this text, anywhere in it, ignoring case')
+    for (const name of ['executedFrom', 'executedTo']) {
+      expect(byName[name]?.schema).toMatchObject({ type: 'string', format: 'date-time' })
+      expect(byName[name]?.description).toContain('(inclusive)')
+      expect(byName[name]?.description).toContain('a date alone or a time without an offset is refused')
+      expect(byName[name]?.description).toContain('%2B')
+    }
+    expect(byName['sortBy']?.schema).toEqual({ enum: ['executedAt', 'symbol', 'quantity', 'price'], default: 'executedAt' })
+    expect(byName['sortDirection']?.schema).toEqual({ enum: ['asc', 'desc'], default: 'desc' })
+    expect(byName['sortBy']?.description).toContain('Ties are broken by executedAt, then bookingSequence')
+  })
+
   it('marks the server-managed response fields read-only', () => {
     const trade = schema('Trade').properties ?? {}
     const readOnly = Object.entries(trade).filter(([, property]) => property.readOnly === true).map(([name]) => name)
@@ -97,7 +118,10 @@ describe('API: OpenAPI document', () => {
     expect(Object.keys(create).sort()).toEqual(['201', '400', '415', '500'])
     for (const status of ['400', '415', '500']) expect(create[status]?.content).toEqual({ 'application/problem+json': problemRef })
     expect(create['400']?.description).toContain('urn:trade-blotter:problem:position-limit')
-    expect(operation('/trades', 'get').responses['500']?.content).toEqual({ 'application/problem+json': problemRef })
+    const list = operation('/trades', 'get').responses
+    expect(Object.keys(list).sort()).toEqual(['200', '400', '500'])
+    for (const status of ['400', '500']) expect(list[status]?.content).toEqual({ 'application/problem+json': problemRef })
+    expect(list['400']?.description).toContain('urn:trade-blotter:problem:invalid-query')
     expect(operation('/positions', 'get').responses['500']?.content).toEqual({ 'application/problem+json': problemRef })
     expect(Object.keys(schema('Problem').properties ?? {})).toEqual(['type', 'title', 'status', 'detail', 'errors', 'symbol'])
   })

@@ -1,3 +1,4 @@
+import type { TradeFilter } from '../domain/trade-query.ts'
 import type { NewTrade, Trade } from '../domain/trade.ts'
 
 /**
@@ -14,8 +15,12 @@ export interface TradeRepository {
    * would breach the position limit.
    */
   add(trade: NewTrade): Promise<Trade>
-  /** Every stored trade in trade order: `executedAt` ascending, then booking sequence ascending. */
-  listInTradeOrder(): Promise<readonly Trade[]>
+  /**
+   * Stored trades in trade order: `executedAt` ascending, then booking sequence ascending. With no
+   * filter, or an empty one, every stored trade; otherwise only those matching every member given.
+   * Reads only: never changes what is stored.
+   */
+  listInTradeOrder(filter?: TradeFilter): Promise<readonly Trade[]>
 }
 
 export interface Clock {

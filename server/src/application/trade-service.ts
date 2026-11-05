@@ -1,7 +1,8 @@
 import { DEFAULT_SYMBOL_MAX_LENGTH, SYMBOL_MAX_LENGTH_RANGE } from '../domain/symbol.ts'
 import { toUtcTimestamp } from '../domain/timestamp.ts'
+import { compareTrades, validateTradeQuery, type TradeQueryRequest } from '../domain/trade-query.ts'
 import { createTrade, validateTradeRequest, type Trade, type TradeRequest } from '../domain/trade.ts'
-import { TradeValidationError } from './errors.ts'
+import { TradeQueryValidationError, TradeValidationError } from './errors.ts'
 import type { Clock, IdGenerator, TradeRepository } from './ports.ts'
 
 export interface TradeServiceDependencies {
@@ -33,9 +34,16 @@ export function createTradeService(deps: TradeServiceDependencies) {
       return deps.trades.add(createTrade(result.value, { id: deps.ids.next(), now }))
     },
 
-    /** Every trade for the blotter, newest first: the reverse of trade order. */
-    async listTrades(): Promise<readonly Trade[]> {
-      return [...(await deps.trades.listInTradeOrder())].reverse()
+    /**
+     * Trades for the blotter: those matching the query's filter, in its sort order. With no query
+     * parameters, every trade, newest first: the reverse of trade order. Throws
+     * TradeQueryValidationError, naming every invalid parameter, before anything is read.
+     */
+    async listTrades(request: TradeQueryRequest = {}): Promise<readonly Trade[]> {
+      const result = validateTradeQuery(request, { symbolMaxLength })
+      if (!result.ok) throw new TradeQueryValidationError(result.errors)
+      const { filter, sort } = result.value
+      return [...(await deps.trades.listInTradeOrder(filter))].sort(compareTrades(sort))
     },
   }
 }

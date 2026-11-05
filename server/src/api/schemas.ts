@@ -2,15 +2,17 @@ import { Type } from 'typebox'
 
 import { MAX_DECIMAL_PLACES, MAX_INTEGER_DIGITS } from '../domain/decimal.ts'
 import { DEFAULT_SYMBOL_MAX_LENGTH } from '../domain/symbol.ts'
+import { DEFAULT_TRADE_SORT, SORT_DIRECTIONS, TRADE_SORT_FIELDS } from '../domain/trade-query.ts'
 import { TRADE_SIDES } from '../domain/trade.ts'
 import { JSON_NUMBER_PATTERN } from './json.ts'
 
 /**
  * The HTTP contract as TypeBox schemas. They document the API in OpenAPI; they do not validate
- * trade fields, which is the domain's job (validateTradeRequest), so every field error comes from
- * one place with one message. Request bodies are checked only for being a JSON object
- * (TradeRequestContainer). Responses are written by the lossless JSON serializer, not from these
- * schemas. Each schema's $id is its name under components.schemas.
+ * trade fields or query parameters, which is the domain's job (validateTradeRequest,
+ * validateTradeQuery), so every error comes from one place with one message. Request bodies are
+ * checked only for being a JSON object (TradeRequestContainer). Responses are written by the
+ * lossless JSON serializer, not from these schemas. Each schema's $id is its name under
+ * components.schemas.
  */
 
 const DECIMAL_RULE =
@@ -91,12 +93,52 @@ export const Problem = Type.Object(
     status: Type.Integer(),
     detail: Type.Optional(Type.String()),
     errors: Type.Optional(Type.Record(Type.String(), Type.Array(Type.String()), {
-      description: 'Invalid trade fields, in request order (symbol, side, quantity, price, executedAt), each with its messages.',
+      description: 'Invalid trade fields, in request order (symbol, side, quantity, price, executedAt), or invalid query ' +
+        'parameters, in documented order (symbol, side, executedFrom, executedTo, sortBy, sortDirection), each with its messages.',
     })),
     symbol: Type.Optional(Type.String({ description: 'The symbol whose position limit would be breached.' })),
   },
   { $id: 'Problem', description: 'RFC 9457 problem details, served as application/problem+json.' },
 )
+
+const QueryTimestamp = (description: string, example: string) =>
+  Type.String({
+    format: 'date-time',
+    description: `${description} RFC 3339 date-time with seconds and Z or an offset, at most millisecond precision; ` +
+      'a date alone or a time without an offset is refused. In a URL, write + as %2B.',
+    examples: [example],
+  })
+
+/**
+ * GET /trades query parameters. Every parameter is optional, and an empty value is the same as
+ * omitting it; filters combine with AND. Unknown parameters are ignored. Inline, not shared:
+ * OpenAPI describes query parameters one by one, not as a component.
+ */
+export const ListTradesQuery = Type.Object({
+  symbol: Type.Optional(Type.String({
+    description: 'Only trades whose symbol contains this text, anywhere in it, ignoring case. Normalised like a symbol ' +
+      '(trimmed, NFC, upper-cased); blank matches every trade.',
+    examples: ['sf'],
+  })),
+  side: Type.Optional(Type.String({
+    description: 'Only Buy or only Sell trades, ignoring case and surrounding whitespace. Omitted: both sides.',
+    examples: ['Buy'],
+  })),
+  executedFrom: Type.Optional(QueryTimestamp('Only trades executed at or after this instant (inclusive).', '2026-01-01T00:00:00Z')),
+  executedTo: Type.Optional(QueryTimestamp(
+    'Only trades executed at or before this instant (inclusive). Must not be earlier than executedFrom.',
+    '2026-01-31T23:59:59.999-05:00',
+  )),
+  sortBy: Type.Optional(Type.Enum(TRADE_SORT_FIELDS, {
+    default: DEFAULT_TRADE_SORT.field,
+    description: 'The field to sort by, exactly as written. Symbols sort by Unicode code point; quantity and price by exact ' +
+      'numeric value. Ties are broken by executedAt, then bookingSequence, in the same direction.',
+  })),
+  sortDirection: Type.Optional(Type.Enum(SORT_DIRECTIONS, {
+    default: DEFAULT_TRADE_SORT.direction,
+    description: 'asc or desc, exactly as written. desc lists the reverse of asc.',
+  })),
+})
 
 /** The only check made on a trade request before the domain sees it: the body is a JSON object. */
 export const TradeRequestContainer = Type.Object({})
