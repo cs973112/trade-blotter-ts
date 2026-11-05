@@ -14,7 +14,7 @@ data; where the two disagree, fix one of them deliberately.
 | Language | TypeScript, strict, erasable syntax only (Node runs sources directly in development) |
 | HTTP | Fastify 5 |
 | Schemas and API docs | TypeBox, `@fastify/swagger` (OpenAPI 3.1), `@fastify/swagger-ui` |
-| ORM and migrations | Drizzle ORM with its `node-sqlite` driver, and drizzle-kit; both pinned to `1.0.0-rc.5` |
+| ORM and migrations | Drizzle ORM with its `node-sqlite` driver, and drizzle-kit; both pinned to `1.0.0-rc.5-5935859` |
 | Database | SQLite through the built-in `node:sqlite` module |
 | Decimal arithmetic | `decimal.js` |
 | Backend tests | Vitest |
@@ -121,10 +121,11 @@ server/
       symbol.ts                    normaliseSymbol, compareSymbols
       timestamp.ts                 UtcTimestamp, parseTimestamp, toUtcTimestamp
       trade.ts                     Trade, TradeSide, validateTradeRequest, createTrade, notional, trade order
+      trade-query.ts               TradeFilter, TradeSort, validateTradeQuery, compareTrades
       position.ts                  Position, applyTrade, calculatePositions
     application/
       ports.ts                     TradeRepository, Clock, IdGenerator
-      errors.ts                    TradeValidationError
+      errors.ts                    TradeValidationError, TradeQueryValidationError
       trade-service.ts             createTradeService: createTrade, listTrades
       position-service.ts          createPositionService: listPositions
     infrastructure/
@@ -167,13 +168,16 @@ client/                            Vue app (npm workspace)
       contracts.ts                 request and response types from the OpenAPI contract
       json.ts                      JSON parsing that keeps numbers as exact text
       client.ts                    createTrade, listTrades, listPositions; ApiError
-    stores/blotter.ts              trades and positions, loading and error state, refresh after booking
+    stores/blotter.ts              trades, positions and the applied trade query; loading, errors, refreshes
     lib/
       decimal-text.ts              checking typed decimals, formatting decimal text
       timestamps.ts                local date and time to RFC 3339; UTC to local display
+      local-dates.ts               local calendar date to the UTC start and end of that day
+      trade-filters.ts             trade list controls to GET /trades query parameters
     components/
       TradeForm.vue                trade entry and validation feedback
-      TradeBlotter.vue             trade table
+      TradeBlotter.vue             trade table, with its search, filter and sort controls
+      TradeFilters.vue             symbol, side, date range and sort controls; Apply and Clear
       PositionsPanel.vue           positions table
       LocalTimestamp.vue           one timestamp in local time
     styles.css                     layout and theme
@@ -194,8 +198,11 @@ export interface TradeRepository {
    * that passes. Rejects with PositionLimitError, storing nothing, otherwise.
    */
   add(trade: NewTrade): Promise<Trade>
-  /** Every stored trade in trade order: executedAt ascending, then booking sequence ascending. */
-  listInTradeOrder(): Promise<readonly Trade[]>
+  /**
+   * Stored trades in trade order: executedAt ascending, then booking sequence ascending. With no
+   * filter, every stored trade; otherwise only those matching every member given. Reads only.
+   */
+  listInTradeOrder(filter?: TradeFilter): Promise<readonly Trade[]>
 }
 
 export interface Clock { now(): Date }
@@ -225,8 +232,11 @@ export function createTradeService(deps: { trades: TradeRepository; clock: Clock
       const now = toUtcTimestamp(deps.clock.now())
       return deps.trades.add(createTrade(result.value, { id: deps.ids.next(), now }))
     },
-    async listTrades(): Promise<readonly Trade[]> {
-      return [...(await deps.trades.listInTradeOrder())].reverse() // newest first
+    async listTrades(request: TradeQueryRequest = {}): Promise<readonly Trade[]> {
+      const result = validateTradeQuery(request, { symbolMaxLength })
+      if (!result.ok) throw new TradeQueryValidationError(result.errors)
+      const { filter, sort } = result.value
+      return [...(await deps.trades.listInTradeOrder(filter))].sort(compareTrades(sort)) // default: newest first
     },
   }
 }
@@ -246,7 +256,11 @@ export const tradeRoutes: FastifyPluginAsync<{ tradeService: TradeService }> = (
       isTradeRequestContainer.Check(body) ? { value: body } : { error: clientError('The request body must be a JSON object.') },
     handler: async (request, reply) => reply.code(201).send(toTradeResponse(await tradeService.createTrade(request.body as TradeRequest))),
   })
-  app.get('/trades', { schema: listTradesSchema, handler: async () => (await tradeService.listTrades()).map(toTradeResponse) })
+  app.get('/trades', {
+    schema: listTradesSchema,                        // documents the query parameters in OpenAPI
+    validatorCompiler: () => (query) => ({ value: query }), // the domain validates them
+    handler: async (request) => (await tradeService.listTrades(request.query as TradeQueryRequest)).map(toTradeResponse),
+  })
   return Promise.resolve()
 }
 
@@ -413,7 +427,7 @@ Persistence lives in `server/src/infrastructure/`. It is the only code that impo
 
 Drizzle ORM's `node-sqlite` driver runs Drizzle on Node's built-in `node:sqlite`, so there is no
 native addon and no second SQLite engine. The driver exists only in the Drizzle 1.0 line; the
-project pins `drizzle-orm` and `drizzle-kit` to exactly `1.0.0-rc.5` and confines Drizzle to
+project pins `drizzle-orm` and `drizzle-kit` to exactly `1.0.0-rc.5-5935859` and confines Drizzle to
 `infrastructure/`, so an upgrade to the final 1.0 release touches only the schema, the repository
 and the migration runner.
 
@@ -578,13 +592,23 @@ export function createDrizzleTradeRepository(db: Database): TradeRepository {
           return toTrade(tx.insert(trades).values(toRow(trade)).returning().get())
         }, { behavior: 'immediate' }))
     },
-    listInTradeOrder() {
+    listInTradeOrder(filter = {}) {
       return settle(() =>
-        db.select().from(trades).orderBy(asc(trades.executedAt), asc(trades.bookingSequence)).all().map(toTrade))
+        db.select().from(trades)
+          .where(matching(filter))                   // undefined for an empty filter: every row
+          .orderBy(asc(trades.executedAt), asc(trades.bookingSequence))
+          .all()
+          .map(toTrade))
     },
   }
 }
 ```
+
+- `matching` builds the `WHERE` condition from the filter with `and`, `eq`, `gte` and `lte`, every
+  value a bound parameter. The symbol search is `instr(symbol, ?) > 0`, a parameterised Drizzle
+  `sql` fragment: stored symbols and the search are both normalised (upper case included), so an
+  exact substring test is a case-insensitive search, and unlike `LIKE` it has no wildcards and no
+  ASCII-only case folding. Bounds compare canonical UTC text, which sorts chronologically.
 
 - `settle` turns the synchronous work into the `Promise` the interface returns, so anything thrown
   becomes a rejection.
@@ -636,18 +660,52 @@ directory. `:memory:` is refused, because every trade would be lost on restart.
 ## API contract
 
 The Vue frontend depends on exactly this contract. All paths are case-sensitive; a trailing slash
-is ignored; a query string is ignored. The OpenAPI 3.1 document at `/documentation/json`
+is ignored; a query string is ignored except for the `GET /trades` parameters below, and unknown
+parameters are ignored there too. The OpenAPI 3.1 document at `/documentation/json`
 describes it in full, and Swagger UI is at `/documentation` (both can be turned off with
 `DOCS_ENABLED=false`).
 
 | Endpoint | Request | Success |
 | --- | --- | --- |
 | `POST /trades` | `{ symbol, side, quantity, price, executedAt? }` | `201`, the stored trade |
-| `GET /trades` | | `200`, every trade: newest `executedAt` first, then highest `bookingSequence` first |
+| `GET /trades` | optional query parameters, below | `200`, the matching trades; with no parameters, every trade: newest `executedAt` first, then highest `bookingSequence` first |
 | `GET /positions` | | `200`, every non-flat position, sorted by symbol in code-point order |
 
-`HEAD` is available wherever `GET` is. There are no update, delete, filtering or pagination
-endpoints.
+`HEAD` is available wherever `GET` is. There are no update, delete or pagination endpoints.
+
+**`GET /trades` query parameters**
+
+Every parameter is optional. An empty value (`?side=`) is the same as omitting it, a repeated
+parameter is refused, and the filters combine with AND. They are validated in the domain
+(`validateTradeQuery`); an invalid one is answered with an `invalid-query` problem.
+
+| Parameter | Values | Meaning |
+| --- | --- | --- |
+| `symbol` | text | Trades whose symbol contains it anywhere, ignoring case. Normalised like a symbol (trimmed, NFC, upper-cased); blank matches every trade. At most the maximum symbol length. |
+| `side` | `Buy` or `Sell`, any case | Trades on that side. Omitted: both sides. |
+| `executedFrom` | RFC 3339 date-time with `Z` or an offset | Trades executed at or after it (inclusive). |
+| `executedTo` | RFC 3339 date-time with `Z` or an offset | Trades executed at or before it (inclusive). Must not be earlier than `executedFrom`. |
+| `sortBy` | `executedAt` (default), `symbol`, `quantity`, `price` | Sort field, exactly as written. |
+| `sortDirection` | `asc`, `desc` (default) | Sort direction, exactly as written. |
+
+Date-times follow the same rule as `executedAt` in a request: seconds required, at most
+millisecond precision, and an offset required. A date alone (`2026-01-01`) or a time without an
+offset is refused rather than read in some time zone. In a URL a `+` decodes to a space, so an
+offset such as `+05:30` must be written `%2B05:30`; an unencoded one is refused. A whole UTC day is
+`executedFrom=2026-01-01T00:00:00Z&executedTo=2026-01-01T23:59:59.999Z`.
+
+Sorting compares symbols by Unicode code point and quantities and prices by exact `decimal.js`
+value, never as JavaScript numbers or as text. Ties are broken by `executedAt`, then
+`bookingSequence`, in the sort direction, so every order is total and `desc` is exactly `asc`
+reversed. With neither sort parameter the order is the original one (`executedAt` `desc`).
+Listing only reads: it never changes stored trades, and positions always use the full history.
+
+```text
+GET /trades?symbol=sf&side=buy
+GET /trades?executedFrom=2026-01-01T00:00:00-05:00&executedTo=2026-01-31T23:59:59.999-05:00
+GET /trades?executedFrom=2026-01-01T09:00:00%2B05:30
+GET /trades?sortBy=price&sortDirection=asc
+```
 
 **Trade**
 
@@ -713,12 +771,13 @@ next number.
 ### Error mapping
 
 All errors are RFC 9457 `application/problem+json` bodies. Generic errors use
-`type: "about:blank"` and the HTTP status phrase as `title`; the two business rejections have
-their own `type` URNs.
+`type: "about:blank"` and the HTTP status phrase as `title`; invalid trades, invalid queries and
+position limit breaches have their own `type` URNs.
 
 | Condition | Status | `type` | Body |
 | --- | --- | --- | --- |
 | Invalid trade fields | `400` | `urn:trade-blotter:problem:invalid-trade` | `title: "Invalid trade"`; `errors` maps each invalid field, in request order (`symbol`, `side`, `quantity`, `price`, `executedAt`), to its messages; `detail` repeats the first |
+| Invalid `GET /trades` query parameters | `400` | `urn:trade-blotter:problem:invalid-query` | `title: "Invalid query"`; `errors` maps each invalid parameter, in the documented order (`symbol`, `side`, `executedFrom`, `executedTo`, `sortBy`, `sortDirection`), to its messages; `detail` repeats the first |
 | The trade would take its symbol to the position limit | `400` | `urn:trade-blotter:problem:position-limit` | `title: "Position limit exceeded"`, `detail`, `symbol` |
 | Body is not a JSON object, empty or malformed | `400` | `about:blank` | `detail` says why |
 | Unknown route | `404` | `about:blank` | |
@@ -740,9 +799,9 @@ their own `type` URNs.
 }
 ```
 
-`problem-details.ts` maps `TradeValidationError` (application) and `PositionLimitError`
-(domain) to `400`, uses the status of Fastify's own client errors, and turns everything else
-into a bare `500`. Only messages created for the client (`clientError`) are shown in `detail`.
+`problem-details.ts` maps `TradeValidationError`, `TradeQueryValidationError` (application)
+and `PositionLimitError` (domain) to `400`, uses the status of Fastify's own client errors, and
+turns everything else into a bare `500`. Only messages created for the client (`clientError`) are shown in `detail`.
 A `405` comes from the not-found handler: it records every route's methods as routes are added,
 and answers a known path with an unknown method with `405` instead of `404`.
 
@@ -757,6 +816,7 @@ flowchart LR
     subgraph BROWSER["Browser · client/src"]
         FORM["TradeForm.vue<br/>typed text, local time to RFC 3339"]
         TABLES["TradeBlotter.vue, PositionsPanel.vue<br/>display only"]
+        FILTERS["TradeFilters.vue<br/>draft controls, local dates to UTC"]
         STORE["Pinia store<br/>stores/blotter.ts"]
         CLIENT["API client<br/>api/client.ts"]
     end
@@ -765,6 +825,7 @@ flowchart LR
 
     FORM -->|"createTrade(request)"| STORE
     TABLES -->|"read trades, positions"| STORE
+    FILTERS -->|"applyTradeQuery(query)"| STORE
     STORE -->|"calls"| CLIENT
     CLIENT -->|"fetch, relative URLs"| VITE
     VITE -->|"HTTP + JSON"| API
@@ -780,6 +841,14 @@ flowchart LR
   the newest response for each list is applied, and a failed refresh keeps the last data on
   screen with an error message. Positions always come from the API; the client never calculates
   them, and it shows trades and positions in the order the API returns them.
+- **Search, filters and sort.** The controls above the trade table hold a draft. Only Apply
+  changes the store's applied query (`applyTradeQuery`), and Clear resets the controls and applies
+  the empty query. Every trade-list load uses the applied query, including the reload after a
+  booking and the Refresh button. Positions never use it: they always cover every trade. The
+  client sends the API's own parameters (`symbol`, `side`, `executedFrom`, `executedTo`,
+  `sortBy`, `sortDirection`) built with `URLSearchParams`, leaving out empty values and the
+  default sort, so with no filter the request is plain `GET /trades`. The API filters and sorts;
+  the client shows the rows in the order they arrive.
 - **Decimals stay text.** Quantity and price are text inputs; the trimmed text is sent as JSON
   strings (`"10.50"`), so the server receives exactly the digits typed. Responses are parsed with
   `parseJsonKeepingNumberText`, which quotes every number literal before `JSON.parse`, so an
@@ -790,9 +859,10 @@ flowchart LR
 - **Client checks are for usability.** Before sending, the form requires a symbol, a side, and a
   quantity and price that are plain positive numbers. The input range, decimal places and every
   other rule are the server's: its field errors are shown next to the matching fields.
-- **Errors.** `ApiError` has four kinds: `invalid-trade` (field errors shown inline),
+- **Errors.** `ApiError` has six kinds: `invalid-trade` (field errors shown inline),
+  `invalid-query` (the API's reasons, shown with the trade list, never in the booking form),
   `rejected` (the position-limit explanation, or a generic message for any other 4xx),
-  `network` and `server`. Server details are never shown: a `500` body, a proxy error page or an
+  `network`, `unavailable` and `server`. Server details are never shown: a `500` body, a proxy error page or an
   unexpected response all become a fixed message. A response that does not match the contract
   is treated as a server failure rather than displayed.
 - **Accessibility.** Every control has a label; Buy and Sell are a radio group in a fieldset;
@@ -815,6 +885,25 @@ user picked and adds the offset in force at that moment, giving RFC 3339 such as
 | An ordinary local time | Sent with its offset. |
 | A time skipped when the clocks go forward (`02:30` on a spring-forward night) | Refused with a message; nothing is sent. |
 | A time that happens twice when the clocks go back (`01:30` on a fall-back night) | The form shows both occurrences with their offsets (`First, UTC−04:00`, `Second, UTC−05:00`) and requires a choice. Changing the time clears the choice. |
+
+### Date range filter
+
+From and To are `<input type="date">` calendar dates in the browser's time zone, and both days are
+included. `localDayStart` gives the first instant of the From date, and `localDayEnd` the start
+of the day after the To date less one millisecond; both are sent as UTC (`toISOString`). Neither
+adds 24 hours: each boundary is found from the offsets in force, the way `resolveLocalDateTime`
+finds them, so a 23-hour or 25-hour day is covered exactly. In New York, 2026-03-08 is
+`2026-03-08T05:00:00.000Z` to `2026-03-09T03:59:59.999Z` (23 hours), and 2026-11-01 is
+`2026-11-01T04:00:00.000Z` to `2026-11-02T04:59:59.999Z` (25 hours). Where the clocks skip
+midnight (Santiago, 2026-09-06), the day starts at the change, 01:00 local; where midnight
+happens twice, at its first occurrence.
+
+A From date later than the To date, an incomplete date, or a boundary outside the years 0001 to
+9999 is refused next to its field before anything is sent. Tests take the offsets of named zones
+from the engine's time-zone data, so they do not depend on how the operating system applies
+`TZ`, and one test checks that the `TZ` the suite sets is in effect.
+
+### Timestamp display
 
 Returned timestamps are shown in one fixed format, local time with milliseconds and the offset in
 force at that instant (`2026-01-02 09:30:00.123 UTC−05:00`), inside a `<time>` element whose
@@ -876,8 +965,11 @@ Trades apply in **trade order**: `executedAt` ascending, then booking sequence a
 the order the trades arrive in. `createdAt`, `updatedAt` and ids never affect the order. A trade
 recorded late for an earlier execution time is applied at its execution time.
 
-`GET /trades` returns the reverse: newest `executedAt` first, and for equal execution times the
-most recently booked first. Positions are sorted by symbol in Unicode code-point order.
+`GET /trades` returns the reverse by default: newest `executedAt` first, and for equal execution
+times the most recently booked first. Its `sortBy` and `sortDirection` parameters choose another
+field and direction; ties always fall back to trade order in the chosen direction. Filtering and
+sorting the list never affect positions, which are always derived from every trade. Positions are
+sorted by symbol in Unicode code-point order.
 
 ## Numeric policy
 

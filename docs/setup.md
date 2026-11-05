@@ -95,8 +95,8 @@ One step at a time:
 npm run lint               # ESLint over the repository
 npm run typecheck          # API and frontend, no output files
 npm run build              # API to server/dist/, frontend to client/dist/
-npm test -w server         # API tests (844)
-npm test -w client         # frontend tests (121)
+npm test -w server         # API tests (1087)
+npm test -w client         # frontend tests (220)
 ```
 
 The tests need no running server, browser, network or existing database. They create their own
@@ -285,7 +285,7 @@ $env:API_TARGET = 'http://127.0.0.1:5399'; npm run preview -w client -- --port 4
 | Times look shifted | Times are shown in your computer's time zone with the offset beside each; the UTC value is in the tooltip. |
 | An `ExperimentalWarning` about SQLite | Node.js marks `node:sqlite` as experimental. The npm scripts suppress it; behaviour is unaffected. |
 | Tests fail to delete temporary files on Windows | Antivirus or indexing can briefly lock SQLite's `-wal` and `-shm` files. The tests retry; if it persists, exclude the temp folder from real-time scanning. |
-| `npm audit` reports 19 moderate advisories | A known open item; see [Dependency advisories](../README.md#dependency-advisories). Do not run `npm audit fix --force`. |
+| `npm audit` reports 16 moderate advisories | A known open item; see [Dependency advisories](../README.md#dependency-advisories). Do not run `npm audit fix --force`. |
 
 ## Platform limitations
 
