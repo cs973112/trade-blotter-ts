@@ -1,12 +1,31 @@
 <script setup lang="ts">
 import { storeToRefs } from 'pinia'
+import { computed } from 'vue'
 
 import { formatDecimal } from '../lib/decimal-text.ts'
+import { narrowsList, SORT_FIELDS, sortDirections } from '../lib/trade-filters.ts'
 import { useBlotterStore } from '../stores/blotter.ts'
 import LocalTimestamp from './LocalTimestamp.vue'
+import TradeFilters from './TradeFilters.vue'
 
 const store = useBlotterStore()
-const { trades } = storeToRefs(store)
+const { trades, shownTradeQuery } = storeToRefs(store)
+
+/** Whether the trades shown are a subset: then "no trades" means "none match". */
+const filtered = computed(() => narrowsList(shownTradeQuery.value))
+
+const caption = computed(() => {
+  const { sortBy = 'executedAt', sortDirection = 'desc' } = shownTradeQuery.value
+  const field = SORT_FIELDS.find((option) => option.value === sortBy)?.label ?? sortBy
+  const direction = sortDirections(sortBy).find((option) => option.value === sortDirection)?.label ?? sortDirection
+  const order = sortBy === 'executedAt' && sortDirection === 'desc'
+    ? 'newest execution first'
+    : `sorted by ${field.toLowerCase()}, ${direction.toLowerCase()}`
+  const subject = filtered.value ? 'Trades matching the filters' : 'Every trade'
+  return `${subject}, ${order}. Times are in your time zone, with the UTC offset shown.`
+})
+
+const matchCount = computed(() => `${String(trades.value.items.length)} matching ${trades.value.items.length === 1 ? 'trade' : 'trades'}.`)
 </script>
 
 <template>
@@ -18,17 +37,30 @@ const { trades } = storeToRefs(store)
       </button>
     </div>
 
+    <TradeFilters />
+
     <p v-if="trades.error" class="alert alert-error" role="alert">
       Trades could not be loaded. {{ trades.error }}
     </p>
     <p v-if="trades.loading && !trades.loaded" class="state" role="status">Loading trades…</p>
-    <p v-else-if="trades.loaded && trades.items.length === 0" class="state">No trades yet. Book one to see it here.</p>
+    <p v-else-if="trades.loading" class="state" role="status">Updating trades…</p>
+    <template v-else-if="trades.loaded">
+      <p v-if="filtered && trades.items.length === 0" class="state" role="status">
+        No trades match these filters. Change them, or choose Clear to see every trade.
+      </p>
+      <p v-else-if="trades.items.length === 0" class="state">No trades yet. Book one to see it here.</p>
+      <p v-else-if="filtered" class="state" role="status">{{ matchCount }}</p>
+    </template>
 
-    <div v-if="trades.items.length > 0" class="table-scroll" tabindex="0" aria-labelledby="blotter-heading">
+    <div
+      v-if="trades.items.length > 0"
+      class="table-scroll"
+      tabindex="0"
+      aria-labelledby="blotter-heading"
+      :aria-busy="trades.loading"
+    >
       <table class="data-table">
-        <caption class="visually-hidden">
-          Every trade, newest execution first. Times are in your time zone, with the UTC offset shown.
-        </caption>
+        <caption class="visually-hidden">{{ caption }}</caption>
         <thead>
           <tr>
             <th scope="col">Symbol</th>

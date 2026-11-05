@@ -8,7 +8,10 @@ export interface FakeResponse {
 }
 
 /** What a route does: answer, fail like a dropped connection, or wait until released. */
-export type Route = FakeResponse | Error | ((body: string | undefined) => FakeResponse | Error | Promise<FakeResponse | Error>)
+export type Route =
+  | FakeResponse
+  | Error
+  | ((body: string | undefined, url: string) => FakeResponse | Error | Promise<FakeResponse | Error>)
 
 export type RouteKey = 'GET /trades' | 'GET /positions' | 'POST /trades'
 
@@ -20,8 +23,9 @@ export interface RecordedCall {
 }
 
 /**
- * Replaces the global fetch with a scripted API. Unknown routes answer 404. Every call is recorded,
- * so tests can check what the client sent and in what order.
+ * Replaces the global fetch with a scripted API. A route is chosen by method and path; the query
+ * string is passed to a route function in the full URL. Unknown routes answer 404. Every call is
+ * recorded, so tests can check what the client sent and in what order.
  */
 export function fakeApi(initial: Partial<Record<RouteKey, Route>> = {}) {
   const routes = new Map<string, Route>(Object.entries(initial))
@@ -31,11 +35,11 @@ export function fakeApi(initial: Partial<Record<RouteKey, Route>> = {}) {
     const method = init?.method ?? 'GET'
     const body = typeof init?.body === 'string' ? init.body : undefined
     calls.push({ method, url: input, headers: { ...(init?.headers as Record<string, string> | undefined) }, body })
-    const route = routes.get(`${method} ${input}`)
+    const route = routes.get(`${method} ${input.split('?')[0] ?? input}`)
     if (route === undefined) {
       return new Response('{"type":"about:blank","title":"Not Found","status":404}', { status: 404 })
     }
-    const result = typeof route === 'function' ? await route(body) : route
+    const result = typeof route === 'function' ? await route(body, input) : route
     if (result instanceof Error) throw result
     return new Response(result.body, {
       status: result.status ?? 200,

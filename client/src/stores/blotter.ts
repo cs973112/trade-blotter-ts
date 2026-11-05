@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
 import { api, ApiError } from '../api/client.ts'
-import type { CreateTradeRequest, Position, Trade } from '../api/contracts.ts'
+import type { CreateTradeRequest, Position, Trade, TradeQuery } from '../api/contracts.ts'
 
 /** The state of one list loaded from the API. */
 export interface ListState<T> {
@@ -27,10 +27,17 @@ function messageFor(error: unknown): string {
  * The trades and positions shown on the page, shared by the form (which books trades) and the two
  * tables. Positions come from the API; the client never calculates them. Booking a trade
  * refreshes both lists.
+ *
+ * The trade list is loaded with the applied query, which only applyTradeQuery changes. Positions
+ * never use it: they always cover every trade.
  */
 export const useBlotterStore = defineStore('blotter', () => {
   const trades = ref<ListState<Trade>>(emptyList())
   const positions = ref<ListState<Position>>(emptyList())
+  /** The search, filters and sort the trade list is loaded with. Empty: every trade, newest first. */
+  const tradeQuery = ref<TradeQuery>({})
+  /** The query the trades in the list were loaded with, which may differ while a new one loads. */
+  const shownTradeQuery = ref<TradeQuery>({})
 
   // Each list keeps only the newest response, so a slow earlier request cannot overwrite a later one.
   let tradesRequest = 0
@@ -50,15 +57,18 @@ export const useBlotterStore = defineStore('blotter', () => {
     return requestsStarted
   }
 
+  /** Loads the trade list with the applied query. */
   async function loadTrades(): Promise<void> {
     const request = ++tradesRequest
     const number = ++requestsStarted
+    const query = tradeQuery.value
     trades.value.loading = true
     try {
-      const items = await api.listTrades()
+      const items = await api.listTrades(query)
       answered(number)
       if (request !== tradesRequest) return
       trades.value = { items, loading: false, loaded: true, error: undefined }
+      shownTradeQuery.value = query
     } catch (error) {
       if (request !== tradesRequest) return
       trades.value = { ...trades.value, loading: false, error: messageFor(error) }
@@ -80,12 +90,18 @@ export const useBlotterStore = defineStore('blotter', () => {
     }
   }
 
+  /** Applies a new search, filter and sort (an empty query for none), and reloads the trade list with it. */
+  async function applyTradeQuery(query: TradeQuery): Promise<void> {
+    tradeQuery.value = query
+    await loadTrades()
+  }
+
   /** Reloads trades and positions together. Never throws: failures are kept in each list's state. */
   async function refresh(): Promise<void> {
     await Promise.all([loadTrades(), loadPositions()])
   }
 
-  /** Books a trade, then refreshes both lists. Throws ApiError if the trade is not booked. */
+  /** Books a trade, then refreshes both lists, the trades with the applied query. Throws ApiError if the trade is not booked. */
   async function createTrade(request: CreateTradeRequest): Promise<Trade> {
     const number = ++requestsStarted
     const trade = await api.createTrade(request)
@@ -94,5 +110,8 @@ export const useBlotterStore = defineStore('blotter', () => {
     return trade
   }
 
-  return { trades, positions, latestAnswered, lastRequestStarted, loadTrades, loadPositions, refresh, createTrade }
+  return {
+    trades, positions, tradeQuery, shownTradeQuery, latestAnswered, lastRequestStarted,
+    loadTrades, loadPositions, applyTradeQuery, refresh, createTrade,
+  }
 })

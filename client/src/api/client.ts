@@ -1,4 +1,13 @@
-import type { CreateTradeRequest, FieldErrors, Position, Side, Trade, TradeField } from './contracts.ts'
+import {
+  TRADE_QUERY_PARAMETERS,
+  type CreateTradeRequest,
+  type FieldErrors,
+  type Position,
+  type Side,
+  type Trade,
+  type TradeField,
+  type TradeQuery,
+} from './contracts.ts'
 import { parseJsonKeepingNumberText } from './json.ts'
 
 /**
@@ -10,6 +19,8 @@ import { parseJsonKeepingNumberText } from './json.ts'
 export type ApiErrorKind =
   /** 400 with field errors: show them next to the fields. */
   | 'invalid-trade'
+  /** 400 for GET /trades query parameters the API did not accept: show the message with the trade list. */
+  | 'invalid-query'
   /** 400 for a business reason, such as the position limit: show the message. */
   | 'rejected'
   /** The server could not be reached: the request failed before any response arrived. */
@@ -91,6 +102,15 @@ function toFieldErrors(value: unknown): FieldErrors {
   return errors
 }
 
+/** The messages of an invalid-query problem, in parameter order. They name the parameters, not the page's labels. */
+function queryMessages(value: unknown): string[] {
+  if (!isObject(value)) return []
+  return TRADE_QUERY_PARAMETERS.flatMap((parameter) => {
+    const messages = value[parameter]
+    return Array.isArray(messages) ? messages.filter(isString) : []
+  })
+}
+
 /** Turns an error response into an ApiError. Only messages written for users are shown. */
 function toApiError(status: number, body: string): ApiError {
   if (GATEWAY_STATUSES.has(status)) return new ApiError('unavailable', UNAVAILABLE_MESSAGE)
@@ -103,6 +123,9 @@ function toApiError(status: number, body: string): ApiError {
   }
   if (isObject(problem) && problem['type'] === 'urn:trade-blotter:problem:invalid-trade') {
     return new ApiError('invalid-trade', 'Some fields need attention.', toFieldErrors(problem['errors']))
+  }
+  if (isObject(problem) && problem['type'] === 'urn:trade-blotter:problem:invalid-query') {
+    return new ApiError('invalid-query', `The filters were not accepted. ${queryMessages(problem['errors']).join(' ')}`.trim())
   }
   if (isObject(problem) && problem['type'] === 'urn:trade-blotter:problem:position-limit' && isString(problem['detail'])) {
     return new ApiError('rejected', `The trade was not booked. ${problem['detail']}`)
@@ -147,9 +170,18 @@ export const api = {
     return toTrade(await request('/trades', { method: 'POST', body: JSON.stringify(body) }))
   },
 
-  /** GET /trades: newest execution first, as the API orders them. */
-  async listTrades(): Promise<Trade[]> {
-    return toList(await request('/trades'), toTrade)
+  /**
+   * GET /trades, in the order the API sends: newest execution first unless the query sorts. Only
+   * the query members that are set and not empty are sent, so an empty query is plain /trades.
+   */
+  async listTrades(query: TradeQuery = {}): Promise<Trade[]> {
+    const parameters = new URLSearchParams()
+    for (const name of TRADE_QUERY_PARAMETERS) {
+      const value = query[name]
+      if (value !== undefined && value !== '') parameters.append(name, value)
+    }
+    const search = parameters.toString()
+    return toList(await request(search === '' ? '/trades' : `/trades?${search}`), toTrade)
   },
 
   /** GET /positions: open positions sorted by symbol, as the API orders them. */
