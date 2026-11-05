@@ -48,3 +48,26 @@ export interface Position {
 export type TradeField = 'symbol' | 'side' | 'quantity' | 'price' | 'executedAt'
 
 export type FieldErrors = Partial<Record<TradeField, readonly string[]>>
+
+/** Fields GET /trades can sort by. */
+export type SortField = 'executedAt' | 'symbol' | 'quantity' | 'price'
+
+export type SortDirection = 'asc' | 'desc'
+
+/**
+ * GET /trades query parameters. Every member is optional; an omitted one is not sent, and the API
+ * then applies its default: no filter, or newest execution first.
+ */
+export interface TradeQuery {
+  /** Matches anywhere in the symbol, ignoring case. */
+  readonly symbol?: string
+  readonly side?: Side
+  /** Inclusive bounds on executedAt, as UTC timestamps. */
+  readonly executedFrom?: UtcTimestamp
+  readonly executedTo?: UtcTimestamp
+  readonly sortBy?: SortField
+  readonly sortDirection?: SortDirection
+}
+
+/** The query parameters, in the order they are sent and the API reports them. */
+export const TRADE_QUERY_PARAMETERS = ['symbol', 'side', 'executedFrom', 'executedTo', 'sortBy', 'sortDirection'] as const

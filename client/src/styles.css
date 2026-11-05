@@ -103,7 +103,7 @@ label, legend { display: block; font-weight: 500; margin-bottom: 4px; padding: 0
 .optional, .hint { color: var(--muted); font-weight: 400; }
 .hint { font-size: 0.85rem; margin: 4px 0 0; }
 
-input[type='text'], input[type='datetime-local'] {
+input[type='text'], input[type='search'], input[type='date'], input[type='datetime-local'], select {
   width: 100%;
   padding: 7px 9px;
   font: inherit;
@@ -161,6 +161,15 @@ button:disabled { cursor: default; opacity: 0.65; }
 .alert-success { color: var(--success); background: var(--success-bg); }
 
 .state { color: var(--muted); margin: 8px 0; }
+
+/* Trade list search, filters and sort */
+
+.trade-filters { margin: 0 0 14px; padding: 0 0 14px; border-bottom: 1px solid var(--border); }
+.filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0 12px; }
+.trade-filters .field { margin-bottom: 10px; }
+.filter-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-top: 10px; }
+.filter-actions .button-primary { width: auto; padding: 5px 16px; }
+.filter-pending { margin: 0; }
 
 /* Tables */
 

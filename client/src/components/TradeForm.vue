@@ -5,6 +5,7 @@ import { ApiError } from '../api/client.ts'
 import type { CreateTradeRequest, FieldErrors, Side, TradeField } from '../api/contracts.ts'
 import { checkDecimalInput, formatDecimal, type DecimalInputProblem } from '../lib/decimal-text.ts'
 import { browserTimeZone, resolveLocalDateTime } from '../lib/timestamps.ts'
+import { narrowsList } from '../lib/trade-filters.ts'
 import { useBlotterStore } from '../stores/blotter.ts'
 
 const store = useBlotterStore()
@@ -139,7 +140,12 @@ async function submit(): Promise<void> {
   submitting.value = true
   try {
     const trade = await store.createTrade(request)
-    success.value = `Booked: ${trade.side} ${formatDecimal(trade.quantity)} ${trade.symbol} at ${formatDecimal(trade.price)}.`
+    // The list was reloaded with its filters, which may leave the new trade out: say so, rather than let it look lost.
+    // Only about the list on screen: not while a newer load (filters applied meanwhile) is still on its way.
+    const hidden = narrowsList(store.shownTradeQuery) && store.trades.error === undefined && !store.trades.loading &&
+      !store.trades.items.some((listed) => listed.id === trade.id)
+    success.value = `Booked: ${trade.side} ${formatDecimal(trade.quantity)} ${trade.symbol} at ${formatDecimal(trade.price)}.` +
+      (hidden ? ' It is not in the trade list because it does not match the current filters.' : '')
     Object.assign(form, { symbol: '', side: '', quantity: '', price: '', executedAt: '', occurrence: '' })
     submitted.value = false
     serverErrors.value = {}

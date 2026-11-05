@@ -177,3 +177,62 @@ describe('API client: lists', () => {
     ])
   })
 })
+
+describe('API client: GET /trades query parameters', () => {
+  it('requests plain /trades with no query, an empty one, or only empty values', async () => {
+    const server = fakeApi({ 'GET /trades': json('[]') })
+
+    await api.listTrades()
+    await api.listTrades({})
+    await api.listTrades({ symbol: '' })
+
+    expect(server.calls.map((call) => call.url)).toEqual(['/trades', '/trades', '/trades'])
+  })
+
+  it('sends each parameter by its API name, in a fixed order, whatever order the query lists them', async () => {
+    const server = fakeApi({ 'GET /trades': json('[]') })
+
+    await api.listTrades({
+      sortDirection: 'asc', sortBy: 'price', executedTo: '2026-03-09T03:59:59.999Z', executedFrom: '2026-03-08T05:00:00.000Z',
+      side: 'Sell', symbol: 'ms',
+    })
+
+    const url = new URL(server.calls[0]?.url ?? '', 'http://localhost')
+    expect(url.pathname).toBe('/trades')
+    expect([...url.searchParams.entries()]).toEqual([
+      ['symbol', 'ms'], ['side', 'Sell'], ['executedFrom', '2026-03-08T05:00:00.000Z'], ['executedTo', '2026-03-09T03:59:59.999Z'],
+      ['sortBy', 'price'], ['sortDirection', 'asc'],
+    ])
+  })
+
+  it('encodes values, so a symbol search cannot add or change parameters', async () => {
+    const server = fakeApi({ 'GET /trades': json('[]') })
+
+    await api.listTrades({ symbol: 'BRK B&side=Buy+%' })
+
+    expect(server.calls[0]?.url).toBe('/trades?symbol=BRK+B%26side%3DBuy%2B%25')
+    expect(new URL(server.calls[0]?.url ?? '', 'http://localhost').searchParams.get('symbol')).toBe('BRK B&side=Buy+%')
+  })
+
+  it('turns an invalid-query problem into a message for the trade list, with every reason in parameter order', async () => {
+    fakeApi({
+      'GET /trades': problem(400, {
+        type: 'urn:trade-blotter:problem:invalid-query', title: 'Invalid query', detail: 'symbol must be at most 64 characters.',
+        errors: { sortBy: ['sortBy must be one of executedAt, symbol, quantity, price.'], symbol: ['symbol must be at most 64 characters.'] },
+      }),
+    })
+
+    const error = await failure(api.listTrades({ symbol: 'A'.repeat(65) }))
+
+    expect(error.kind).toBe('invalid-query')
+    expect(error.message).toBe(
+      'The filters were not accepted. symbol must be at most 64 characters. sortBy must be one of executedAt, symbol, quantity, price.',
+    )
+  })
+
+  it('reads a query rejection without an errors map as a plain rejection message', async () => {
+    fakeApi({ 'GET /trades': problem(400, { type: 'urn:trade-blotter:problem:invalid-query', title: 'Invalid query' }) })
+
+    expect(await failure(api.listTrades({ side: 'Buy' }))).toMatchObject({ kind: 'invalid-query', message: 'The filters were not accepted.' })
+  })
+})
