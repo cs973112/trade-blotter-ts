@@ -9,7 +9,7 @@ import type { Database } from '../../src/infrastructure/database/connection.ts'
 import { createDrizzleTradeRepository } from '../../src/infrastructure/drizzle-trade-repository.ts'
 import { createTestDatabase, rawRows } from '../support/database.ts'
 import { createFixedClock, createSequentialIds } from '../support/fixed-clock.ts'
-import { newTrade } from '../support/trades.ts'
+import { newTrade, utc } from '../support/trades.ts'
 
 let database: ReturnType<typeof createTestDatabase>
 let db: Database
@@ -230,5 +230,115 @@ describe('infrastructure: Drizzle trade repository across restarts', () => {
     await writer.add(newTrade({ id: 'shared' }))
 
     expect((await reader.listInTradeOrder()).map((trade) => trade.id)).toEqual(['shared'])
+  })
+})
+
+describe('infrastructure: Drizzle trade repository filters', () => {
+  /** Stores the trades in the order given and returns the repository. */
+  async function seeded(trades: readonly Parameters<typeof newTrade>[0][]) {
+    const repository = createDrizzleTradeRepository(db)
+    for (const trade of trades) await repository.add(newTrade(trade))
+    return repository
+  }
+
+  const ids = (trades: readonly Trade[]): string[] => trades.map((trade) => trade.id)
+
+  const HISTORY = [
+    { id: 'msft-buy', symbol: 'MSFT', side: 'Buy', executedAt: '2026-01-01T09:00:00.000Z' },
+    { id: 'msf-sell', symbol: 'MSF', side: 'Sell', executedAt: '2026-01-01T10:00:00.000Z' },
+    { id: 'aapl-buy', symbol: 'AAPL', side: 'Buy', executedAt: '2026-01-02T09:00:00.000Z' },
+    { id: 'xmsftx-sell', symbol: 'XMSFTX', side: 'Sell', executedAt: '2026-01-02T09:00:00.000Z' },
+    { id: 'brk-buy', symbol: 'BRK.B', side: 'Buy', executedAt: '2026-01-03T00:00:00.000Z' },
+  ] as const
+
+  it('lists every trade in trade order with no filter or an empty one', async () => {
+    const repository = await seeded(HISTORY)
+    const all = ['msft-buy', 'msf-sell', 'aapl-buy', 'xmsftx-sell', 'brk-buy']
+
+    expect(ids(await repository.listInTradeOrder())).toEqual(all)
+    expect(ids(await repository.listInTradeOrder({}))).toEqual(all)
+  })
+
+  it.each([
+    ['a whole symbol, also matching longer symbols that contain it', 'MSFT', ['msft-buy', 'xmsftx-sell']],
+    ['the start of a symbol', 'MS', ['msft-buy', 'msf-sell', 'xmsftx-sell']],
+    ['the middle of a symbol', 'SF', ['msft-buy', 'msf-sell', 'xmsftx-sell']],
+    ['the end of a symbol', 'PL', ['aapl-buy']],
+    ['punctuation', '.', ['brk-buy']],
+    ['text no symbol contains', 'ZZZ', []],
+  ])('matches %s', async (_name, symbolContains, expected) => {
+    const repository = await seeded(HISTORY)
+
+    expect(ids(await repository.listInTradeOrder({ symbolContains }))).toEqual(expected)
+  })
+
+  it('treats LIKE wildcards in the search as plain characters', async () => {
+    const repository = await seeded([
+      { id: 'percent', symbol: 'A%B' }, { id: 'underscore', symbol: 'A_B' }, { id: 'plain', symbol: 'AXB' },
+    ])
+
+    expect(ids(await repository.listInTradeOrder({ symbolContains: '%' }))).toEqual(['percent'])
+    expect(ids(await repository.listInTradeOrder({ symbolContains: '_' }))).toEqual(['underscore'])
+    expect(ids(await repository.listInTradeOrder({ symbolContains: 'A_B' }))).toEqual(['underscore'])
+  })
+
+  it('matches symbols outside ASCII exactly, as stored', async () => {
+    const repository = await seeded([{ id: 'accented', symbol: 'ÉCOLE' }, { id: 'plain', symbol: 'ECOLE' }, { id: 'cjk', symbol: '株式' }])
+
+    expect(ids(await repository.listInTradeOrder({ symbolContains: 'ÉCO' }))).toEqual(['accented'])
+    expect(ids(await repository.listInTradeOrder({ symbolContains: 'ECO' }))).toEqual(['plain'])
+    expect(ids(await repository.listInTradeOrder({ symbolContains: '式' }))).toEqual(['cjk'])
+  })
+
+  it('filters by side', async () => {
+    const repository = await seeded(HISTORY)
+
+    expect(ids(await repository.listInTradeOrder({ side: 'Buy' }))).toEqual(['msft-buy', 'aapl-buy', 'brk-buy'])
+    expect(ids(await repository.listInTradeOrder({ side: 'Sell' }))).toEqual(['msf-sell', 'xmsftx-sell'])
+  })
+
+  it('includes trades executed exactly at either bound, to the millisecond', async () => {
+    const repository = await seeded([
+      { id: 'before', executedAt: '2026-01-01T08:59:59.999Z' },
+      { id: 'at-start', executedAt: '2026-01-01T09:00:00.000Z' },
+      { id: 'inside', executedAt: '2026-01-01T12:00:00.000Z' },
+      { id: 'at-end', executedAt: '2026-01-01T17:00:00.000Z' },
+      { id: 'after', executedAt: '2026-01-01T17:00:00.001Z' },
+    ])
+    const bounds = { executedFrom: utc('2026-01-01T09:00:00.000Z'), executedTo: utc('2026-01-01T17:00:00.000Z') }
+
+    expect(ids(await repository.listInTradeOrder(bounds))).toEqual(['at-start', 'inside', 'at-end'])
+    expect(ids(await repository.listInTradeOrder({ executedFrom: bounds.executedFrom }))).toEqual(['at-start', 'inside', 'at-end', 'after'])
+    expect(ids(await repository.listInTradeOrder({ executedTo: bounds.executedTo }))).toEqual(['before', 'at-start', 'inside', 'at-end'])
+    expect(ids(await repository.listInTradeOrder({ executedFrom: bounds.executedTo, executedTo: bounds.executedTo }))).toEqual(['at-end'])
+  })
+
+  it('combines every filter with AND', async () => {
+    const repository = await seeded(HISTORY)
+    const filter = {
+      symbolContains: 'MSF', side: 'Sell', executedFrom: utc('2026-01-01T09:30:00Z'), executedTo: utc('2026-01-02T09:00:00Z'),
+    } as const
+
+    expect(ids(await repository.listInTradeOrder(filter))).toEqual(['msf-sell', 'xmsftx-sell'])
+    expect(ids(await repository.listInTradeOrder({ ...filter, side: 'Buy' }))).toEqual([])
+    expect(ids(await repository.listInTradeOrder({ ...filter, executedTo: utc('2026-01-01T23:59:59.999Z') }))).toEqual(['msf-sell'])
+  })
+
+  it('returns trades with decimals and timestamps exactly as stored, and changes no row', async () => {
+    const repository = await seeded([{ id: 'exact', symbol: 'MSFT', quantity: '123456789012345.1234567891', price: '0.0000000001' }])
+    const before = rawRows(db)
+
+    const [found] = await repository.listInTradeOrder({ symbolContains: 'SF', side: 'Buy', executedFrom: utc('2026-01-01T09:00:00Z') })
+
+    expect(found === undefined ? undefined : view(found))
+      .toMatchObject({ id: 'exact', quantity: '123456789012345.1234567891', price: '0.0000000001' })
+    expect(rawRows(db)).toEqual(before)
+  })
+
+  it('binds the search as a value, never as SQL', async () => {
+    const repository = await seeded(HISTORY)
+
+    expect(await repository.listInTradeOrder({ symbolContains: "') > 0 OR 1=1 --" })).toEqual([])
+    expect(count()).toBe(HISTORY.length)
   })
 })

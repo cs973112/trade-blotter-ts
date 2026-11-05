@@ -89,9 +89,14 @@ function checkSymbol(input: unknown, maxLength: number): FieldResult<string> {
   return invalid(messages[result.problem])
 }
 
-function checkSide(input: unknown): FieldResult<TradeSide> {
+/** The side a client wrote, ignoring case and surrounding whitespace, or undefined if it names none. */
+export function toTradeSide(input: unknown): TradeSide | undefined {
   const text = typeof input === 'string' ? input.trim().toLowerCase() : undefined
-  const side = TRADE_SIDES.find((candidate) => candidate.toLowerCase() === text)
+  return TRADE_SIDES.find((candidate) => candidate.toLowerCase() === text)
+}
+
+function checkSide(input: unknown): FieldResult<TradeSide> {
+  const side = toTradeSide(input)
   return side === undefined ? invalid('Side must be Buy or Sell.') : valid(side)
 }
 

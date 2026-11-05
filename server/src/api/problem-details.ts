@@ -2,20 +2,21 @@ import { STATUS_CODES } from 'node:http'
 
 import type { FastifyError, FastifyInstance } from 'fastify'
 
-import { TradeValidationError } from '../application/errors.ts'
+import { TradeQueryValidationError, TradeValidationError } from '../application/errors.ts'
 import { PositionLimitError } from '../domain/position.ts'
 
 /**
  * RFC 9457 problem bodies for every error the API returns. Generic HTTP errors use the
- * `about:blank` type with the status phrase as title. The two business rejections have their own
- * types: an invalid trade carries an `errors` map keyed by request field, and a position limit
- * breach names the symbol. Unexpected errors are logged and answered with a bare 500, so no
- * internal detail reaches the client.
+ * `about:blank` type with the status phrase as title. Three rejections have their own types: an
+ * invalid trade carries an `errors` map keyed by request field, an invalid query an `errors` map
+ * keyed by query parameter, and a position limit breach names the symbol. Unexpected errors are
+ * logged and answered with a bare 500, so no internal detail reaches the client.
  */
 export const PROBLEM_CONTENT_TYPE = 'application/problem+json'
 
 export const INVALID_TRADE_TYPE = 'urn:trade-blotter:problem:invalid-trade'
 export const POSITION_LIMIT_TYPE = 'urn:trade-blotter:problem:position-limit'
+export const INVALID_QUERY_TYPE = 'urn:trade-blotter:problem:invalid-query'
 
 export interface ProblemDetails {
   readonly type: string
@@ -44,6 +45,9 @@ function isExposed(error: unknown): boolean {
 function problemForError(error: FastifyError): ProblemDetails {
   if (error instanceof TradeValidationError) {
     return { type: INVALID_TRADE_TYPE, title: 'Invalid trade', status: 400, detail: error.message, errors: error.errors }
+  }
+  if (error instanceof TradeQueryValidationError) {
+    return { type: INVALID_QUERY_TYPE, title: 'Invalid query', status: 400, detail: error.message, errors: error.errors }
   }
   if (error instanceof PositionLimitError) {
     return { type: POSITION_LIMIT_TYPE, title: 'Position limit exceeded', status: 400, detail: error.message, symbol: error.symbol }

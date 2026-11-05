@@ -74,3 +74,25 @@ describe('application: positions', () => {
     expect(await listed(createPositionService({ trades }))).toEqual([['BIG', '999999999999999000000000000001', '1']])
   })
 })
+
+describe('application: positions and filtered trade history', () => {
+  it('derives positions from the full history, however the trade list was filtered or sorted', async () => {
+    const { tradeService, positionService } = setup()
+    for (const [symbol, side, quantity, price, executedAt] of [
+      ['MSFT', 'Buy', '100', '10', '2026-01-01T09:00:00Z'],
+      ['MSFT', 'Buy', '100', '20', '2026-01-02T09:00:00Z'],
+      ['MSFT', 'Sell', '50', '25', '2026-01-03T09:00:00Z'],
+      ['AAPL', 'Sell', '10', '7', '2026-01-02T09:00:00Z'],
+    ] as const) {
+      await tradeService.createTrade({ symbol, side, quantity, price, executedAt })
+    }
+    const before = await listed(positionService)
+
+    expect(await tradeService.listTrades({ symbol: 'aap', side: 'Buy' })).toEqual([])
+    expect(await tradeService.listTrades({ executedTo: '2026-01-01T09:00:00Z' })).toHaveLength(1)
+    expect(await tradeService.listTrades({ side: 'Sell', sortBy: 'price', sortDirection: 'asc' })).toHaveLength(2)
+
+    expect(before).toEqual([['AAPL', '-10', '7'], ['MSFT', '150', '15']])
+    expect(await listed(positionService)).toEqual(before)
+  })
+})

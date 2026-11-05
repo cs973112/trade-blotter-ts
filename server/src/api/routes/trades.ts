@@ -3,10 +3,11 @@ import { Type } from 'typebox'
 import { Compile } from 'typebox/compile'
 
 import type { TradeService } from '../../application/trade-service.ts'
+import type { TradeQueryRequest } from '../../domain/trade-query.ts'
 import type { TradeRequest } from '../../domain/trade.ts'
 import { clientError, PROBLEM_CONTENT_TYPE } from '../problem-details.ts'
 import { toTradeResponse } from '../responses.ts'
-import { TradeRequestContainer } from '../schemas.ts'
+import { ListTradesQuery, TradeRequestContainer } from '../schemas.ts'
 
 const problem = (description: string) => ({ description, content: { [PROBLEM_CONTENT_TYPE]: { schema: Type.Ref('Problem') } } })
 
@@ -36,10 +37,19 @@ const createTradeSchema = {
 const listTradesSchema = {
   tags: ['Trades'],
   operationId: 'listTrades',
-  summary: 'List every trade, newest first',
-  description: 'Ordered by executedAt descending; trades with the same executedAt are ordered by bookingSequence descending.',
+  summary: 'List trades: search, filter and sort',
+  description:
+    'Without query parameters, every trade, ordered by executedAt descending; trades with the same executedAt are ' +
+    'ordered by bookingSequence descending. symbol, side, executedFrom and executedTo filter, combined with AND; ' +
+    'sortBy and sortDirection sort. Every order is total: ties are broken by executedAt, then bookingSequence, in the ' +
+    'sort direction. Filtering never changes stored trades or positions, which always use the full history.',
+  querystring: ListTradesQuery,
   response: {
-    200: { description: 'Every trade.', content: { 'application/json': { schema: Type.Array(Type.Ref('Trade')) } } },
+    200: { description: 'The matching trades, possibly none.', content: { 'application/json': { schema: Type.Array(Type.Ref('Trade')) } } },
+    400: problem(
+      'One or more query parameters are invalid or repeated (type urn:trade-blotter:problem:invalid-query, with an ' +
+        'errors map keyed by parameter).',
+    ),
     500: problem('An unexpected error. Logged by the server; the body has no detail.'),
   },
 } satisfies FastifySchema
@@ -64,7 +74,9 @@ export const tradeRoutes: FastifyPluginAsync<TradeRoutesOptions> = (app, { trade
 
   app.get('/trades', {
     schema: listTradesSchema,
-    handler: async () => (await tradeService.listTrades()).map(toTradeResponse),
+    // As for the body: the schema documents the parameters, and the domain validates them.
+    validatorCompiler: () => (query: unknown) => ({ value: query }),
+    handler: async (request) => (await tradeService.listTrades(request.query as TradeQueryRequest)).map(toTradeResponse),
   })
 
   return Promise.resolve()
