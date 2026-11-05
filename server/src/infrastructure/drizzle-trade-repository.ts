@@ -64,7 +64,8 @@ function settle<T>(work: () => T): Promise<T> {
   })
 }
 
-function toRow(trade: NewTrade): NewTradeRow {
+/** A new trade as its database row: decimals as canonical text. Also used by the test-data seeder. */
+export function toRow(trade: NewTrade): NewTradeRow {
   return {
     id: trade.id,
     symbol: trade.symbol,

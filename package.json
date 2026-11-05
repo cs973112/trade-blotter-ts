@@ -16,7 +16,16 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
-    "verify": "npm run lint && npm run typecheck && npm run build && npm run test"
+    "verify": "npm run lint && npm run typecheck && npm run build && npm run test",
+    "app:start": "node --disable-warning=ExperimentalWarning server/scripts/app.ts start",
+    "app:stop": "node --disable-warning=ExperimentalWarning server/scripts/app.ts stop",
+    "app:status": "node --disable-warning=ExperimentalWarning server/scripts/app.ts status",
+    "db:seed": "node --disable-warning=ExperimentalWarning server/scripts/trade-data.ts seed",
+    "db:clear": "node --disable-warning=ExperimentalWarning server/scripts/trade-data.ts clear",
+    "perf:api": "node --disable-warning=ExperimentalWarning server/scripts/perf-api.ts",
+    "perf:api:sizes": "node --disable-warning=ExperimentalWarning server/scripts/perf-sizes.ts api",
+    "perf:ui": "node --disable-warning=ExperimentalWarning server/scripts/perf-ui.ts",
+    "perf:ui:sizes": "node --disable-warning=ExperimentalWarning server/scripts/perf-sizes.ts ui"
   },
   "devDependencies": {
     "@eslint/js": "~10.0.1",

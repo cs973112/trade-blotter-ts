@@ -178,7 +178,9 @@ describe('test isolation: child process lifetime', () => {
 
 describe('test isolation: the test sources', () => {
   it('start processes only through the isolating helper', () => {
-    expect(filesMatching(/from 'node:child_process'/)).toEqual(['support/child-process.ts'])
+    // fake-app.ts is not a test: it is the stand-in application the app:start tests launch, and it
+    // starts a child of its own so they can check that stopping it stops its children too.
+    expect(filesMatching(/from 'node:child_process'/).sort()).toEqual(['support/child-process.ts', 'support/fake-app.ts'])
   })
 
   it('never stop processes by port or by name', () => {
@@ -186,7 +188,11 @@ describe('test isolation: the test sources', () => {
   })
 
   it('name the development port and database only to check the defaults or to avoid them', () => {
-    expect(filesMatching(/5299|DEFAULT_DATABASE_PATH|data[\\/]trade-blotter\.db/).sort()).toEqual(['config.test.ts', 'platform/compiled-server.test.ts'])
+    // The app:start tests check its defaults, and that it recognises the development database; the
+    // db:seed and db:clear tests check that the commands refuse it before opening anything.
+    expect(filesMatching(/5299|DEFAULT_DATABASE_PATH|data[\\/]trade-blotter\.db/).sort()).toEqual([
+      'config.test.ts', 'platform/compiled-server.test.ts', 'scripts/app.test.ts', 'scripts/lifecycle.test.ts', 'scripts/trade-data.test.ts',
+    ])
   })
 
   it('leave the package scripts free of commands that stop processes', () => {
