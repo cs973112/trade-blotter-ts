@@ -47,6 +47,24 @@ function windowsListeners(port: number): number[] | undefined {
   return owners
 }
 
+/**
+ * Whether a Linux id names a process, by its own /proc status: a process is the leader of its
+ * thread group (Tgid equals the id). Linux gives threads ids from the same range, and
+ * /proc/<thread id>/fd shows its process's descriptors, so without this a thread of the listening
+ * process would pass for that process. 'missing' when no process or thread has the id.
+ */
+function linuxProcess(pid: number): 'process' | 'thread' | 'missing' | 'unknown' {
+  let status: string
+  try {
+    status = readFileSync(`/proc/${String(pid)}/status`, 'utf8')
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'unknown'
+  }
+  const group = /^Tgid:\s+(\d+)$/m.exec(status)?.[1]
+  if (group === undefined) return 'unknown'
+  return Number(group) === pid ? 'process' : 'thread'
+}
+
 /** /proc/net/tcp and tcp6 list listening sockets (state 0A) by inode; /proc/<pid>/fd links to the process's own. */
 function linuxListeners(port: number, pid: number): Listeners {
   const inodes = new Set<string>()
@@ -63,6 +81,10 @@ function linuxListeners(port: number, pid: number): Listeners {
     return 'unknown'
   }
   if (inodes.size === 0) return 'none'
+  // Something listens. An id with no process, or a thread's id, owns none of it.
+  const kind = linuxProcess(pid)
+  if (kind === 'missing' || kind === 'thread') return 'others'
+  if (kind === 'unknown') return 'unknown'
   const own = new Set<string>()
   try {
     for (const fd of readdirSync(`/proc/${String(pid)}/fd`)) {

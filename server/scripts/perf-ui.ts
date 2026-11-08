@@ -8,12 +8,12 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { parseArgs } from 'node:util'
 
 import { calculatePositions } from '../src/domain/position.ts'
-import { compareTrades, DEFAULT_TRADE_SORT } from '../src/domain/trade-query.ts'
+import { compareTrades, DEFAULT_TRADE_SORT, type TradeSort, type TradeSortField } from '../src/domain/trade-query.ts'
 import type { Trade } from '../src/domain/trade.ts'
 import { defaultRunDir, processStatus, readState, REPOSITORY_ROOT } from './lifecycle.ts'
 import {
-  BenchmarkError, count, findManagedApi, grouped, managedUrl, mib, ms, readSnapshot, responseDifference, SCENARIOS, statistics, table, writeJson,
-  type ManagedApi, type Scenario, type Snapshot, type Stats,
+  BenchmarkError, count, expectedDifference, expectedResponse, findManagedApi, grouped, managedUrl, mib, ms, readSnapshot, SCENARIOS, statistics, table,
+  writeJson, type ManagedApi, type Scenario, type Snapshot, type Stats,
 } from './perf-api.ts'
 import { listenersOnPort, processesMemory } from './process-probe.ts'
 import { DEFAULT_PROTECTION, TargetError, type Protection } from './trade-data.ts'
@@ -27,16 +27,18 @@ import { DEFAULT_PROTECTION, TargetError, type Protection } from './trade-data.t
  * load always runs, as it opens the page.
  *
  * Measures the built frontend in headless Chrome, on the API and frontend that app:start started
- * on the selected database: loading the page with every trade, searching, filtering, clearing,
- * sorting, scrolling and typing, through the page's own controls. Chrome is driven over the
+ * on the selected database: loading the first page, paging with Previous and Next, choosing the
+ * page size, sorting by column header, searching, filtering, clearing and typing, through the
+ * page's own controls. Chrome is driven over the
  * DevTools protocol on Node.js built-ins (WebSocket); it runs with its own temporary profile and is
  * closed at the end. Nothing is booked, seeded or cleared; the trades are checked unchanged at the
  * end.
  *
- * An action is done when the page shows the expected rows, in the expected order (checked against
- * the database), with no update in progress, and the browser has produced the next frame. Times are
+ * An action is done when a GET /trades/page request made after it has finished, the table shows the
+ * expected page (rows checked against the database, in order) and both pagers its position, with no
+ * update in progress, and the browser has produced the next frame. Times are
  * read in the page, from the browser's own clocks: Resource Timing for the request, Long Tasks for
- * main-thread blocking, Event Timing and animation frames for input and scrolling.
+ * main-thread blocking, Event Timing and animation frames for typing.
  */
 
 export const DEFAULT_UI_WARMUP = 2
@@ -45,8 +47,6 @@ const DEFAULT_TIMEOUT_SECONDS = 180
 const DEFAULT_MAX_HEAP_MB = 4096
 const VIEWPORT = { width: 1280, height: 900 }
 const TIME_ZONE = 'America/New_York'
-const SCROLL_DISTANCE = 20_000
-const SCROLL_SPEED = 4_000
 
 // ---------------------------------------------------------------------------------------------
 // Chrome
@@ -276,10 +276,16 @@ const PAGE_HELPERS = String.raw`(() => {
     const section = blotter()
     if (!section || section.querySelector('.table-scroll[aria-busy="true"]')) return false
     if (statuses(section).some((text) => /Loading trades|Updating trades/.test(text))) return false
-    if (fetched('/trades', since).length === 0) return false
+    if (fetched('/trades/page', since).length === 0) return false
     const body = section.querySelector('table tbody')
     return (body ? body.rows.length : 0) === rows
   }
+  /** Both pagers show this position, such as "Page 2 of 500". */
+  perf.pagerShows = (position) => {
+    const pagers = [...(blotter()?.querySelectorAll('nav.pager .pager-position') ?? [])].map((e) => e.textContent.trim())
+    return pagers.length === 2 && pagers.every((text) => text === position)
+  }
+  perf.pagerPositions = () => [...(blotter()?.querySelectorAll('nav.pager .pager-position') ?? [])].map((e) => e.textContent.trim())
   perf.positionsShown = (rows) => {
     const section = document.querySelector('section[aria-labelledby="positions-heading"]')
     if (!section || statuses(section).some((text) => /Loading positions/.test(text))) return false
@@ -439,44 +445,74 @@ interface Controls {
   readonly side?: '' | 'Buy' | 'Sell'
   readonly fromDate?: string
   readonly toDate?: string
-  readonly sortBy?: string
-  readonly sortDirection?: string
 }
 
-/** A scenario; id is how --scenarios names it. */
-export type UiScenario = { readonly id: string } & (
-  | { readonly kind: 'load'; readonly name: string }
-  | { readonly kind: 'apply'; readonly name: string; readonly controls: Controls; readonly expected: string }
-  | { readonly kind: 'clear'; readonly name: string; readonly from: Controls }
-  | { readonly kind: 'scroll'; readonly name: string }
-  | { readonly kind: 'jump'; readonly name: string }
-  | { readonly kind: 'typing'; readonly name: string; readonly text: string }
+/** Each sortable column header's position among the table's columns, counting from 1. */
+const COLUMN = { symbol: 1, quantity: 3, price: 4, executedAt: 6 } as const
+
+/**
+ * A scenario; id is how --scenarios names it. `filter` names the perf:api scenario with the same
+ * query, whose definition gives the trades that match.
+ */
+export type UiScenario = { readonly id: string; readonly name: string } & (
+  | { readonly kind: 'load' }
+  | { readonly kind: 'apply'; readonly controls: Controls; readonly filter: string }
+  | { readonly kind: 'clear'; readonly from: Controls; readonly filter: string }
+  | { readonly kind: 'sort'; readonly field: TradeSortField; readonly clicks: 1 | 2 }
+  | { readonly kind: 'next'; readonly controls?: Controls; readonly filter?: string }
+  | { readonly kind: 'previous' }
+  | { readonly kind: 'size'; readonly size: 25 | 100 }
+  | { readonly kind: 'typing'; readonly text: string }
 )
 
-/** The API benchmark's scenario of this name: the same query, so both describe the same results. */
+/** The API benchmark's trade scenario of this name: the same query, so both describe the same results. */
 function apiScenario(name: string): Extract<Scenario, { kind: 'trades' }> {
   const scenario = SCENARIOS.find((candidate) => candidate.name === name)
   if (scenario?.kind !== 'trades') throw new Error(`No trade scenario named ${name}.`)
   return scenario
 }
 
+/** What the list shows: the applied filters (a perf:api scenario's name), the sort, the page and the page size. */
+export interface View {
+  readonly filter: string | undefined
+  readonly sort: TradeSort
+  readonly page: number
+  readonly pageSize: number
+}
+
+/** The list as the page opens: every trade, newest first, page 1 of 50. */
+export const DEFAULT_VIEW: View = Object.freeze({ filter: undefined, sort: DEFAULT_TRADE_SORT, page: 1, pageSize: 50 })
+
+/**
+ * The sort after choosing a column header, as the page does it: the active column reverses;
+ * another starts ascending, or newest first for the execution date.
+ */
+export function sortAfterClick(sort: TradeSort, field: TradeSortField): TradeSort {
+  if (sort.field === field) return { field, direction: sort.direction === 'asc' ? 'desc' : 'asc' }
+  return { field, direction: field === 'executedAt' ? 'desc' : 'asc' }
+}
+
 export const UI_SCENARIOS: readonly UiScenario[] = [
-  { id: 'load', kind: 'load', name: 'Initial page load (every trade)' },
-  { id: 'search', kind: 'apply', name: 'Search "ms"', controls: { symbol: 'ms' }, expected: 'Symbol search "ms"' },
-  { id: 'buy', kind: 'apply', name: 'Side Buy', controls: { side: 'Buy' }, expected: 'Side Buy' },
-  { id: 'sell', kind: 'apply', name: 'Side Sell', controls: { side: 'Sell' }, expected: 'Side Sell' },
+  { id: 'load', kind: 'load', name: 'Initial page load (page 1 of 50, newest first)' },
+  { id: 'next', kind: 'next', name: 'Next page (1 to 2)' },
+  { id: 'previous', kind: 'previous', name: 'Previous page (2 to 1)' },
+  { id: 'size-100', kind: 'size', size: 100, name: '100 trades per page' },
+  { id: 'size-25', kind: 'size', size: 25, name: '25 trades per page' },
+  { id: 'price-asc', kind: 'sort', field: 'price', clicks: 1, name: 'Price header: ascending' },
+  { id: 'price-desc', kind: 'sort', field: 'price', clicks: 2, name: 'Price header again: descending' },
+  { id: 'quantity-asc', kind: 'sort', field: 'quantity', clicks: 1, name: 'Quantity header: ascending' },
+  { id: 'symbol-asc', kind: 'sort', field: 'symbol', clicks: 1, name: 'Symbol header: ascending' },
+  { id: 'executed-asc', kind: 'sort', field: 'executedAt', clicks: 1, name: 'Executed at header: oldest first' },
+  { id: 'search', kind: 'apply', name: 'Search "ms"', controls: { symbol: 'ms' }, filter: 'Symbol search "ms"' },
+  { id: 'buy', kind: 'apply', name: 'Side Buy', controls: { side: 'Buy' }, filter: 'Side Buy' },
+  { id: 'sell', kind: 'apply', name: 'Side Sell', controls: { side: 'Sell' }, filter: 'Side Sell' },
   {
     id: 'combined', kind: 'apply', name: '"ms" + Sell + 2025-07-01 to 2026-06-30', controls: { symbol: 'ms', side: 'Sell', fromDate: '2025-07-01', toDate: '2026-06-30' },
-    expected: '"ms" + Sell + 2025-07-01 to 2026-06-30',
+    filter: '"ms" + Sell + 2025-07-01 to 2026-06-30',
   },
-  { id: 'clear', kind: 'clear', name: 'Clear (from "ms") to every trade', from: { symbol: 'ms' } },
-  { id: 'price-asc', kind: 'apply', name: 'Sort by price asc', controls: { sortBy: 'price', sortDirection: 'asc' }, expected: 'Sort by price asc' },
-  { id: 'price-desc', kind: 'apply', name: 'Sort by price desc', controls: { sortBy: 'price', sortDirection: 'desc' }, expected: 'Sort by price desc' },
-  { id: 'quantity-asc', kind: 'apply', name: 'Sort by quantity asc', controls: { sortBy: 'quantity', sortDirection: 'asc' }, expected: 'Sort by quantity asc' },
-  { id: 'quantity-desc', kind: 'apply', name: 'Sort by quantity desc', controls: { sortBy: 'quantity', sortDirection: 'desc' }, expected: 'Sort by quantity desc' },
-  { id: 'scroll', kind: 'scroll', name: `Scroll ${grouped(SCROLL_DISTANCE)} px (mouse wheel, ${grouped(SCROLL_SPEED)} px/s)` },
-  { id: 'jump', kind: 'jump', name: 'Jump to the end (End key)' },
-  { id: 'typing', kind: 'typing', name: 'Typing "MSFT" in Symbol, every trade shown', text: 'MSFT' },
+  { id: 'next-buy', kind: 'next', name: 'Next page of side Buy (1 to 2)', controls: { side: 'Buy' }, filter: 'Side Buy' },
+  { id: 'clear', kind: 'clear', name: 'Clear (from "ms") to every trade', from: { symbol: 'ms' }, filter: 'Symbol search "ms"' },
+  { id: 'typing', kind: 'typing', name: 'Typing "MSFT" in Symbol, a page shown', text: 'MSFT' },
 ]
 
 /**
@@ -500,10 +536,18 @@ function signature(trades: readonly Trade[]): { rows: number; sha256: string } {
   return { rows: trades.length, sha256: createHash('sha256').update(text).digest('hex') }
 }
 
-function expectedTrades(snapshot: Snapshot, name: string | undefined): Trade[] {
-  if (name === undefined) return [...snapshot.trades].sort(compareTrades(DEFAULT_TRADE_SORT))
-  const scenario = apiScenario(name)
-  return snapshot.trades.filter(scenario.matches).sort(compareTrades(scenario.sort))
+/** What the page must show for a view: the page's trades (hashed), both pagers' position, and how many trades match. */
+export interface ExpectedPage {
+  readonly rows: number
+  readonly sha256: string
+  readonly position: string
+  readonly matched: number
+}
+
+export function expectedPage(snapshot: Snapshot, view: View): ExpectedPage {
+  const matching = (view.filter === undefined ? [...snapshot.trades] : snapshot.trades.filter(apiScenario(view.filter).matches)).sort(compareTrades(view.sort))
+  const shown = matching.slice((view.page - 1) * view.pageSize, view.page * view.pageSize)
+  return { ...signature(shown), position: `Page ${grouped(view.page)} of ${grouped(Math.ceil(matching.length / view.pageSize))}`, matched: matching.length }
 }
 
 /** One measured action. Fields that could not be measured are absent, never estimated. */
@@ -527,10 +571,6 @@ export interface UiSample {
   readonly styleMs: number
   readonly layoutMs: number
   readonly taskMs: number
-  /** Scrolling: animation frames produced, and the longest gap between two. */
-  readonly frames?: number
-  readonly longestFrameMs?: number
-  readonly framesOver50Ms?: number
   /** Typing: the longest event duration Event Timing reported (only events of 16 ms or more are reported). */
   readonly longestEventMs?: number
 }
@@ -590,7 +630,7 @@ export interface UiBenchmarkResult {
   readonly measuredIterations: number
   readonly method: Readonly<Record<string, string>>
   readonly scenarios: readonly UiScenarioResult[]
-  /** The frontend's exact-decimal parser and JSON.parse, in the page, on the full trade list. */
+  /** The frontend's exact-decimal parser and JSON.parse, in the page, on a page of 100 trades. */
   readonly parsing: { readonly responseBytes: number; readonly frontendParserMs: Stats; readonly jsonParseMs: Stats; readonly source: string }
   readonly memory: { readonly afterLoad: PageMemory; readonly afterScenarios: PageMemory }
   readonly consoleErrors: readonly string[]
@@ -599,16 +639,20 @@ export interface UiBenchmarkResult {
 
 export const UI_METHOD: Readonly<Record<string, string>> = {
   browser: `headless Chrome, its own temporary profile, ${String(VIEWPORT.width)}x${String(VIEWPORT.height)} at 1x, time zone ${TIME_ZONE}, no throttling`,
-  input: 'the page\'s own controls: real mouse clicks on Apply and Clear, real key presses (DevTools Input); selects and dates are set and their change/input events fired',
-  done: 'the trade table shows the expected number of rows, loaded by a request made after the action, with no update in progress; then the next animation frame (resolution: one frame)',
-  validation: 'after each run, the shown rows (symbol, side, executedAt, in order) are hashed and compared with the database; any difference stops the benchmark',
+  input: 'the page\'s own controls: real mouse clicks on Apply, Clear, Previous, Next and the column headers, real key presses (DevTools Input); ' +
+    'filter inputs and selects, the page-size select included, are set and their change/input events fired',
+  done: 'a GET /trades/page request made after the action has finished, the table shows the expected page, both pagers show its position ' +
+    '("Page 2 of 500"), and no update is in progress; then the next animation frame (resolution: one frame)',
+  validation: 'after each run, the shown rows (symbol, side, executedAt, in order) are hashed and compared with the page computed from the database ' +
+    'with the domain\'s order, and both pagers\' positions with the expected one; any difference stops the benchmark',
+  view: 'before every run the list is put back as it opens (Clear, then 50 a page); that is not measured',
   clock: 'the page\'s performance.now() (monotonic); the request parts come from Resource Timing of the same request',
   breakdown: 'before request, waiting (proxy and API), transfer and after response are measured; parsing, exact-decimal conversion, Vue and rendering ' +
     'cannot be separated without changing the application, so after response is their sum; parsing alone is measured separately in the page',
   mainThread: 'script, style, layout and task time from Chrome\'s Performance.getMetrics, differences across the run (the page\'s renderer)',
   longTasks: 'Long Tasks API (tasks of 50 ms or more) overlapping the run',
-  initialLoad: 'a new browser context for each run (empty cache), from navigation start until every trade and every position is shown',
-  scroll: 'mouse-wheel scroll gesture from the top; frames are animation frames on the main thread',
+  initialLoad: 'a new browser context for each run (empty cache), from navigation start until the first page and every position are shown',
+  retired: 'scrolling and the End key were measured while the table showed every trade; with one page shown they measure nothing of interest, and are gone',
   typing: 'each key press until the second animation frame after it; Event Timing reports only events of 16 ms or more',
   statistics: 'minimum, median and maximum of the measured runs; with this few runs no tail percentile is meaningful, so none is reported',
 }
@@ -651,16 +695,16 @@ async function text(url: URL): Promise<{ status: number; body: string }> {
   return { status: response.status, body: await response.text() }
 }
 
-/** The frontend is the production build, and through its proxy serves exactly the database's trades. */
+/** The frontend is the production build, and through its proxy serves exactly the database's first page of trades. */
 async function checkFrontend(app: ManagedApplication, snapshot: Snapshot): Promise<void> {
   const page = await text(app.webUrl)
   if (page.status !== 200 || !page.body.includes('<title>Trade Blotter</title>')) throw new TargetError(`${app.webUrl.origin} is not the Trade Blotter frontend.`)
   if (page.body.includes('/@vite/client') || !/<script[^>]+src="\/assets\/[^"]+\.js"/.test(page.body)) {
     throw new TargetError(`${app.webUrl.origin} serves the development frontend, not the production build. Use npm run build and app:start.`)
   }
-  const trades = await text(new URL('/trades', app.webUrl))
-  const expected = expectedTrades(snapshot, undefined).map((t) => ({ id: t.id, bookingSequence: t.bookingSequence }))
-  const problem = trades.status === 200 ? responseDifference(trades.body, expected) : `status ${String(trades.status)}`
+  const expected = expectedResponse({ kind: 'page', name: 'first page', query: {}, matches: () => true, sort: DEFAULT_TRADE_SORT, pageSize: 100, at: 'first' }, snapshot)
+  const trades = await text(new URL('/trades/page?page=1&pageSize=100', app.webUrl))
+  const problem = trades.status === 200 ? expectedDifference(trades.body, expected) : `status ${String(trades.status)}`
   if (problem !== undefined) {
     throw new TargetError(`The frontend at ${app.webUrl.origin} does not serve the trades in ${app.api.databasePath} (${problem}). Nothing was measured.`)
   }
@@ -732,7 +776,7 @@ export async function runUiBenchmark(app: ManagedApplication, options: UiOptions
   const before = await readSnapshot(app.api.databasePath)
   await checkFrontend(app, before)
   const parser = frontendParserSource()
-  const all = signature(expectedTrades(before, undefined))
+  const first = expectedPage(before, DEFAULT_VIEW)
   const openPositions = calculatePositions(before.trades).length
 
   const browser = await Browser.launch(findChrome(options.chrome), maxHeapMb)
@@ -761,11 +805,15 @@ export async function runUiBenchmark(app: ManagedApplication, options: UiOptions
       const used = metrics['JSHeapUsedSize'] ?? 0
       if (used > maxHeapMb * 2 ** 20) throw new BenchmarkError(`The page's JavaScript heap reached ${mib(used)}, over --max-heap-mb ${String(maxHeapMb)}; stopped.`)
     }
-    const verify = async (target: Page, expected: { rows: number; sha256: string }, label: string): Promise<void> => {
+    const verify = async (target: Page, expected: ExpectedPage, label: string): Promise<void> => {
       const shown = await target.evaluate<{ rows: number; sha256: string }>('window.__tradeBlotterPerf.signature()', timeoutMs)
       if (shown.rows !== expected.rows || shown.sha256 !== expected.sha256) {
         throw new BenchmarkError(`${label}: the page shows ${grouped(shown.rows)} trades${shown.rows === expected.rows ? ' in another order or with other values' : ''}; ` +
           `expected ${grouped(expected.rows)}. No result was recorded.`)
+      }
+      const positions = await target.evaluate<string[]>('window.__tradeBlotterPerf.pagerPositions()')
+      if (positions.length !== 2 || positions.some((position) => position !== expected.position)) {
+        throw new BenchmarkError(`${label}: the pagers show ${JSON.stringify(positions)}; expected "${expected.position}" in both. No result was recorded.`)
       }
     }
     const tasksIn = async (target: Page, from: number, to: number): Promise<{ count: number; total: number; longest: number }> => {
@@ -812,7 +860,8 @@ export async function runUiBenchmark(app: ManagedApplication, options: UiOptions
       page = await Page.open(browser)
       const target = page
       await target.send('Page.addScriptToEvaluateOnNewDocument', {
-        source: `window.__tradeBlotterPerf.loaded = window.__tradeBlotterPerf.when(() => window.__tradeBlotterPerf.tradesShown(${String(all.rows)}, 0) && ` +
+        source: `window.__tradeBlotterPerf.loaded = window.__tradeBlotterPerf.when(() => window.__tradeBlotterPerf.tradesShown(${String(first.rows)}, 0) && ` +
+          `window.__tradeBlotterPerf.pagerShows(${JSON.stringify(first.position)}) && ` +
           `window.__tradeBlotterPerf.positionsShown(${String(openPositions)}), ${String(timeoutMs)})`,
       })
       await target.send('Page.navigate', { url: app.webUrl.href })
@@ -823,8 +872,8 @@ export async function runUiBenchmark(app: ManagedApplication, options: UiOptions
         await sleep(20)
       }
       const doneAt = await target.evaluate<number>('window.__tradeBlotterPerf.loaded', timeoutMs + 10_000)
-      await verify(target, all, `Initial load, run ${String(run + 1)}`)
-      const fetchTiming = await target.evaluate<FetchTiming | undefined>('window.__tradeBlotterPerf.lastFetch("/trades")')
+      await verify(target, first, `Initial load, run ${String(run + 1)}`)
+      const fetchTiming = await target.evaluate<FetchTiming | undefined>('window.__tradeBlotterPerf.lastFetch("/trades/page")')
       const tasks = await tasksIn(target, 0, doneAt)
       const metrics = await target.metrics()
       await guard(target)
@@ -847,18 +896,17 @@ export async function runUiBenchmark(app: ManagedApplication, options: UiOptions
     loaded.memory = afterLoad
     const loadScenario = scenarios.find((s) => s.kind === 'load')
     if (loadScenario !== undefined) {
-      record(summarise(loadScenario, runId, all.rows, warmup, loads, ['before request: navigation start until the request for trades started (HTML, scripts, Vue start-up)']))
+      record(summarise(loadScenario, runId, first.matched, warmup, loads, ['before request: navigation start until the request for the first page started (HTML, scripts, Vue start-up)']))
     }
 
     // The page's controls. Setting a value fires the event its v-model listens to.
     const setControls = async (controls: Controls): Promise<void> => {
       const values: Record<string, string> = {
-        'filter-symbol': controls.symbol ?? '', 'filter-side': controls.side ?? '', 'filter-from-date': controls.fromDate ?? '',
-        'filter-to-date': controls.toDate ?? '', 'filter-sort-by': controls.sortBy ?? 'executedAt', 'filter-sort-direction': controls.sortDirection ?? 'desc',
+        'filter-symbol': controls.symbol ?? '', 'filter-side': controls.side ?? '', 'filter-from-date': controls.fromDate ?? '', 'filter-to-date': controls.toDate ?? '',
       }
       await target.evaluate(`(() => {
         const values = ${JSON.stringify(values)}
-        for (const id of ['filter-symbol', 'filter-side', 'filter-from-date', 'filter-to-date', 'filter-sort-by', 'filter-sort-direction']) {
+        for (const id of Object.keys(values)) {
           const element = document.getElementById(id)
           if (element.value === values[id]) continue
           element.value = values[id]
@@ -872,14 +920,17 @@ export async function runUiBenchmark(app: ManagedApplication, options: UiOptions
       }
       await target.evaluate('window.__tradeBlotterPerf.nextFrame()')
     }
-    let showing: 'all' | 'other' = 'all'
-    /** Runs an action and waits until the table shows `expected`. */
-    const measure = async (action: () => Promise<void>, expected: { rows: number; sha256: string }, label: string): Promise<UiSample> => {
+    let view: View = DEFAULT_VIEW
+    /** Runs an action and waits until the page shows `next`, checked against the database. */
+    const measure = async (action: () => Promise<void>, next: View, label: string): Promise<UiSample> => {
+      const expected = expectedPage(before, next)
+      if (expected.rows === 0 && next.page > 1) throw new BenchmarkError(`${label}: the data has no page ${String(next.page)}; this scenario needs more trades.`)
       await target.evaluate('performance.clearResourceTimings(); window.__tradeBlotterPerf.clicks.length = 0; window.scrollTo(0, 0); window.__tradeBlotterPerf.nextFrame()')
       const since = await target.evaluate<number>('performance.now()')
       const metricsBefore = await target.metrics()
       const done = target.evaluate<number>(
-        `window.__tradeBlotterPerf.when(() => window.__tradeBlotterPerf.tradesShown(${String(expected.rows)}, ${String(since)}), ${String(timeoutMs)})`, timeoutMs + 10_000)
+        `window.__tradeBlotterPerf.when(() => window.__tradeBlotterPerf.tradesShown(${String(expected.rows)}, ${String(since)}) && ` +
+        `window.__tradeBlotterPerf.pagerShows(${JSON.stringify(expected.position)}), ${String(timeoutMs)})`, timeoutMs + 10_000)
       await action()
       let doneAt: number
       try {
@@ -889,8 +940,9 @@ export async function runUiBenchmark(app: ManagedApplication, options: UiOptions
       }
       const metricsAfter = await target.metrics()
       await verify(target, expected, label)
+      view = next
       const clickAt = (await target.evaluate<number[]>('window.__tradeBlotterPerf.clicks')).at(-1) ?? since
-      const fetchTiming = await target.evaluate<FetchTiming | undefined>('window.__tradeBlotterPerf.lastFetch("/trades")')
+      const fetchTiming = await target.evaluate<FetchTiming | undefined>('window.__tradeBlotterPerf.lastFetch("/trades/page")')
       const tasks = await tasksIn(target, clickAt, doneAt)
       await guard(target)
       return {
@@ -903,84 +955,59 @@ export async function runUiBenchmark(app: ManagedApplication, options: UiOptions
         longTasks: tasks.count, longTaskTotalMs: tasks.total, longestTaskMs: tasks.longest, ...mainThread(metricsBefore, metricsAfter),
       }
     }
-    const showAll = async (): Promise<void> => {
-      if (showing === 'all') return
-      await measure(async () => { await target.click('.trade-filters button[type="button"]') }, all, 'Clear')
-      showing = 'all'
+    const click = (selector: string) => async (): Promise<void> => { await target.click(selector) }
+    const APPLY = '.trade-filters button[type="submit"]'
+    const CLEAR = '.trade-filters button[type="button"]'
+    // The upper pager; the lower one is the same component and stays in step (checked by verify).
+    const PREVIOUS = 'nav.pager .pager-controls > button:nth-of-type(1)'
+    const NEXT = 'nav.pager .pager-controls > button:nth-of-type(2)'
+    const headerButton = (field: TradeSortField): string => `section[aria-labelledby="blotter-heading"] thead th:nth-child(${String(COLUMN[field])}) button`
+    /** Chooses a page size in the upper pager's select; the time of the choice counts as the click. */
+    const chooseSize = (size: number) => async (): Promise<void> => {
+      await target.evaluate(`(() => { const select = document.querySelector('nav.pager select')
+        window.__tradeBlotterPerf.clicks.push(performance.now()); select.value = '${String(size)}'
+        select.dispatchEvent(new Event('change', { bubbles: true })) })()`)
+    }
+    /** Back to the list as it opens: Clear (filters, sort and page), then 50 a page. Not measured. */
+    const reset = async (): Promise<void> => {
+      const sorted = view.sort.field !== DEFAULT_TRADE_SORT.field || view.sort.direction !== DEFAULT_TRADE_SORT.direction
+      if (view.filter !== undefined || sorted || view.page !== 1) {
+        await setControls({})
+        await measure(click(CLEAR), { ...DEFAULT_VIEW, pageSize: view.pageSize }, 'Clear (between runs)')
+      }
+      if (view.pageSize !== DEFAULT_VIEW.pageSize) await measure(chooseSize(DEFAULT_VIEW.pageSize), DEFAULT_VIEW, '50 a page (between runs)')
     }
 
     for (const scenario of scenarios) {
+      if (scenario.kind === 'load') continue
       const samples: UiSample[] = []
       const notes: string[] = []
-      let matched: number | undefined
       for (let run = 0; run < warmup + iterations; run++) {
         const label = `${scenario.name}, run ${String(run + 1)}`
         let sample: UiSample | undefined
-        if (scenario.kind === 'load') break
+        await reset()
         if (scenario.kind === 'apply') {
-          const expected = signature(expectedTrades(before, scenario.expected))
-          matched = expected.rows
-          await showAll()
           await setControls(scenario.controls)
-          sample = await measure(async () => { await target.click('.trade-filters button[type="submit"]') }, expected, label)
-          showing = 'other'
+          sample = await measure(click(APPLY), { ...DEFAULT_VIEW, filter: scenario.filter }, label)
         } else if (scenario.kind === 'clear') {
-          matched = all.rows
-          await showAll()
           await setControls(scenario.from)
-          await measure(async () => { await target.click('.trade-filters button[type="submit"]') }, signature(expectedTrades(before, 'Symbol search "ms"')), `${label} (setup)`)
-          showing = 'other'
-          sample = await measure(async () => { await target.click('.trade-filters button[type="button"]') }, all, label)
-          showing = 'all'
-        } else if (scenario.kind === 'scroll') {
-          await showAll()
-          await target.evaluate('window.scrollTo(0, 0); window.__tradeBlotterPerf.nextFrame()')
-          const distance = Math.min(SCROLL_DISTANCE, await target.evaluate<number>('document.documentElement.scrollHeight - innerHeight'))
-          matched = all.rows
-          if (run === 0) notes.push(`scrolled ${grouped(Math.round(distance))} px of ${grouped(await target.evaluate<number>('document.documentElement.scrollHeight'))} px`)
-          const metricsBefore = await target.metrics()
-          await target.evaluate(`(() => { const p = window.__tradeBlotterPerf; p.frames = []; p.recording = true
-            const record = (t) => { p.frames.push(t); if (p.recording) requestAnimationFrame(record) }; requestAnimationFrame(record) })()`)
-          await target.send('Input.synthesizeScrollGesture', {
-            x: VIEWPORT.width / 2, y: VIEWPORT.height / 2, yDistance: -distance, speed: SCROLL_SPEED, gestureSourceType: 'mouse',
-          }, timeoutMs)
-          await target.evaluate('window.__tradeBlotterPerf.nextFrame()')
-          const frames = await target.evaluate<number[]>('(() => { const p = window.__tradeBlotterPerf; p.recording = false; return p.frames })()')
-          const metricsAfter = await target.metrics()
-          const gaps = frames.slice(1).map((t, index) => t - (frames[index] ?? t))
-          const first = frames[0] ?? 0
-          const last = frames.at(-1) ?? first
-          const tasks = await tasksIn(target, first, last)
-          sample = {
-            elapsedMs: last - first, frames: frames.length, longestFrameMs: Math.max(0, ...gaps), framesOver50Ms: gaps.filter((gap) => gap > 50).length,
-            longTasks: tasks.count, longTaskTotalMs: tasks.total, longestTaskMs: tasks.longest, ...mainThread(metricsBefore, metricsAfter),
+          await measure(click(APPLY), { ...DEFAULT_VIEW, filter: scenario.filter }, `${label} (setup)`)
+          sample = await measure(click(CLEAR), DEFAULT_VIEW, label)
+        } else if (scenario.kind === 'sort') {
+          if (scenario.clicks === 2) await measure(click(headerButton(scenario.field)), { ...view, sort: sortAfterClick(view.sort, scenario.field), page: 1 }, `${label} (setup)`)
+          sample = await measure(click(headerButton(scenario.field)), { ...view, sort: sortAfterClick(view.sort, scenario.field), page: 1 }, label)
+        } else if (scenario.kind === 'next') {
+          if (scenario.controls !== undefined) {
+            await setControls(scenario.controls)
+            await measure(click(APPLY), { ...DEFAULT_VIEW, filter: scenario.filter }, `${label} (setup)`)
           }
-          await guard(target)
-        } else if (scenario.kind === 'jump') {
-          await showAll()
-          matched = all.rows
-          await target.evaluate('window.scrollTo(0, 0); document.activeElement?.blur(); window.__tradeBlotterPerf.nextFrame()')
-          const metricsBefore = await target.metrics()
-          const keyIndex = await target.evaluate<number>('window.__tradeBlotterPerf.keys.length')
-          // Chrome animates keyboard scrolling: done when the end of the page is on screen.
-          const end = target.evaluate<number>('window.__tradeBlotterPerf.when(() => scrollY + innerHeight >= document.documentElement.scrollHeight - 2, ' +
-            `${String(timeoutMs)})`, timeoutMs + 10_000)
-          await target.key('End', 'End', 35)
-          const [at] = await target.evaluate<[number, number]>(`window.__tradeBlotterPerf.keyAt(${String(keyIndex)})`, timeoutMs)
-          let endAt: number
-          try {
-            endAt = await end
-          } catch (error) {
-            throw new BenchmarkError(`${label}: the End key did not scroll to the end of the page (${error instanceof Error ? error.message : String(error)}).`, { cause: error })
-          }
-          const metricsAfter = await target.metrics()
-          const tasks = await tasksIn(target, at, endAt)
-          sample = { elapsedMs: endAt - at, longTasks: tasks.count, longTaskTotalMs: tasks.total, longestTaskMs: tasks.longest, ...mainThread(metricsBefore, metricsAfter) }
-          if (run === 0) notes.push('key press until the frame after the end of the page is on screen; Chrome animates the scroll')
-          await target.evaluate('window.scrollTo(0, 0); window.__tradeBlotterPerf.nextFrame()')
+          sample = await measure(click(NEXT), { ...view, page: 2 }, label)
+        } else if (scenario.kind === 'previous') {
+          await measure(click(NEXT), { ...view, page: 2 }, `${label} (setup)`)
+          sample = await measure(click(PREVIOUS), { ...view, page: 1 }, label)
+        } else if (scenario.kind === 'size') {
+          sample = await measure(chooseSize(scenario.size), { ...view, page: 1, pageSize: scenario.size }, label)
         } else {
-          await showAll()
-          matched = all.rows
           await target.evaluate(`(() => { const e = document.getElementById('filter-symbol'); e.value = ''; e.dispatchEvent(new Event('input', { bubbles: true })); window.scrollTo(0, 0); e.focus() })()`)
           await target.evaluate('window.__tradeBlotterPerf.events.length = 0; window.__tradeBlotterPerf.nextFrame()')
           const metricsBefore = await target.metrics()
@@ -1009,18 +1036,19 @@ export async function runUiBenchmark(app: ManagedApplication, options: UiOptions
             }
           }
           await setControls({})
+          await verify(target, expectedPage(before, view), `${label} (typing never applies)`)
           await guard(target)
         }
         if (sample !== undefined && run >= warmup) samples.push(sample)
       }
-      if (scenario.kind !== 'load') record(summarise(scenario, runId, matched, warmup, samples, notes))
+      record(summarise(scenario, runId, expectedPage(before, view).matched, warmup, samples, notes))
     }
-    await showAll()
+    await reset()
 
-    // The frontend's own parser on the full list, in the page, apart from everything else.
+    // The frontend's own parser on a full page of 100 trades, in the page, apart from everything else.
     const parsed = await target.evaluate<{ bytes: number; frontend: number[]; native: number[] }>(`(async () => {
       const parse = ${parser}
-      const body = await (await fetch('/trades')).text()
+      const body = await (await fetch('/trades/page?page=1&pageSize=100')).text()
       const frontend = [], native = []
       for (let run = 0; run < ${String(warmup + iterations)}; run++) {
         const start = performance.now(); parse(body); const middle = performance.now(); JSON.parse(body); const end = performance.now()
@@ -1042,7 +1070,7 @@ export async function runUiBenchmark(app: ManagedApplication, options: UiOptions
       scenarios: results,
       parsing: {
         responseBytes: parsed.bytes, frontendParserMs: statistics(parsed.frontend), jsonParseMs: statistics(parsed.native),
-        source: 'parseJsonKeepingNumberText from client/src/api/json.ts, types stripped, run in the page on the full GET /trades response',
+        source: 'parseJsonKeepingNumberText from client/src/api/json.ts, types stripped, run in the page on GET /trades/page?page=1&pageSize=100',
       },
       memory: { afterLoad, afterScenarios },
       consoleErrors: errors,
@@ -1062,7 +1090,7 @@ const msOrNa = (value: number | undefined): string => value === undefined ? 'n/a
 
 export function formatUiResult(result: UiBenchmarkResult): string {
   const env = result.environment
-  const actions = result.scenarios.filter((s) => s.medians.frames === undefined && s.medians.longestEventMs === undefined && !s.name.startsWith('Jump'))
+  const actions = result.scenarios.filter((s) => s.medians.longestEventMs === undefined)
   const memoryRow = (label: string, m: PageMemory): string[] => [
     label, mib(m.jsHeapUsedBytes), mib(m.jsHeapUsedAfterGcBytes), mib(m.jsHeapTotalBytes), grouped(m.domNodes), grouped(m.elements),
     m.chromeProcesses === undefined ? 'n/a' : `${mib(m.chromeProcesses.residentBytes)} (${String(m.chromeProcesses.count)} processes)`,
@@ -1078,7 +1106,7 @@ export function formatUiResult(result: UiBenchmarkResult): string {
     '',
     'Actions (ms; medians of the parts; "after response" = parsing + exact decimals + Vue + layout + paint, not separable):',
     table(
-      ['Scenario', 'Rows', 'Min', 'Median', 'Max', 'Before request', 'Waiting', 'Transfer', 'After response', 'Long tasks', 'Longest task', 'Script', 'Layout', 'Style'],
+      ['Scenario', 'Matching', 'Min', 'Median', 'Max', 'Before request', 'Waiting', 'Transfer', 'After response', 'Long tasks', 'Longest task', 'Script', 'Layout', 'Style'],
       actions.map((s) => [
         s.name, s.matchedRows === undefined ? '-' : grouped(s.matchedRows), ms(s.elapsedMs.min), ms(s.elapsedMs.median), ms(s.elapsedMs.max),
         msOrNa(s.medians.beforeRequestMs), msOrNa(s.medians.waitingMs), msOrNa(s.medians.transferMs), msOrNa(s.medians.afterResponseMs),
@@ -1087,20 +1115,18 @@ export function formatUiResult(result: UiBenchmarkResult): string {
       ]),
     ),
     '',
-    'Scrolling and input (ms):',
+    'Typing (ms):',
     table(
-      ['Scenario', 'Samples', 'Min', 'Median', 'Max', 'Frames', 'Longest frame', 'Frames > 50 ms', 'Longest event', 'Longest task'],
+      ['Scenario', 'Samples', 'Min', 'Median', 'Max', 'Longest event', 'Longest task'],
       result.scenarios.filter((s) => !actions.includes(s)).map((s) => [
         s.name, String(s.measuredIterations), ms(s.elapsedMs.min), ms(s.elapsedMs.median), ms(s.elapsedMs.max),
-        s.medians.frames === undefined ? '-' : String(Math.round(s.medians.frames)), msOrNa(s.medians.longestFrameMs),
-        s.medians.framesOver50Ms === undefined ? '-' : String(Math.round(s.medians.framesOver50Ms)),
-        s.medians.longestEventMs === undefined ? '-' : (Math.max(...s.samples.map((x) => x.longestEventMs ?? 0)) < 16 ? '< 16' : ms(Math.max(...s.samples.map((x) => x.longestEventMs ?? 0)))),
+        Math.max(...s.samples.map((x) => x.longestEventMs ?? 0)) < 16 ? '< 16' : ms(Math.max(...s.samples.map((x) => x.longestEventMs ?? 0))),
         ms(Math.max(...s.samples.map((x) => x.longestTaskMs))),
       ]),
     ),
     ...result.scenarios.flatMap((s) => s.notes.map((note) => `  ${s.name}: ${note}`)),
     '',
-    `Parsing the full trade list (${grouped(result.parsing.responseBytes)} bytes) in the page, apart from rendering: frontend exact-decimal parser median ` +
+    `Parsing a page of 100 trades (${grouped(result.parsing.responseBytes)} bytes) in the page, apart from rendering: frontend exact-decimal parser median ` +
       `${ms(result.parsing.frontendParserMs.median)} ms (min ${ms(result.parsing.frontendParserMs.min)}, max ${ms(result.parsing.frontendParserMs.max)}); ` +
       `JSON.parse median ${ms(result.parsing.jsonParseMs.median)} ms.`,
     '',
