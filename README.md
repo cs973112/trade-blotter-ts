@@ -16,11 +16,14 @@ the JSON request to the database and back.
 - [Getting started](#getting-started)
 - [Database](#database)
 - [Running the application](#running-the-application)
+- [Reviewer workflow: review:01 to review:07](#reviewer-workflow-review01-to-review07)
 - [Test-drive search, filters and sorting](#test-drive-search-filters-and-sorting)
+- [Browser checklist](#browser-checklist)
 - [Build and test](#build-and-test)
 - [API](#api)
 - [Position accounting](#position-accounting)
 - [Architecture](#architecture)
+- [Performance](#performance)
 - [Platform support](#platform-support)
 - [Known limitations](#known-limitations)
 - [Dependency advisories](#dependency-advisories)
@@ -30,12 +33,18 @@ the JSON request to the database and back.
 
 - **Book trades** with a symbol, a side (Buy or Sell), a quantity, a price and an optional
   execution time. Invalid input is reported field by field, with every problem shown at once.
-- **Trade blotter:** every trade, newest execution first, with its notional and three
-  timestamps: when it was executed, created and last updated. Times are shown in your time zone
-  with their UTC offset; the exact UTC value is in the tooltip.
-- **Search, filter and sort the blotter:** by all or part of a symbol, by side, and by a range of
-  execution dates in your time zone (daylight-saving days included exactly); sort by execution
-  date, symbol, quantity or price, either way. Positions always cover every trade.
+- **Trade blotter, one page at a time:** newest execution first, 50 trades a page (25 or 100 on
+  request), with Previous and Next above and below the table, the page position and the range
+  ("51–100 of 25,000 trades"). Each trade shows its notional and three timestamps: when it was
+  executed, created and last updated. Times are shown in your time zone with their UTC offset;
+  the exact UTC value is in the tooltip.
+- **Search, filter and sort on the server:** by all or part of a symbol, by side, and by a range
+  of execution dates in your time zone (daylight-saving days included exactly); sort by choosing
+  the Executed at, Symbol, Quantity or Price column header, either way. The API filters, sorts
+  (decimals by exact value), counts and pages; the page never loads the whole history. Positions
+  always cover every trade.
+- **Booking tells you where the trade went:** on this page, on another page, or left out by the
+  filters applied.
 - **Positions** derived from the trade history: long or short, net quantity and average cost
   per symbol, shown with every digit the server returns.
 - **Exact decimals:** values are read from the JSON source text, calculated with `decimal.js`,
@@ -47,6 +56,9 @@ the JSON request to the database and back.
   recreates a database. A trade that would breach the position limit is refused inside the same
   transaction that would store it.
 - **Documented API:** OpenAPI 3.1 with Swagger UI, and RFC 9457 problem details for errors.
+  `GET /trades/page` serves pages; `GET /trades` still returns every match, unchanged.
+- **Reviewer workflow:** seven short commands set up, seed, start, check, test, benchmark and stop
+  an isolated copy of the application, never touching your own data or other applications.
 - **Responsive frontend** with light and dark themes that follow the system setting.
 
 ## Technology
@@ -66,9 +78,13 @@ There is no database server, Docker image or external service. npm workspaces ho
 
 ## Screenshots
 
-| Desktop | Phone, light theme |
+| Desktop | Phone |
 | --- | --- |
-| ![Positions and trades at 1280 px](docs/verification/screenshots/15-positions-1280.png) | ![Positions on a 375 px screen in the light theme](docs/verification/screenshots/13-narrow-positions-light.png) |
+| ![Positions and page 1 of 500 of 25,000 trades at 1280 px, with a pager above and below the table](docs/verification/screenshots/17-trades-page-1280.png) | ![The trade list's pager and table on a 390 px screen](docs/verification/screenshots/18-trades-page-390.png) |
+
+| Positions on a phone, light theme | |
+| --- | --- |
+| ![Positions on a 375 px screen in the light theme](docs/verification/screenshots/13-narrow-positions-light.png) | ![Positions and trades at 1280 px](docs/verification/screenshots/15-positions-1280.png) |
 
 | Choosing between two occurrences of a local time | API unavailable |
 | --- | --- |
@@ -244,9 +260,11 @@ On Linux and macOS use `db=/tmp/tb-review/seed.db` and `"$db"`.
 
 ### API performance: perf:api
 
-Measures the running API on a seeded database: `GET /trades` unfiltered, with a partial symbol
-search, with each side, with an execution-date range and with all three combined, sorted by each
-field in both directions, and `GET /positions`. In PowerShell:
+Measures the running API on a seeded database, 62 scenarios in all: 14 of `GET /trades` (every
+trade, a partial symbol search, each side, an execution-date range, all three combined, and every
+sort field in both directions), 47 of `GET /trades/page` (the first, a middle and the last page,
+50 and 100 a page, in every sort order, alone and with each filter), and `GET /positions`. In
+PowerShell:
 
 ```powershell
 $db = "$env:TEMP\tb-perf\perf.db"
@@ -284,10 +302,13 @@ stops only its own. On Linux and macOS use `db=/tmp/tb-perf/perf.db` and `"$db"`
   maximum latency, and the API process's memory: the working set on Windows, RSS on Linux and
   macOS, sampled between scenarios, never during a request, with the process's own peak where the
   system records it (not on macOS).
+- **What it does not measure.** It times whole requests; the number of SQL statements and the
+  query plans SQLite chose are not recorded; a slow plan shows only as a slow request.
 - **What it checks.** Every response, warmups included, must be `200 application/json` with the
   same bytes as the first, and the first is compared trade by trade (id, booking sequence, symbol,
   side, quantity, price, notional, executedAt) or position by position with the database, read
-  read-only. Decimals are read from their exact JSON text, as the API reads request bodies, and
+  read-only. A page must hold exactly the trades the database holds at that position, with the
+  right `page`, `pageSize`, `totalCount` and `totalPages`. Decimals are read from their exact JSON text, as the API reads request bodies, and
   compared with the stored values in canonical form. An invalid response stops the run, and nothing is recorded for it. The trades are
   fingerprinted before and after; any change discards the results. It never seeds, clears,
   starts or stops anything.
@@ -300,10 +321,11 @@ stops only its own. On Linux and macOS use `db=/tmp/tb-perf/perf.db` and `"$db"`
 
 ### Browser performance: perf:ui
 
-Measures the built frontend in headless Chrome on the same running applications: loading the page
-with every trade, a partial symbol search, Buy, Sell, the combined filters, Clear, sorting by price
-and by quantity both ways, scrolling a long list, jumping to its end, and typing while every trade
-is shown. In PowerShell, with the applications started on a seeded database as above:
+Measures the built frontend in headless Chrome on the same running applications, 17 scenarios:
+loading the page (page 1 of 50), Next and Previous, 100 and 25 a page, choosing the Price header
+twice and the Quantity, Symbol and Executed at headers, a partial symbol search, Buy, Sell, the
+combined filters, Next with a filter applied, Clear, and typing in Symbol. In PowerShell, with the
+applications started on a seeded database as above:
 
 ```powershell
 npm run perf:ui -- --database $db
@@ -314,9 +336,10 @@ npm run perf:ui:sizes -- --database $db        # 100, 1,000, 10,000 and 25,000 t
 - **Options.** `--database <path>` (required), `--web-url <url>` (default: the frontend started
   with `app:start`), `--warmup <n>` (default 2), `--iterations <n>` (default 5), `--json <file>`,
   `--chrome <path>`, `--timeout <seconds>` for each action (default 180) and `--max-heap-mb <n>`
-  (default 4096), and `--scenarios <ids>` to measure only some of them (`load`, `search`, `buy`,
-  `sell`, `combined`, `clear`, `price-asc`, `price-desc`, `quantity-asc`, `quantity-desc`,
-  `scroll`, `jump`, `typing`; the initial load always runs, as it opens the page).
+  (default 4096), and `--scenarios <ids>` to measure only some of them (`load`, `next`,
+  `previous`, `size-100`, `size-25`, `price-asc`, `price-desc`, `quantity-asc`, `symbol-asc`,
+  `executed-asc`, `search`, `buy`, `sell`, `combined`, `next-buy`, `clear`, `typing`; the initial
+  load always runs, as it opens the page).
   `perf:ui:sizes` takes these and the `perf:api:sizes` options; its results go to
   `.run/perf/ui-<time>/`.
 - **Interrupted runs.** The JSON file (`--json`, or each size's file of `perf:ui:sizes`) is
@@ -342,10 +365,10 @@ npm run perf:ui:sizes -- --database $db        # 100, 1,000, 10,000 and 25,000 t
   exact-decimal conversion, Vue, layout and paint together: they cannot be told apart without
   changing the application), plus long tasks (50 ms or more), and script, style and layout time
   from Chrome. The initial load uses a new browser context each run (empty cache), from navigation
-  start until every trade and every position is shown. Scrolling reports frames and the longest
-  gap between them; typing, each key press until the second frame after it. Separately, the
-  frontend's exact-decimal parser (its source, `client/src/api/json.ts`, run in the page) and
-  `JSON.parse` are timed on the full trade list. Memory: the page's JavaScript heap (before and
+  start until the first page of trades and every position are shown. Typing reports each key
+  press until the second frame after it. Separately, the frontend's exact-decimal parser (its
+  source, `client/src/api/json.ts`, run in the page) and `JSON.parse` are timed on a page of 100
+  trades. Memory: the page's JavaScript heap (before and
   after a forced garbage collection), DOM nodes, and the resident memory of every Chrome process,
   summed. Console errors and page crashes are reported.
 - **What it checks.** The same as perf:api for the database and the API, and also that the
@@ -375,6 +398,60 @@ a message naming the variable.
 
 There are no secrets and no `.env` files. Examples for each shell, port changes and
 troubleshooting are in the [setup guide](docs/setup.md).
+
+## Reviewer workflow: review:01 to review:07
+
+Seven short commands check a clone end to end: the same on Windows PowerShell and Linux, run from
+the repository root after `npm ci`, with no paths, ports or options to type. Everything they
+create stays in `.run/review/` (ignored by Git). They never open your development database, and
+they stop only the applications they started.
+
+```powershell
+npm run review:01   # setup
+npm run review:02   # seed
+npm run review:03   # start
+npm run review:04   # functional checks
+npm run review:05   # lint, typecheck, build, tests, schema check
+npm run review:06   # performance
+npm run review:07   # stop
+```
+
+| Command | What it does | Expected (Windows 11, from a clean `.run/review/`) |
+| --- | --- | --- |
+| `review:01` | Checks Node.js 22.23.1, npm, every installed package against `package-lock.json`, SQLite and the four ports; looks for Chrome or Chromium; creates and migrates `benchmark.db` and `scratch.db`; fingerprints the development database | 13 PASS, 4 s |
+| `review:02` | Seeds 25,000 benchmark trades and 120 scratch trades, or recognises them, row by row | 2 PASS, 13 s |
+| `review:03` | Builds if anything is missing or older than its sources; starts the benchmark pair (API 5391, frontend 4191) and the scratch pair (API 5392, frontend 4192) and confirms both | 3 PASS, 19 s |
+| `review:04` | 52 functional checks against the running applications, each compared with the database: `GET /trades` unchanged, pages, sizes, sorts, exact decimals, ties, filters, invalid parameters, positions, the frontends, bookings on a throwaway database | 52 PASS, 23 s |
+| `review:05` | `lint`, `typecheck`, `build`, both test suites and `db:check`, each with a log in `.run/review/logs/` | 6 PASS and 1 WARN (one Linux-only test skipped on Windows), 4 min |
+| `review:06` | The API benchmark (62 scenarios) and the UI benchmark (17 scenarios) on 25,000 trades; results in `.run/review/perf/` | 2 PASS, 4.5 min |
+| `review:07` | Stops the reviewer's applications after confirming they are its own; compares the development database with step 01 | 3 PASS, 17 s |
+
+Each command prints one line per check, PASS, FAIL, WARN or SKIPPED, then the counts and the
+result, and exits **0** (passed; warnings allowed), **1** (something failed) or **3**
+(incomplete). PASS means that check ran and held. SKIPPED names something that did not run.
+`review:06` without Chrome or Chromium runs the API benchmark, reports the UI benchmark SKIPPED and
+ends `INCOMPLETE` with exit code 3, never as a pass. Every output is also saved in
+`.run/review/logs/review-0N.log`.
+
+Between `review:03` and `review:07`, book trades in the scratch frontend,
+<http://localhost:4192>, or browse 25,000 trades at <http://localhost:4191> (read only: please do
+not book there; `review:02` would then refuse the benchmark database). Running any command again is
+safe: setup and seeding keep what is there, start recognises its running applications, and stop
+says when nothing is running.
+
+- **Data.** `review:02` never reseeds or clears. Scratch trades you book are kept. A database that
+  holds anything else is reported as FAIL, unchanged, with how to start it afresh.
+- **Processes.** `review:07` stops a pair only after checking its record's database and ports,
+  that each process still carries the random token it was started with, that it alone listens on
+  its port, and that it answers as that pair's application. A reused process id, another
+  application or another database is reported as FAIL and left running. A port used by another
+  program makes `review:03` fail for that pair, and the program is left alone.
+- **Your development database.** `review:07` compares it with `review:01`'s fingerprint. A
+  difference is a WARN, not a FAIL: if you used your own application in between, that explains it;
+  the workflow never opens the file.
+
+The [setup guide](docs/setup.md#reviewer-workflow) lists every file the workflow creates and how
+to start afresh.
 
 ## Test-drive search, filters and sorting
 
@@ -437,28 +514,35 @@ If port 5299 or 5173 is already in use, for example by your own running copy, ch
 Positions then show AAPL long 120 at 152, BRK.B long 3 at 9.5, GOOG long 10 at 200, NVDA short
 0.5 at 1,000 and TSLA short 15 at 210.75.
 
-**5. Try the controls above the trade table.** Nothing changes until you press **Apply**;
-**Clear** resets everything and lists every trade again.
+**5. Try the controls above and in the trade table.** Filters change nothing until you press
+**Apply**; **Clear** resets the filters and the sort, and goes back to page 1. The column headers
+Symbol, Quantity, Price and Executed at sort as soon as you choose them.
 
-| Set, then press Apply | Expect |
+| Do this | Expect |
 | --- | --- |
-| Symbol `aPl` | the three AAPL trades (any case, any part of the symbol) |
-| Symbol `sf` | the two MSFT trades |
-| Side Sell | the four Sell trades |
-| From and To both 2026-03-08 | only trade 5: trade 3 at 23:59:59 on the 7th and trade 6 at midnight on the 9th are outside |
-| Symbol `a`, Side Sell, From 2026-03-01, To 2026-03-31 | trades 9, 5 and 3 |
-| Sort by Price, Ascending | BRK.B at 9.5 first and NVDA at 1,000 last: numbers, not text |
-| Sort by Execution date, Oldest first | trade 1 first; trades 7 and 8 (same time) in booking order |
-| Symbol `zzz` | "No trades match these filters." |
-| From 2026-03-10, To 2026-03-08 | a message under To; nothing is sent |
-| Side Buy, Apply; then book a Sell | the confirmation says the trade is not in the filtered list; Positions include it |
-| Side Buy applied; type `zzz` in Symbol without Apply; book a Buy | the list keeps the applied Side Buy filter and shows the new trade; "Changes not applied yet." stays |
+| Symbol `aPl`, Apply | the three AAPL trades (any case, any part of the symbol), "1–3 of 3 matching trades" |
+| Symbol `sf`, Apply | the two MSFT trades |
+| Side Sell, Apply | the four Sell trades |
+| From and To both 2026-03-08, Apply | only trade 5: trade 3 at 23:59:59 on the 7th and trade 6 at midnight on the 9th are outside |
+| Symbol `a`, Side Sell, From 2026-03-01, To 2026-03-31, Apply | trades 9, 5 and 3 |
+| Clear, then choose the Price header | BRK.B at 9.5 first and NVDA at 1,000 last: numbers, not text; ↑ beside Price |
+| Choose Price again | descending: NVDA first; ↓ |
+| Choose Executed at, then again | oldest first: trade 1 first, trades 7 and 8 (same time) in booking order; then newest first |
+| Symbol `zzz`, Apply | "No trades match these filters.", and no pager |
+| From 2026-03-10, To 2026-03-08, Apply | a message under To; nothing is sent |
+| Side Buy, Apply; then book a Sell | "It is not in the trade list because it does not match the current filters."; Positions include it |
+| Side Buy applied; type `zzz` in Symbol without Apply; choose Quantity | sorted with the applied Side Buy filter only; "Changes not applied yet." stays |
+| 25 trades per page (either pager) | both pagers change; page 1 |
 
+With ten trades everything fits on one page, so Previous and Next stay disabled. To try paging,
+use the scratch applications of the [reviewer workflow](#reviewer-workflow-review01-to-review07)
+(120 trades, three pages of 50), or the [browser checklist](#browser-checklist) on 25,000.
 Reloading the page always starts again from the default filters. The same queries work against
 the API directly, for example:
 
 ```powershell
 curl.exe "http://localhost:5299/trades?symbol=aPl&side=Buy&sortBy=price&sortDirection=asc"
+curl.exe "http://localhost:5299/trades/page?symbol=aPl&page=1&pageSize=2"
 ```
 
 **6. Finish.** Stop both servers with Ctrl+C, then remove the throwaway database and the setting:
@@ -494,6 +578,40 @@ On a machine without a desktop browser (a container, WSL or a remote host), star
 with `npm run dev -w client -- --host 0.0.0.0` and open it from your own browser through the
 forwarded port; the API can stay on `localhost`, because the frontend forwards to it.
 
+## Browser checklist
+
+A manual check of paging on real volumes, after `review:01` to `review:03`. The reviewer's data
+is generated from a fixed seed, so every clone holds the same trades and the values below are
+exact. Use the benchmark frontend, <http://localhost:4191>, for rows 1 to 12 (read only: book
+nothing there) and the scratch frontend, <http://localhost:4192>, for bookings. Times are shown in
+your time zone, and From and To are days in your time zone, so the date-range count in row 8
+(984) holds in New York time; elsewhere it can differ by a few trades.
+
+| # | On | Do this | Expect |
+| --- | --- | --- | --- |
+| 1 | 4191 | Open the page | "1–50 of 25,000 trades" and "Page 1 of 500" above and below the table; Previous disabled; Executed at ↓; first row NVDA Sell 0.5 at 897.89, then MSFT Buy 600 at 295.12 (same time, later booking first) |
+| 2 | 4191 | Next, then Next in the lower pager, then Previous | page 2 ("51–100"), page 3 ("101–150"), page 2; both pagers always agree |
+| 3 | 4191 | Tab to Next and press Enter, then Space | the page changes each time and Next keeps the focus, with a visible outline |
+| 4 | 4191 | 25, then 100, then 50 a page | "Page 1 of 1,000", "Page 1 of 250", "Page 1 of 500"; always back to page 1 |
+| 5 | 4191 | Choose Price | ↑; first row TINY Buy 1,248.25 at 0.0000003598, then 0.0000003606 and 0.0000003607, every digit as stored |
+| 6 | 4191 | Choose Price again; then Quantity twice; then Symbol | MSTR at 1,872.15 first; Quantity ↑ then ↓ (NVDA Sell 3,716 first); Symbol ↑, AAPL first. Page 1 each time |
+| 7 | 4191 | Choose Price (↑); then Side Buy, Apply | "1–50 of 12,441 matching trades", "Page 1 of 249"; still sorted by price |
+| 8 | 4191 | Clear; Symbol `ms`, Side Sell, From 2025-07-01, To 2026-06-30, 100 a page, Apply; then Next to the end | "1–100 of 984 matching trades", "Page 1 of 10"; page 10 shows "901–984", Next disabled and the focus on Previous |
+| 9 | 4191 | Clear | every trade, Executed at ↓, page 1; the page size (100) is kept |
+| 10 | 4191 | Symbol `zzz`, Apply | "No trades match these filters.", no pager and no table; Clear restores the list |
+| 11 | 4191 | Positions | 18 open positions, the same whatever page, filter or sort the trade list shows |
+| 12 | 4191 | Narrow the window to a phone's width (390 px) | the pager wraps, the page never scrolls sideways; the table scrolls within its own box |
+| 13 | 4192 | Open the page | "1–50 of 120 trades", "Page 1 of 3" (more if you have booked already) |
+| 14 | 4192 | Book Buy 2.5 of a new symbol at 10.0000000001, executed now | "It is on this page of the trade list." |
+| 15 | 4192 | Side Sell, Apply; book a Buy | "It is not in the trade list because it does not match the current filters." |
+| 16 | 4192 | With Side Sell applied, choose Symbol; book a Sell of `ZZ…` | "It matches the filters but is on another page of the trade list."; the filter and the sort stay as they were |
+| 17 | 4192 | Positions | include every booking at once, whatever the trade list shows |
+
+The checklist was run in headless Chrome 156 on Windows 11 at 1280, 768, 390 and 375 px, against
+`review:02`'s data: every row held, with no console errors, and the benchmark database was
+unchanged afterwards (every stored field compared). Run it yourself in a desktop browser; it is
+not part of the automated tests.
+
 ## Build and test
 
 | Command | What it does |
@@ -501,7 +619,7 @@ forwarded port; the API can stay on `localhost`, because the frontend forwards t
 | `npm run lint` | ESLint over the whole repository |
 | `npm run typecheck` | Type-check the API and the frontend without emitting files |
 | `npm run build` | Build the API to `server/dist/` and the frontend to `client/dist/` |
-| `npm test` | Run every test once (1087 API tests and 220 frontend tests) |
+| `npm test` | Run every test once (1,423 API and tool tests, one of them Linux-only, and 272 frontend tests) |
 | `npm test -w server` | API tests only |
 | `npm test -w client` | Frontend tests only |
 | `npm run verify` | Lint, typecheck, build and test, in that order |
@@ -509,6 +627,8 @@ forwarded port; the API can stay on `localhost`, because the frontend forwards t
 | `npm run db:seed` / `db:clear` | Sample trades in a separate database; see [Sample data](#sample-data-dbseed-and-dbclear) |
 | `npm run perf:api` / `perf:api:sizes` | API benchmark on a seeded database; see [API performance](#api-performance-perfapi). Not part of `npm test` or `verify` |
 | `npm run perf:ui` / `perf:ui:sizes` | Browser benchmark in headless Chrome; see [Browser performance](#browser-performance-perfui). Not part of `npm test` or `verify` |
+| `npm run db:check -w server` | The migrations folder is consistent (`drizzle-kit check`); schema drift is a test |
+| `npm run review:01` ... `review:07` | The reviewer workflow; see [Reviewer workflow](#reviewer-workflow-review01-to-review07) |
 
 ```bash
 npm test -w server -- test/domain              # one folder
@@ -531,7 +651,8 @@ document at <http://localhost:5299/documentation/json>.
 | Endpoint | What it does |
 | --- | --- |
 | `POST /trades` | Book a trade. Returns `201` and the stored trade. |
-| `GET /trades` | Every trade, newest `executedAt` first; optional parameters search, filter and sort. |
+| `GET /trades` | Every matching trade as a JSON array, newest `executedAt` first; optional parameters search, filter and sort. Unchanged by pagination. |
+| `GET /trades/page` | One page of the same list, with `totalCount` and `totalPages`; the frontend uses this. |
 | `GET /positions` | Every open position, sorted by symbol. |
 
 A trade request has `symbol`, `side` (`Buy` or `Sell`, any case), `quantity`, `price`, and
@@ -547,11 +668,19 @@ matches anywhere in the symbol), `side` (`Buy` or `Sell`), `executedFrom` and `e
 unchanged. Invalid values are answered with `400` and an `invalid-query` problem.
 [docs/architecture.md](docs/architecture.md#api-contract) has the details.
 
+`GET /trades/page` takes the same parameters, and `page` (from 1, default 1) and `pageSize` (1 to
+100, default 50), digits only; anything else is a `400` naming them. It answers
+`{"items":[...],"page":2,"pageSize":50,"totalCount":25000,"totalPages":500}`, the items being
+exactly the matching slice of what `GET /trades` returns. A page past the last answers `200` with
+no items and the real counts. Filters apply before paging; ties are ordered by `executedAt`, then
+`bookingSequence`; quantities and prices sort by exact value.
+
 ```bash
 curl -i -X POST http://localhost:5299/trades \
   -H 'Content-Type: application/json' \
   -d '{"symbol":"MSFT","side":"Buy","quantity":100,"price":"301.25","executedAt":"2026-01-02T09:30:00-05:00"}'
 curl 'http://localhost:5299/trades?symbol=sf&side=buy&executedFrom=2026-01-01T00:00:00Z&sortBy=price&sortDirection=asc'
+curl 'http://localhost:5299/trades/page?side=Buy&sortBy=quantity&sortDirection=desc&page=2&pageSize=25'
 curl http://localhost:5299/positions
 ```
 
@@ -631,7 +760,11 @@ Drizzle repository implements an interface the application defines.
 | Frontend | `client/src/` | Vue components, one Pinia store, a typed HTTP client |
 
 ESLint rules and a test both fail if a layer imports something it must not. Creating a trade
-checks the symbol's position and inserts the trade in one SQLite transaction.
+checks the symbol's position and inserts the trade in one SQLite transaction. Listing filters,
+sorts, counts and pages in SQLite: quantities and prices sort by two generated text columns whose
+order is their exact value (added by the second migration, with their indexes), and a page and its
+count are read in one transaction. `compareTrades` in the domain stays the reference order the SQL
+is tested against.
 
 Each trade has three timestamps: `executedAt` (optional in the request; the server clock when
 omitted), and `createdAt` and `updatedAt`, which only the server sets. Trades are immutable, so
@@ -640,20 +773,89 @@ omitted), and `createdAt` and `updatedAt`, which only the server sets. Trades ar
 [docs/architecture.md](docs/architecture.md) has diagrams, the database schema, the transaction
 boundary, error handling and the test strategy.
 
+## Performance
+
+Measured with `review:06` on 25,000 trades, on one Windows 11 machine (8 logical cores, Node.js
+22.23.1, headless Chrome 156), with the API and frontend on the same machine and requests sent one
+at a time. Absolute times will differ elsewhere; each run saves its full results in
+`.run/review/perf/`.
+
+**API** (`perf:api`, medians of 10 requests after 5 warmups):
+
+| Request | Rows sent | Size | Median |
+| --- | ---: | ---: | ---: |
+| `GET /trades/page`, first, middle or last page of 50, newest first | 50 | 13 KB | 3.8–4.5 ms |
+| `GET /trades/page`, a page of 100 by price | 100 | 27 KB | 3.8–11 ms |
+| `GET /trades/page`, middle page of 50 with a side filter, by date or quantity | 50 | 13 KB | 19–34 ms |
+| `GET /trades/page`, middle page of 50 with a symbol search or a date range, by price or symbol | 50 | 13 KB | 34–56 ms |
+| `GET /trades/page`, all 47 page scenarios | 50 or 100 | 13–28 KB | 1.2–56 ms |
+| `GET /trades`, every trade, in each of the 8 orders | 25,000 | 6.6 MB | 0.67–1.01 s |
+| `GET /trades`, filtered (symbol, side, dates) | 984–12,559 | 0.26–3.3 MB | 64–350 ms |
+| `GET /positions` | 18 | 1.4 KB | 0.62 s |
+
+A page costs the same at either end of the list, because it is read from the nearer end. The
+slowest pages are deep in a filtered list sorted by another column: SQLite counts the matches and
+steps over the earlier ones.
+
+**Browser** (`perf:ui`, medians of 5 runs after 2 warmups, from the action to the next painted
+frame): the first page loads in 1.0–1.3 s with an empty cache (positions included). Next,
+Previous, a page size, any header, any filter, and Clear each take 28–51 ms. Typing in Symbol
+takes 32 ms a key. The page uses 2–3 MiB of JavaScript heap after garbage collection and about
+1,950 DOM nodes, whatever the size of the history.
+
+**Compared with the previous version**, which loaded and showed every matching trade, on the same
+machine on the same day, from a separate checkout of that version with its own benchmark tools
+and the same 25,000 seeded trades. The measures differ: the previous version's actions return the
+whole list, this version's a page, so the table compares what a user waits for, not identical
+work.
+
+| Action | Previous version (every trade shown) | This version (a page of 50) |
+| --- | ---: | ---: |
+| Initial load | 12.5–14.1 s | 1.3 s |
+| Search "ms" | 4.3 s | 45 ms |
+| Side Buy | 4.7 s | 47 ms |
+| "ms" + Sell + date range | 4.1 s | 46 ms |
+| Clear | 12.5 s | 47 ms |
+| Sort by price, ascending | 11.9 s | 45 ms |
+| Sort by quantity, ascending | 11.9 s | 44 ms |
+| Typing in Symbol, per key | 0.8 s | 32 ms |
+| JavaScript heap after the load | 253 MiB | 2.3 MiB |
+| DOM nodes | 675,518 | 1,929 |
+
+The previous version's initial load, sorting and typing figures come from a second, shorter run
+(1 warmup, 3 runs), the rest from 2 warmups and 5 runs; the initial load was measured in both
+(14.1 s and 12.5 s). `GET /trades` and `GET /positions` themselves are unchanged: on the same
+machine every trade took 0.55–1.02 s in the 8 orders before and 0.67–1.01 s now, and positions
+0.67 s before and 0.62 s now; individual scenarios moved both ways, within what separate runs vary
+by.
+
+**Positions** are computed from the whole history on every `GET /positions` (and after every
+booking), so their cost grows with the number of trades: about 0.6 s at 25,000. Timed apart,
+reading the rows from SQLite takes about 0.14 s, turning them into validated trades with exact
+decimals most of the rest, and the accounting itself about 0.08 s. This is expected, not a
+defect, and nothing was changed. Options for later, none of them implemented: reading only the
+columns the accounting needs; not validating stored trades again on every read; caching the
+positions by the highest booking sequence, which is safe because trades are never changed; or a
+position table updated with each booking.
+
 ## Platform support
 
-- **Verified:** Windows 11 x64 with Node.js 22.23.1 and npm 12.0.1. Installation, lint,
-  typecheck, build, all tests, migrations, the compiled API and the built frontend were run from
-  a fresh copy of the source.
-- **Intended, not verified:** macOS and Linux. The commands are the same, the code builds paths
-  with `node:path`, files use LF line endings, and the lockfile includes the native build
-  packages for Linux x64 and arm64 (glibc and musl), macOS x64 and arm64, and Windows x64 and
-  arm64. None of this has been run on those systems, with one exception: the background process
-  manager behind `app:start`, `app:stop` and `app:status` was run on Linux (Debian under WSL 2,
-  Node.js 22.23.1) with a stand-in application, covering start, process identity, a clean SIGTERM
-  stop of each process group and its children, reused process ids and ports in use. The real API
-  and frontend were not run on Linux, and nothing was run on macOS, where the manager reads process
-  command lines with `ps`.
+- **Verified:** Windows 11 x64 with Node.js 22.23.1, npm 12.0.1 and Chrome 156: installation,
+  lint, typecheck, build, every test, migrations (including the upgrade of a populated v2
+  database), the compiled API, the built frontend in a browser, both benchmarks and the seven
+  reviewer commands.
+- **Linux, partly:** on Debian under WSL 2 with Node.js 22.23.1, the Linux-specific code ran: the
+  process probe (`/proc`, including thread ids), the background process manager with a stand-in
+  application (start, process identity, a clean SIGTERM stop of each process group, reused process
+  ids, ports in use), reviewer setup and seeding, and the reviewer's ownership checks and stop. The
+  test suite and the build were not run there (they need `npm ci` to fetch the Linux build
+  packages), the real API and frontend were not run on Linux, and there was no browser, so the UI
+  benchmark was not run on Linux.
+- **macOS: not run.** The commands are the same; the process manager reads command lines with
+  `ps` and listeners with `lsof` there, untested.
+- The lockfile includes the native build packages for Linux x64 and arm64 (glibc and musl), macOS
+  x64 and arm64, and Windows x64 and arm64; files use LF line endings and paths are built with
+  `node:path`.
 
 ## Known limitations
 
@@ -663,23 +865,34 @@ boundary, error handling and the test strategy.
 - Realised profit and loss is not calculated.
 - The frontend and API have no authentication; the API listens on `localhost` by default.
 - The frontend tests use jsdom; no end-to-end browser tests are included.
-- `GET /trades` has no pagination: it returns every matching trade, and the table shows them
-  all. A large history will eventually need server-side pagination.
-- The API filters in the database, then sorts the matching trades in memory, because exact
-  decimal quantities and prices cannot be compared in SQLite without converting them to
-  floating point. The symbol search cannot use an index.
-- Search, filter and sort settings are not kept when the page is reloaded.
+- `GET /trades` still returns every matching trade in one response (6.6 MB and about a second for
+  25,000), for clients that need the whole list; the frontend uses `GET /trades/page`.
+- The symbol search (a substring match) cannot use an index. A page deep in a filtered list
+  sorted by another column takes longest, about 20–56 ms at 25,000 trades (see
+  [Performance](#performance)), and grows with the number of matching trades.
+- Pages are numbered, not anchored to a trade: a booking made while you look at page 3 moves
+  later trades one place down, so the next page can repeat one trade.
+- Positions are recomputed from every trade on each request, about 0.6 s at 25,000 trades; see
+  [Performance](#performance) for the breakdown and the options.
+- Search, filter, sort and page settings are not kept when the page is reloaded.
 - From and To dates are turned into instants in the browser's time zone when Apply is pressed;
   a reload or a later booking reuses those instants.
 - Building the frontend needs the native Vite packages (rolldown and lightningcss) for your
   platform; `npm ci` installs them from the npm registry.
-- The page slows down with large histories, as measured by `perf:api` and `perf:ui` (Windows 11,
-  headless Chrome): the API returns 25,000 trades in under a second, but showing them takes about
-  14 s, and at 10,000 trades and more every full-list action (Clear, sorting) and every filter
-  takes seconds, during which the page does not respond; typing in Symbol takes about 0.3 s per
-  key with 10,000 trades shown and 0.8 s with 25,000. Pagination or virtualization will be needed.
-- The benchmark tools were run on Windows 11 only; their Linux and macOS code paths (`/proc`,
-  `lsof`, `ps`, finding Chrome) have not been run.
+- The benchmarks ran in full on Windows 11 only. On Linux (WSL) the process probe and the
+  `/proc` memory readings ran; finding Chrome and the UI benchmark did not. Nothing ran on macOS
+  (`lsof`, `ps`).
+- One browser-finding test cannot hide an installed Chrome on Windows, because Windows sets
+  `ProgramFiles` for every process itself; that case is tested with an injected search instead.
+- `review:07` reports a WARN, not a FAIL, when the development database changed since `review:01`:
+  that is expected if you used your own application in between. The workflow never opens it.
+- **`db:migrate` test timeout, once.** On Windows, `test/infrastructure/migrate-command.test.ts`
+  once failed its first test: the command, started as a fresh Node.js process, was still running
+  at its 5 s deadline (Vitest's default test budget) during a full `npm run verify`. It has not
+  happened again, in five full test runs, five runs of that file alone and every later `verify`. A cold start of the command took 0.28–0.69 s with the machine idle (9 samples)
+  and 0.37–1.85 s, median 1.0 s, during three full runs of the API tests (34 samples), each of
+  which passed (the file's tests took 0.9–3.5 s; the slowest runs the command twice). The cause
+  is not known; the deadline was not raised without one.
 - **Intermittent test hang, unexplained.** Once, on Windows, `npm test` stopped for about ten
   minutes in the setup of `test/platform/compiled-server.test.ts`, which then reported its 7 tests
   as skipped; at the same time an unrelated in-process test (`test/platform/lossless-json.test.ts`)

@@ -109,7 +109,8 @@ their dependencies as an object.
 ```
 server/
   drizzle.config.ts                drizzle-kit configuration (schema path, output folder)
-  drizzle/                         generated migrations, committed and reviewed
+  drizzle/                         generated migrations, committed and reviewed: create_trades, exact_decimal_sort_keys
+  scripts/                         tools run with npm: app:start/stop/status, db:seed/clear, perf:api/ui, review:01-07
   src/
     main.ts                        composition root
     migrate.ts                     the db:migrate command
@@ -121,19 +122,19 @@ server/
       symbol.ts                    normaliseSymbol, compareSymbols
       timestamp.ts                 UtcTimestamp, parseTimestamp, toUtcTimestamp
       trade.ts                     Trade, TradeSide, validateTradeRequest, createTrade, notional, trade order
-      trade-query.ts               TradeFilter, TradeSort, validateTradeQuery, compareTrades
+      trade-query.ts               TradeFilter, TradeSort, validateTradeQuery, validateTradePageQuery, pageWindow, compareTrades
       position.ts                  Position, applyTrade, calculatePositions
     application/
       ports.ts                     TradeRepository, Clock, IdGenerator
       errors.ts                    TradeValidationError, TradeQueryValidationError
-      trade-service.ts             createTradeService: createTrade, listTrades
+      trade-service.ts             createTradeService: createTrade, listTrades, listTradePage
       position-service.ts          createPositionService: listPositions
     infrastructure/
       database/
-        schema.ts                  Drizzle table definition
+        schema.ts                  Drizzle table definition, with the exact sort-key columns and indexes
         connection.ts              openDatabase(path): node:sqlite client, pragmas, Drizzle instance
         migrate.ts                 applyMigrations(db)
-      drizzle-trade-repository.ts  createDrizzleTradeRepository(db): TradeRepository
+      drizzle-trade-repository.ts  createDrizzleTradeRepository(db): TradeRepository; SQL order, paging, planPageRead
       system-clock.ts              Clock backed by Date
       uuid-generator.ts            IdGenerator backed by crypto.randomUUID
     api/
@@ -142,8 +143,8 @@ server/
       problem-details.ts           RFC 9457 errors, error mapping, 404 and 405
       openapi.ts                   OpenAPI and Swagger UI
       schemas.ts                   TypeBox schemas: the documented contract
-      responses.ts                 domain trade and position to JSON
-      routes/trades.ts             POST and GET /trades
+      responses.ts                 domain trade, page and position to JSON
+      routes/trades.ts             POST /trades, GET /trades, GET /trades/page
       routes/positions.ts          GET /positions
     types/                         json-source-text.d.ts: JSON.rawJSON and the reviver's source text, not yet in TypeScript's library
   test/
@@ -152,9 +153,10 @@ server/
     application/                   services with in-memory doubles
     platform/                      runtime capability tests
     scenarios/                     scenario catalogue and its oracle checks
-    infrastructure/                repository, constraints, migrations, db:migrate, schema drift
+    infrastructure/                repository, sort order and paging, constraints, migrations, db:migrate, schema drift
     support/                       rational oracle, in-memory repository, fixed clock, test databases
-    api/                           the whole application through app.inject(): catalogue, endpoints, OpenAPI, startup
+    api/                           the whole application through app.inject(): catalogue, endpoints, pages, OpenAPI, startup
+    scripts/                       the tools: process manager, seeding, benchmarks, process probe, reviewer workflow
     isolation/                     test databases stay in the temp folder and out of the repository
     config.test.ts                 configuration
 client/                            Vue app (npm workspace)
@@ -167,17 +169,18 @@ client/                            Vue app (npm workspace)
     api/
       contracts.ts                 request and response types from the OpenAPI contract
       json.ts                      JSON parsing that keeps numbers as exact text
-      client.ts                    createTrade, listTrades, listPositions; ApiError
-    stores/blotter.ts              trades, positions and the applied trade query; loading, errors, refreshes
+      client.ts                    createTrade, listTradePage, listTrades, listPositions; ApiError
+    stores/blotter.ts              the page of trades, positions, applied filters, sort, page and page size; loading, errors, refreshes
     lib/
       decimal-text.ts              checking typed decimals, formatting decimal text
       timestamps.ts                local date and time to RFC 3339; UTC to local display
       local-dates.ts               local calendar date to the UTC start and end of that day
-      trade-filters.ts             trade list controls to GET /trades query parameters
+      trade-filters.ts             filter controls to query parameters; header sort rule; page sizes; booked-trade filter match
     components/
       TradeForm.vue                trade entry and validation feedback
-      TradeBlotter.vue             trade table, with its search, filter and sort controls
-      TradeFilters.vue             symbol, side, date range and sort controls; Apply and Clear
+      TradeBlotter.vue             trade table with sortable headers, its filters and both pagers
+      TradeFilters.vue             symbol, side and date range controls; Apply and Clear
+      TradePager.vue               Previous, Next, page position, range and page size
       PositionsPanel.vue           positions table
       LocalTimestamp.vue           one timestamp in local time
     styles.css                     layout and theme
@@ -201,8 +204,16 @@ export interface TradeRepository {
   /**
    * Stored trades in trade order: executedAt ascending, then booking sequence ascending. With no
    * filter, every stored trade; otherwise only those matching every member given. Reads only.
+   * Positions and the position check use it: they always need the whole history.
    */
   listInTradeOrder(filter?: TradeFilter): Promise<readonly Trade[]>
+  /** Trades matching the query's filter, in its sort order: exactly the order compareTrades defines. Reads only. */
+  list(query: TradeQuery): Promise<readonly Trade[]>
+  /**
+   * One page of what `list` returns, and the number of matching trades, both read from the same
+   * state of the store. A page past the last has no trades. Reads only.
+   */
+  listPage(query: TradeQuery, page: PageRequest): Promise<{ trades: readonly Trade[]; totalCount: number }>
 }
 
 export interface Clock { now(): Date }
@@ -213,9 +224,10 @@ export interface IdGenerator { next(): string }
 records the order trades were booked in, independent of any timestamp.
 
 The interface speaks only in domain types: no Drizzle row, query builder or SQLite type crosses
-it. `createDrizzleTradeRepository` implements it on SQLite (see [Repository](#repository) under
-Persistence); `test/support/in-memory-trade-repository.ts` implements it in memory for the
-application tests, with the same position check and ordering.
+it. `createDrizzleTradeRepository` implements it on SQLite, filtering, sorting, counting and paging
+in SQL (see [Repository](#repository) under Persistence). `test/support/in-memory-trade-repository.ts`
+implements it in memory for the application tests, with the same position check, sorting with
+`compareTrades` and paging with `pageWindow`: the definitions the SQL is tested against.
 
 ## Services, routes and wiring
 
@@ -235,8 +247,14 @@ export function createTradeService(deps: { trades: TradeRepository; clock: Clock
     async listTrades(request: TradeQueryRequest = {}): Promise<readonly Trade[]> {
       const result = validateTradeQuery(request, { symbolMaxLength })
       if (!result.ok) throw new TradeQueryValidationError(result.errors)
-      const { filter, sort } = result.value
-      return [...(await deps.trades.listInTradeOrder(filter))].sort(compareTrades(sort)) // default: newest first
+      return deps.trades.list(result.value)                    // sorted in SQL; default: newest first
+    },
+    async listTradePage(request: TradePageQueryRequest = {}): Promise<TradePage> {
+      const result = validateTradePageQuery(request, { symbolMaxLength })
+      if (!result.ok) throw new TradeQueryValidationError(result.errors)
+      const { query, page } = result.value
+      const { trades, totalCount } = await deps.trades.listPage(query, page)
+      return { trades, page: page.page, pageSize: page.pageSize, totalCount, totalPages: pageCount(totalCount, page.pageSize) }
     },
   }
 }
@@ -260,6 +278,11 @@ export const tradeRoutes: FastifyPluginAsync<{ tradeService: TradeService }> = (
     schema: listTradesSchema,                        // documents the query parameters in OpenAPI
     validatorCompiler: () => (query) => ({ value: query }), // the domain validates them
     handler: async (request) => (await tradeService.listTrades(request.query as TradeQueryRequest)).map(toTradeResponse),
+  })
+  app.get('/trades/page', {
+    schema: listTradePageSchema,                     // GET /trades' parameters, then page and pageSize
+    validatorCompiler: () => (query) => ({ value: query }),
+    handler: async (request) => toTradePageResponse(await tradeService.listTradePage(request.query as TradePageQueryRequest)),
   })
   return Promise.resolve()
 }
@@ -441,7 +464,8 @@ Two driver rules:
 
 ### Schema
 
-One table, generated from `database/schema.ts` into the first migration:
+One table, generated from `database/schema.ts`: the first migration creates it, the second
+(`20261107224357_exact_decimal_sort_keys`) adds two generated sort-key columns and their indexes.
 
 | Column | Type | Constraints | Domain field |
 | --- | --- | --- | --- |
@@ -454,16 +478,30 @@ One table, generated from `database/schema.ts` into the first migration:
 | `executed_at` | `TEXT` | `NOT NULL`; canonical UTC with milliseconds | `executedAt` |
 | `created_at` | `TEXT` | `NOT NULL`; canonical UTC with milliseconds | `createdAt` |
 | `updated_at` | `TEXT` | `NOT NULL`; canonical UTC with milliseconds, not before `created_at` | `updatedAt` |
+| `quantity_key` | `TEXT` | `GENERATED ALWAYS AS (...) VIRTUAL`: never stored or written | (sort key) |
+| `price_key` | `TEXT` | `GENERATED ALWAYS AS (...) VIRTUAL` | (sort key) |
 
 | Index | Columns | Serves |
 | --- | --- | --- |
-| `trades_trade_order` | `executed_at, booking_sequence` | Listing every trade in trade order |
-| `trades_symbol_trade_order` | `symbol, executed_at, booking_sequence` | Reading one symbol's history inside the write transaction |
+| `trades_trade_order` | `executed_at, booking_sequence` | Positions, and listing by execution time |
+| `trades_symbol_trade_order` | `symbol, executed_at, booking_sequence` | One symbol's history inside the write transaction; listing by symbol |
+| `trades_quantity_order` | `quantity_key, executed_at, booking_sequence` | Listing by quantity |
+| `trades_price_order` | `price_key, executed_at, booking_sequence` | Listing by price |
 | Automatic unique index | `id` | The `UNIQUE` constraint |
 
 - **Decimals are canonical text, never `REAL`.** The CHECK accepts only digits with at most one
   point, no leading zero (except `0.x`), no trailing fractional zero, and not zero; so `1.50`, `01`,
-  `1e3`, `-1` and `0` are refused. Nothing is calculated, compared or sorted numerically in SQL.
+  `1e3`, `-1` and `0` are refused. Nothing is calculated in SQL, and nothing is ever converted to a
+  floating-point number.
+- **Exact sort keys.** `quantity_key` and `price_key` are the number of integer digits, zero-padded
+  to ten, followed by the canonical text:
+  `printf('%010d', case when instr(c, '.') = 0 then length(c) else instr(c, '.') - 1 end) || c`.
+  Because canonical text has no leading or trailing zeros, comparing these keys as text compares
+  the values exactly: more integer digits is larger; with as many, the digits decide, and a
+  missing fraction comes first (`10` < `10.0000000001`). Only text operations are used, so
+  `123456789012345.1234567891` and `...892`, which a JavaScript number cannot tell apart, sort
+  correctly. The columns are `VIRTUAL`: SQLite computes them when read or indexed, writes never
+  supply them, and the repository never selects them.
 - **Timestamps are canonical UTC text**, `YYYY-MM-DDTHH:MM:SS.mmmZ`, checked with a `GLOB`
   pattern. Fixed-width text sorts chronologically, so the indexes order trades correctly.
 - **The constraints guard the representation; the domain owns the business rules.** The input
@@ -594,11 +632,21 @@ export function createDrizzleTradeRepository(db: Database): TradeRepository {
     },
     listInTradeOrder(filter = {}) {
       return settle(() =>
-        db.select().from(trades)
+        db.select(TRADE_COLUMNS).from(trades)        // the stored columns, never the generated keys
           .where(matching(filter))                   // undefined for an empty filter: every row
           .orderBy(asc(trades.executedAt), asc(trades.bookingSequence))
           .all()
           .map(toTrade))
+    },
+    list({ filter, sort }) { /* the same, ordered by ordering(sort) */ },
+    listPage({ filter, sort }, page) {
+      return settle(() => db.transaction((tx) => {   // one read transaction: count and page agree
+        const totalCount = tx.select({ count: count() }).from(trades).where(matching(filter)).get()?.count ?? 0
+        const window = pageWindow(page, totalCount)  // undefined past the last page: no OFFSET at all
+        if (window === undefined) return { trades: [], totalCount }
+        const plan = planPageRead(window, totalCount, sort.field, filter, countAllTrades)
+        // ...select TRADE_COLUMNS, ordering(sort, plan), LIMIT window.limit OFFSET plan.skip
+      }, { behavior: 'deferred' }))
     },
   }
 }
@@ -616,6 +664,41 @@ export function createDrizzleTradeRepository(db: Database): TradeRepository {
   timestamps through `parseTimestamp`, refusing any stored value that is not canonical. Rows are
   frozen domain trades by the time they leave the module.
 - Drizzle wraps SQLite errors in a "Failed query" error; the SQLite message is its `cause`.
+
+### Sort order and paging
+
+Every list is ordered in SQLite by the sort column, then `executed_at`, then `booking_sequence`,
+all in the sort direction: exactly the order `compareTrades` (domain) defines, which stays the
+reference. Symbols compare as UTF-8 bytes, which is code-point order; timestamps as canonical
+text; quantities and prices by their exact keys. `booking_sequence` is unique, so the order is
+total and deterministic, and descending is ascending reversed. Filters are applied first (`WHERE`),
+then the order, then the page.
+
+`GET /trades/page` reads a page in one deferred read transaction: `COUNT(*)` of the matches, then
+the page. In WAL mode both statements see the same snapshot, so `totalCount` and the items always
+agree, even while another connection books trades. `pageWindow` (domain) computes an offset only
+for a page that exists, so the offset is always below the match count, however large the page
+number (up to `Number.MAX_SAFE_INTEGER`, validated as digits and compared as a `BigInt`).
+
+How a page is read is chosen by `planPageRead`; every plan returns the same rows:
+
+- **From the nearer end.** `OFFSET` steps over every row it skips, so a page in the second half is
+  read in the opposite direction from the end, and turned round.
+- **Through the sort index, or by sorting the matches.** The execution-time index visits rows in
+  about the order they are stored; the symbol, quantity and price indexes do not, and each row they
+  lead to is a separate lookup. When a symbol or side condition, which no index serves, decides the
+  matches and the sort is by symbol, quantity or price, the plan estimates both costs from the
+  counts it already has (rows to the page × all trades ÷ matches, against reading every trade once
+  and sorting the matches; weights measured on 25,000 trades) and, when sorting is cheaper, writes
+  the order's first term as `+column`. That keeps the value and order but stops SQLite walking that
+  index. `GET /trades` (every match) sorts instead of walking in that case too.
+
+These were measured, not assumed: on 25,000 trades, SQLite's own choice took up to 122 ms for some
+deep filtered pages and 56–156 ms for some filtered full lists, against 10–52 ms when sorting the
+matches. `test/infrastructure/sort-order.test.ts` checks the SQL order and every page slice against
+`compareTrades` for 64 query combinations on 420 trades built to break a wrong order (decimals at
+the input bounds, values a float cannot tell apart, code-point versus UTF-16 symbol order, ties on
+every field), and that all four read plans are exercised.
 
 ### Migrations
 
@@ -637,6 +720,12 @@ export function createDrizzleTradeRepository(db: Database): TradeRepository {
   error and exits `1`.
 - **At startup**, `createServer` calls the same `applyMigrations` before any route exists; see
   [Startup and shutdown](#startup-and-shutdown).
+- **The sort-key migration** is two `ALTER TABLE ... ADD ... VIRTUAL` statements and two
+  `CREATE INDEX`: no table rebuild, so every row, the `sqlite_sequence` high-water mark and the
+  existing indexes are kept. Tested on a populated database created by the first migration alone
+  (`migrations.test.ts`); also run, with `npm run db:migrate`, on a copy of a 25,000-trade database
+  with a gap in its booking sequence: every row byte-identical, the sequence kept, `integrity_check`
+  ok, and every key in exact decimal order.
 - **Drift check.** `schema-drift.test.ts` runs `drizzle-kit generate` against a copy of the
   migrations folder and fails if the schema has changed without a migration.
   (`npm run db:check -w server`, `drizzle-kit check`, checks the migrations folder for
@@ -660,18 +749,21 @@ directory. `:memory:` is refused, because every trade would be lost on restart.
 ## API contract
 
 The Vue frontend depends on exactly this contract. All paths are case-sensitive; a trailing slash
-is ignored; a query string is ignored except for the `GET /trades` parameters below, and unknown
-parameters are ignored there too. The OpenAPI 3.1 document at `/documentation/json`
+is ignored; a query string is ignored except for the `GET /trades` and `GET /trades/page`
+parameters below, and unknown parameters are ignored there too. The OpenAPI 3.1 document at `/documentation/json`
 describes it in full, and Swagger UI is at `/documentation` (both can be turned off with
 `DOCS_ENABLED=false`).
 
 | Endpoint | Request | Success |
 | --- | --- | --- |
 | `POST /trades` | `{ symbol, side, quantity, price, executedAt? }` | `201`, the stored trade |
-| `GET /trades` | optional query parameters, below | `200`, the matching trades; with no parameters, every trade: newest `executedAt` first, then highest `bookingSequence` first |
+| `GET /trades` | optional query parameters, below | `200`, a JSON array of every matching trade; with no parameters, every trade: newest `executedAt` first, then highest `bookingSequence` first |
+| `GET /trades/page` | the same parameters, and `page`, `pageSize` | `200`, one page of what `GET /trades` lists, with the counts |
 | `GET /positions` | | `200`, every non-flat position, sorted by symbol in code-point order |
 
-`HEAD` is available wherever `GET` is. There are no update, delete or pagination endpoints.
+`HEAD` is available wherever `GET` is. There are no update or delete endpoints. `GET /trades` is
+unchanged from before pagination existed: the same array, filters, order and decimals; it ignores
+`page` and `pageSize`. The frontend uses `GET /trades/page` only.
 
 **`GET /trades` query parameters**
 
@@ -694,17 +786,54 @@ offset is refused rather than read in some time zone. In a URL a `+` decodes to 
 offset such as `+05:30` must be written `%2B05:30`; an unencoded one is refused. A whole UTC day is
 `executedFrom=2026-01-01T00:00:00Z&executedTo=2026-01-01T23:59:59.999Z`.
 
-Sorting compares symbols by Unicode code point and quantities and prices by exact `decimal.js`
-value, never as JavaScript numbers or as text. Ties are broken by `executedAt`, then
-`bookingSequence`, in the sort direction, so every order is total and `desc` is exactly `asc`
-reversed. With neither sort parameter the order is the original one (`executedAt` `desc`).
-Listing only reads: it never changes stored trades, and positions always use the full history.
+Sorting compares symbols by Unicode code point and quantities and prices by exact value, never as
+JavaScript or floating-point numbers, and never as plain text (`9.5` < `10`). It is done in SQLite
+with exact sort keys (see [Sort order and paging](#sort-order-and-paging)). Ties are broken by
+`executedAt`, then `bookingSequence`, in the sort direction, so every order is total and `desc` is
+exactly `asc` reversed. With neither sort parameter the order is the original one (`executedAt`
+`desc`). Listing only reads: it never changes stored trades, and positions always use the full
+history.
 
 ```text
 GET /trades?symbol=sf&side=buy
 GET /trades?executedFrom=2026-01-01T00:00:00-05:00&executedTo=2026-01-31T23:59:59.999-05:00
 GET /trades?executedFrom=2026-01-01T09:00:00%2B05:30
 GET /trades?sortBy=price&sortDirection=asc
+```
+
+**`GET /trades/page`**
+
+Takes every `GET /trades` parameter, meaning the same, and two more:
+
+| Parameter | Values | Default | Meaning |
+| --- | --- | --- | --- |
+| `page` | 1 to 9007199254740991 | `1` | The page to list, counting from 1. A page past the last is not an error. |
+| `pageSize` | 1 to 100 | `50` | Trades per page. |
+
+Both are digits only: a sign, point, exponent or space is refused, and the text is compared as a
+`BigInt`, so a huge number is refused rather than rounded. As for the other parameters, an empty
+value means omitted and a repeated one is refused (`page=1&page=2`). Invalid page parameters are
+reported in the same `invalid-query` problem as the others, after them:
+`{"errors":{"side":[...],"page":["page must be a whole number from 1 to 9007199254740991."],"pageSize":["pageSize must be a whole number from 1 to 100."]}}`.
+
+```json
+{"items":[{"id":"…","bookingSequence":24999,"symbol":"MSFT", …}, …],"page":2,"pageSize":50,"totalCount":25000,"totalPages":500}
+```
+
+- `items` holds the trades on the page, each exactly as `GET /trades` writes a trade, in the same
+  order: `GET /trades/page?page=n&pageSize=s` is exactly the n-th slice of `GET /trades` for the
+  same filters and sort.
+- `totalCount` is the number of matching trades on every page; `totalPages` is `totalCount ÷
+  pageSize` rounded up, `0` when nothing matches. They are counted in the same read transaction as
+  the page, so they always agree with it.
+- A page past the last (`page=501` of 500) answers `200` with `"items":[]` and the real
+  `totalCount` and `totalPages`. An empty database answers page 1 the same way, with
+  `"totalCount":0,"totalPages":0`.
+
+```text
+GET /trades/page                                              page 1 of 50, newest first
+GET /trades/page?page=3&pageSize=25&sortBy=quantity&sortDirection=desc
+GET /trades/page?symbol=ms&side=Sell&page=2                   filters apply before paging
 ```
 
 **Trade**
@@ -809,13 +938,16 @@ and answers a known path with an unknown method with `405` instead of `404`.
 
 The Vue client in `client/` is a separate npm workspace. It knows the server only as the HTTP API
 documented above: it imports no server module, and its only network calls are `POST /trades`,
-`GET /trades` and `GET /positions`.
+`GET /trades/page` and `GET /positions`. It never fetches the whole history: the API filters,
+sorts, counts and pages. (`api.listTrades`, for `GET /trades`, stays in the typed client for
+compatibility; the page does not call it.)
 
 ```mermaid
 flowchart LR
     subgraph BROWSER["Browser · client/src"]
         FORM["TradeForm.vue<br/>typed text, local time to RFC 3339"]
-        TABLES["TradeBlotter.vue, PositionsPanel.vue<br/>display only"]
+        TABLES["TradeBlotter.vue, PositionsPanel.vue<br/>display; sortable headers"]
+        PAGER["TradePager.vue, twice<br/>Previous, Next, page size"]
         FILTERS["TradeFilters.vue<br/>draft controls, local dates to UTC"]
         STORE["Pinia store<br/>stores/blotter.ts"]
         CLIENT["API client<br/>api/client.ts"]
@@ -825,7 +957,9 @@ flowchart LR
 
     FORM -->|"createTrade(request)"| STORE
     TABLES -->|"read trades, positions"| STORE
-    FILTERS -->|"applyTradeQuery(query)"| STORE
+    FILTERS -->|"applyFilters, clearFilters"| STORE
+    TABLES -->|"sortBy(field)"| STORE
+    PAGER -->|"goToPage, setPageSize"| STORE
     STORE -->|"calls"| CLIENT
     CLIENT -->|"fetch, relative URLs"| VITE
     VITE -->|"HTTP + JSON"| API
@@ -835,20 +969,45 @@ flowchart LR
   `/trades`, `/positions` and `/documentation` to the API (`API_TARGET`, default
   `http://localhost:5299`), so the API needs no CORS. A production deployment serves
   `client/dist/` and forwards the same paths to the API in the same way.
-- **State.** One Pinia store holds trades and positions, each with `loading`, `loaded` and
-  `error`. It is shared because booking a trade (in the form) must refresh both tables: after a
-  successful `POST /trades` the store reloads `GET /trades` and `GET /positions` together. Only
+- **State.** One Pinia store holds the trades on the page shown and the positions, each with
+  `loading`, `loaded` and `error`, and the trade list's applied filters, sort, page and page
+  size, kept apart. It is shared because booking a trade (in the form) must refresh both tables:
+  after a successful `POST /trades` the store reloads the same page and `GET /positions` together. Only
   the newest response for each list is applied, and a failed refresh keeps the last data on
   screen with an error message. Positions always come from the API; the client never calculates
   them, and it shows trades and positions in the order the API returns them.
-- **Search, filters and sort.** The controls above the trade table hold a draft. Only Apply
-  changes the store's applied query (`applyTradeQuery`), and Clear resets the controls and applies
-  the empty query. Every trade-list load uses the applied query, including the reload after a
-  booking and the Refresh button. Positions never use it: they always cover every trade. The
-  client sends the API's own parameters (`symbol`, `side`, `executedFrom`, `executedTo`,
-  `sortBy`, `sortDirection`) built with `URLSearchParams`, leaving out empty values and the
-  default sort, so with no filter the request is plain `GET /trades`. The API filters and sorts;
-  the client shows the rows in the order they arrive.
+- **Search and filters.** The controls above the trade table hold a draft. Only Apply changes the
+  applied filters (`applyFilters`), and Clear resets the controls, the filters, the sort and the
+  page (`clearFilters`; the page size is kept). Every trade-list load uses the applied filters,
+  including sorting, paging, the reload after a booking and the Refresh button: a filter typed but
+  not applied is never sent ("Changes not applied yet." says so). Positions never use them: they
+  always cover every trade.
+- **Sorting by column header.** Symbol, Quantity, Price and Executed at are buttons in their
+  headers; the other columns do not sort. A new column starts ascending, except Executed at, which
+  starts newest first; choosing the active column reverses it. The sorted column has `aria-sort`
+  and an arrow; each button's hidden text says what choosing it does ("sort descending"). The
+  default is newest execution first.
+- **Pages.** `TradePager.vue` is shown above and below the table; both read and change the same
+  store state, so they always agree: the range ("51–100 of 25,000 trades", "matching trades" when
+  filtered), "Page 2 of 500", Previous, Next and a 25/50/100 page-size select (default 50). Previous
+  is disabled on page 1 and Next on the last page; when the button just used becomes disabled, focus
+  moves to the other one. Applying filters, sorting and changing the page size go back to page 1.
+  With nothing to show, no pager is shown. A page that comes back past the end of a shortened list
+  is replaced by the last page.
+- **Requests.** The client sends the API's own parameters with `URLSearchParams`, leaving out empty
+  values and the default sort, and always `page` and `pageSize`: with no filter the first request
+  is `GET /trades/page?page=1&pageSize=50`. Previous and Next step from the page asked for, so two
+  quick clicks move two pages; only the newest response is applied. A page response is accepted
+  only if it is the page and size asked for, `totalPages` is `totalCount ÷ pageSize` rounded up,
+  and it holds exactly the trades that fall on that page.
+- **Booking messages.** After a booking the store reloads the same page with the same filters and
+  sort, and the confirmation says where the trade is, judged from that reloaded page and the
+  applied filters: "It is on this page of the trade list."; "It matches the filters but is on
+  another page of the trade list." (or "It is on another page…" with no filters); or "It is not in
+  the trade list because it does not match the current filters." The filter test copies the API's
+  rule (the search normalised like a symbol and found anywhere in it; side; inclusive execution
+  bounds). No page number is guessed. While another load is on its way, or after the reload
+  failed, only "Booked: …" is said.
 - **Decimals stay text.** Quantity and price are text inputs; the trimmed text is sent as JSON
   strings (`"10.50"`), so the server receives exactly the digits typed. Responses are parsed with
   `parseJsonKeepingNumberText`, which quotes every number literal before `JSON.parse`, so an
@@ -868,9 +1027,11 @@ flowchart LR
 - **Accessibility.** Every control has a label; Buy and Sell are a radio group in a fieldset;
   invalid fields get `aria-invalid` and `aria-describedby` pointing at their message; focus moves
   to the first invalid field, or back to Symbol after a booking; alerts use `role="alert"` and
-  confirmations `role="status"`; tables have captions and header scopes; side and direction are
-  written in words as well as colour. The layout stacks on narrow screens and tables scroll
-  sideways.
+  confirmations `role="status"`; each newly shown page is announced in a hidden `role="status"`
+  ("Showing 51–100 of 25,000 trades, page 2 of 500."); the two pagers are navigation landmarks
+  named "above the table" and "below the table"; tables have captions and header scopes; side and
+  direction are written in words as well as colour. The layout stacks on narrow screens, pagers
+  wrap, and the trade table scrolls sideways in its own box.
 
 ### Execution time input
 
@@ -965,10 +1126,11 @@ Trades apply in **trade order**: `executedAt` ascending, then booking sequence a
 the order the trades arrive in. `createdAt`, `updatedAt` and ids never affect the order. A trade
 recorded late for an earlier execution time is applied at its execution time.
 
-`GET /trades` returns the reverse by default: newest `executedAt` first, and for equal execution
-times the most recently booked first. Its `sortBy` and `sortDirection` parameters choose another
-field and direction; ties always fall back to trade order in the chosen direction. Filtering and
-sorting the list never affect positions, which are always derived from every trade. Positions are
+`GET /trades` and `GET /trades/page` return the reverse by default: newest `executedAt` first,
+and for equal execution times the most recently booked first. Their `sortBy` and `sortDirection`
+parameters choose another field and direction; ties always fall back to trade order in the chosen
+direction. Filtering, sorting and paging the list never affect positions, which are always derived
+from every trade. Positions are
 sorted by symbol in Unicode code-point order.
 
 ## Numeric policy
@@ -1054,10 +1216,11 @@ Each layer is tested at its own boundary, with real collaborators below it where
 | Architecture | Every server layer's imports obey its rule | `server/test/architecture/` |
 | Domain | Pure functions, no doubles: decimal input, symbols, timestamps, validation of every trade-request scenario, timestamp assignment, immutability, every position scenario, each position rule, ordering, the position limit | `server/test/domain/` |
 | Application | Services with the in-memory repository, a fixed clock and sequential ids: every trade-request scenario, one clock read per trade, server-owned `createdAt` and `updatedAt`, nothing stored on rejection, newest-first listing, positions by execution time | `server/test/application/` |
-| Infrastructure | Real SQLite files in temporary folders, migrated as at startup: exact decimal and timestamp round-trips, booking sequences (never reused), same-time and out-of-order ordering, several symbols, every CHECK and UNIQUE constraint, rollback leaving rows and counts unchanged, position-limit refusals including trades executed in the past, close and reopen, a second connection, migrations on an empty database, reapplying, all-or-nothing failure, the `db:migrate` command, schema drift, the system clock and UUID generator | `server/test/infrastructure/` |
-| API | `createServer` (production wiring) over a temporary database, driven by `app.inject()` with a fixed clock: every trade-request and HTTP scenario (with booking sequences proving rejected requests store nothing), exact response bodies, server-owned fields, offsets, ordering, positions, the position-limit `400`, a real database failure as a bare `500`, the OpenAPI document and Swagger UI, startup migration success and failure, restart, graceful shutdown with a request in progress, configuration | `server/test/api/` |
+| Infrastructure | Real SQLite files in temporary folders, migrated as at startup: exact decimal and timestamp round-trips, booking sequences (never reused), same-time and out-of-order ordering, several symbols, every CHECK and UNIQUE constraint, rollback leaving rows and counts unchanged, position-limit refusals including trades executed in the past, close and reopen, a second connection, migrations on an empty database, reapplying, all-or-nothing failure, upgrading a populated database made by the first migration (rows, decimals, sequence, indexes, integrity kept), the `db:migrate` command, schema drift, the system clock and UUID generator; the SQL order and every page slice against `compareTrades` for 64 query combinations on deliberately hard data, exact sort keys for every pair of edge decimals, every read plan exercised, paging edge cases (empty table, past the last page, the highest page number, the read transaction) | `server/test/infrastructure/` |
+| API | `createServer` (production wiring) over a temporary database, driven by `app.inject()` with a fixed clock: every trade-request and HTTP scenario (with booking sequences proving rejected requests store nothing), exact response bodies, server-owned fields, offsets, ordering, positions, the position-limit `400`, a real database failure as a bare `500`, the OpenAPI document and Swagger UI, startup migration success and failure, restart, graceful shutdown with a request in progress, configuration; `GET /trades/page` (envelope, defaults, every page boundary, every sort against `GET /trades`, filters before paging, exact decimals, invalid and repeated parameters, `405`, `GET /trades` unchanged and positions unaffected) | `server/test/api/` |
 | Compiled server | The production build as a real process on a temporary database: migrates at startup, books and lists a trade over HTTP, keeps it across a restart, refuses to start on a failed migration, invalid configuration or a missing runtime feature (extends S4) | `server/test/platform/` |
-| Frontend | Vitest, Vue Test Utils and jsdom, with the real store and API client and only `fetch` replaced by a scripted fake API; tests run in `America/New_York` so daylight-saving cases are real: form validation, side choice, exact decimal text sent and shown, optional and ambiguous or skipped execution times, field errors from the server, network and server failures, list order, loading, empty and error states, refresh after booking, long and short positions, accessibility attributes and focus, and the client's import boundary | `client/test/` |
+| Frontend | Vitest, Vue Test Utils and jsdom, with the real store and API client and only `fetch` replaced by a scripted fake API; tests run in `America/New_York` so daylight-saving cases are real: form validation, side choice, exact decimal text sent and shown, optional and ambiguous or skipped execution times, field errors from the server, network and server failures, list order, loading, empty and error states, refresh after booking, long and short positions, accessibility attributes and focus, and the client's import boundary; the page contract and its validation, both pagers, Previous and Next with focus, page sizes, first, middle, last and empty pages, header sorting both ways, applied versus draft filters, reset rules, requests answered out of order, the three booking messages | `client/test/` |
+| Tools | `server/scripts`: the background process manager with a stand-in application (tokens, reused ids, ports in use, process groups), seeding and clearing, both benchmarks' scenarios and response checks (`perf:api` on a real API), the process probe (a real other process, an exited id, Linux thread ids), and the reviewer workflow on a temporary folder: setup and safe reruns, recognising datasets, scratch bookings kept, unexpected data refused unchanged, dependencies, a missing browser (SKIPPED, exit 3), occupied ports, ownership refused for reused ids, other databases, other listeners and applications that do not answer as the Trade Blotter, stopping only confirmed applications, functional checks failing against other data, and the development database never changed | `server/test/scripts/` |
 
 Every test database lives in its own temporary folder and is removed afterwards.
 
