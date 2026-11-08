@@ -1,0 +1,4 @@
+ALTER TABLE `trades` ADD `quantity_key` text GENERATED ALWAYS AS (printf('%010d', case when instr("quantity", '.') = 0 then length("quantity") else instr("quantity", '.') - 1 end) || "quantity") VIRTUAL;--> statement-breakpoint
+ALTER TABLE `trades` ADD `price_key` text GENERATED ALWAYS AS (printf('%010d', case when instr("price", '.') = 0 then length("price") else instr("price", '.') - 1 end) || "price") VIRTUAL;--> statement-breakpoint
+CREATE INDEX `trades_quantity_order` ON `trades` (`quantity_key`,`executed_at`,`booking_sequence`);--> statement-breakpoint
+CREATE INDEX `trades_price_order` ON `trades` (`price_key`,`executed_at`,`booking_sequence`);

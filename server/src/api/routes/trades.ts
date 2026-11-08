@@ -3,11 +3,11 @@ import { Type } from 'typebox'
 import { Compile } from 'typebox/compile'
 
 import type { TradeService } from '../../application/trade-service.ts'
-import type { TradeQueryRequest } from '../../domain/trade-query.ts'
+import type { TradePageQueryRequest, TradeQueryRequest } from '../../domain/trade-query.ts'
 import type { TradeRequest } from '../../domain/trade.ts'
 import { clientError, PROBLEM_CONTENT_TYPE } from '../problem-details.ts'
-import { toTradeResponse } from '../responses.ts'
-import { ListTradesQuery, TradeRequestContainer } from '../schemas.ts'
+import { toTradePageResponse, toTradeResponse } from '../responses.ts'
+import { ListTradePageQuery, ListTradesQuery, TradeRequestContainer } from '../schemas.ts'
 
 const problem = (description: string) => ({ description, content: { [PROBLEM_CONTENT_TYPE]: { schema: Type.Ref('Problem') } } })
 
@@ -54,11 +54,31 @@ const listTradesSchema = {
   },
 } satisfies FastifySchema
 
+const listTradePageSchema = {
+  tags: ['Trades'],
+  operationId: 'listTradePage',
+  summary: 'List one page of trades: search, filter, sort and page',
+  description:
+    'The trades GET /trades lists for the same symbol, side, executedFrom, executedTo, sortBy and sortDirection, one ' +
+    'page at a time, with the number of matching trades and pages. page counts from 1; pageSize is 1 to 100, default ' +
+    '50. A page past the last is not an error: it has no items, and totalCount and totalPages are still given. The ' +
+    'count and the page are read together, so they always agree. GET /trades itself is unchanged and lists every match.',
+  querystring: ListTradePageQuery,
+  response: {
+    200: { description: 'The page, possibly with no trades.', content: { 'application/json': { schema: Type.Ref('TradePage') } } },
+    400: problem(
+      'One or more query parameters are invalid or repeated, including page and pageSize (type ' +
+        'urn:trade-blotter:problem:invalid-query, with an errors map keyed by parameter).',
+    ),
+    500: problem('An unexpected error. Logged by the server; the body has no detail.'),
+  },
+} satisfies FastifySchema
+
 export interface TradeRoutesOptions {
   readonly tradeService: TradeService
 }
 
-/** POST /trades and GET /trades. HTTP translation only: every rule lives in the service and domain. */
+/** POST /trades, GET /trades and GET /trades/page. HTTP translation only: every rule lives in the service and domain. */
 export const tradeRoutes: FastifyPluginAsync<TradeRoutesOptions> = (app, { tradeService }) => {
   app.post('/trades', {
     schema: createTradeSchema,
@@ -77,6 +97,12 @@ export const tradeRoutes: FastifyPluginAsync<TradeRoutesOptions> = (app, { trade
     // As for the body: the schema documents the parameters, and the domain validates them.
     validatorCompiler: () => (query: unknown) => ({ value: query }),
     handler: async (request) => (await tradeService.listTrades(request.query as TradeQueryRequest)).map(toTradeResponse),
+  })
+
+  app.get('/trades/page', {
+    schema: listTradePageSchema,
+    validatorCompiler: () => (query: unknown) => ({ value: query }),
+    handler: async (request) => toTradePageResponse(await tradeService.listTradePage(request.query as TradePageQueryRequest)),
   })
 
   return Promise.resolve()

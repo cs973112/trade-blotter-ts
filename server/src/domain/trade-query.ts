@@ -56,8 +56,39 @@ export const TRADE_QUERY_PARAMETERS = ['symbol', 'side', 'executedFrom', 'execut
 
 export type TradeQueryParameter = (typeof TRADE_QUERY_PARAMETERS)[number]
 
+/** Trades on a page when no size is asked for. */
+export const DEFAULT_PAGE_SIZE = 50
+
+/** The most trades a page can hold. */
+export const MAX_PAGE_SIZE = 100
+
+/** The highest page number accepted, so every page number is an exact JavaScript integer. */
+export const MAX_PAGE = Number.MAX_SAFE_INTEGER
+
+/** Which page of the matching trades to list, counting from 1. */
+export interface PageRequest {
+  readonly page: number
+  readonly pageSize: number
+}
+
+export interface TradePageQuery {
+  readonly query: TradeQuery
+  readonly page: PageRequest
+}
+
+/** As TradeQueryRequest, with the page parameters. */
+export interface TradePageQueryRequest extends TradeQueryRequest {
+  readonly page?: unknown
+  readonly pageSize?: unknown
+}
+
+/** Query parameters for a page of trades, in the order errors are reported. */
+export const TRADE_PAGE_QUERY_PARAMETERS = [...TRADE_QUERY_PARAMETERS, 'page', 'pageSize'] as const
+
+export type TradePageQueryParameter = (typeof TRADE_PAGE_QUERY_PARAMETERS)[number]
+
 /** Messages for each invalid parameter. Parameters that are valid are absent. */
-export type QueryErrors = Readonly<Partial<Record<TradeQueryParameter, readonly string[]>>>
+export type QueryErrors = Readonly<Partial<Record<TradePageQueryParameter, readonly string[]>>>
 
 export interface TradeQueryRules {
   /** Maximum symbol length in code points; a longer search could never match. */
@@ -66,6 +97,10 @@ export interface TradeQueryRules {
 
 export type TradeQueryValidationResult =
   | { readonly ok: true; readonly value: TradeQuery }
+  | { readonly ok: false; readonly errors: QueryErrors }
+
+export type TradePageQueryValidationResult =
+  | { readonly ok: true; readonly value: TradePageQuery }
   | { readonly ok: false; readonly errors: QueryErrors }
 
 type ParameterResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly message: string }
@@ -122,6 +157,54 @@ function checkChoice<T extends string>(input: unknown, name: string, choices: re
   return choice === undefined ? invalid(`${name} must be one of ${choices.join(', ')}.`) : valid(choice)
 }
 
+/** Digits only, from 1 to max. The text is compared as a BigInt, so a huge number is refused, never rounded. */
+function checkWholeNumber(input: unknown, name: string, max: number, fallback: number): ParameterResult<number> {
+  const text = single(input, name)
+  if (!text.ok) return text
+  if (text.value === undefined) return valid(fallback)
+  const message = `${name} must be a whole number from 1 to ${String(max)}.`
+  if (!/^[0-9]+$/.test(text.value)) return invalid(message)
+  const number = BigInt(text.value)
+  return number < 1n || number > BigInt(max) ? invalid(message) : valid(Number(number))
+}
+
+type ParameterResults = Readonly<Partial<Record<TradePageQueryParameter, ParameterResult<unknown>>>>
+
+/** The messages of the invalid parameters, in TRADE_PAGE_QUERY_PARAMETERS order. */
+function errorsOf(results: ParameterResults): QueryErrors {
+  const errors: Partial<Record<TradePageQueryParameter, readonly string[]>> = {}
+  for (const parameter of TRADE_PAGE_QUERY_PARAMETERS) {
+    const result = results[parameter]
+    if (result !== undefined && !result.ok) errors[parameter] = [result.message]
+  }
+  return errors
+}
+
+/** Checks every filter and sort parameter: the query when all are valid, and each one's result. */
+function readTradeQuery(request: TradeQueryRequest, rules: TradeQueryRules): { readonly value?: TradeQuery; readonly results: ParameterResults } {
+  const symbol = checkSymbol(request.symbol, rules.symbolMaxLength)
+  const side = checkSide(request.side)
+  const executedFrom = checkTimestamp(request.executedFrom, 'executedFrom')
+  let executedTo = checkTimestamp(request.executedTo, 'executedTo')
+  const sortBy = checkChoice(request.sortBy, 'sortBy', TRADE_SORT_FIELDS, DEFAULT_TRADE_SORT.field)
+  const sortDirection = checkChoice(request.sortDirection, 'sortDirection', SORT_DIRECTIONS, DEFAULT_TRADE_SORT.direction)
+
+  if (executedFrom.ok && executedTo.ok && executedFrom.value !== undefined && executedTo.value !== undefined &&
+    executedFrom.value > executedTo.value) {
+    executedTo = invalid('executedTo must not be earlier than executedFrom.')
+  }
+
+  const results = { symbol, side, executedFrom, executedTo, sortBy, sortDirection }
+  if (!(symbol.ok && side.ok && executedFrom.ok && executedTo.ok && sortBy.ok && sortDirection.ok)) return { results }
+
+  const filter: { -readonly [K in keyof TradeFilter]: TradeFilter[K] } = {}
+  if (symbol.value !== undefined) filter.symbolContains = symbol.value
+  if (side.value !== undefined) filter.side = side.value
+  if (executedFrom.value !== undefined) filter.executedFrom = executedFrom.value
+  if (executedTo.value !== undefined) filter.executedTo = executedTo.value
+  return { value: { filter, sort: { field: sortBy.value, direction: sortDirection.value } }, results }
+}
+
 /**
  * Validates and normalises the query parameters for listing trades. Checks every parameter and
  * reports every invalid one at once, in TRADE_QUERY_PARAMETERS order. Never throws for invalid
@@ -137,34 +220,42 @@ function checkChoice<T extends string>(input: unknown, name: string, choices: re
  *   defaults to DEFAULT_TRADE_SORT's value, so `sortDirection=asc` alone lists oldest first.
  */
 export function validateTradeQuery(request: TradeQueryRequest, rules: TradeQueryRules): TradeQueryValidationResult {
-  const symbol = checkSymbol(request.symbol, rules.symbolMaxLength)
-  const side = checkSide(request.side)
-  const executedFrom = checkTimestamp(request.executedFrom, 'executedFrom')
-  let executedTo = checkTimestamp(request.executedTo, 'executedTo')
-  const sortBy = checkChoice(request.sortBy, 'sortBy', TRADE_SORT_FIELDS, DEFAULT_TRADE_SORT.field)
-  const sortDirection = checkChoice(request.sortDirection, 'sortDirection', SORT_DIRECTIONS, DEFAULT_TRADE_SORT.direction)
+  const { value, results } = readTradeQuery(request, rules)
+  return value === undefined ? { ok: false, errors: errorsOf(results) } : { ok: true, value }
+}
 
-  if (executedFrom.ok && executedTo.ok && executedFrom.value !== undefined && executedTo.value !== undefined &&
-    executedFrom.value > executedTo.value) {
-    executedTo = invalid('executedTo must not be earlier than executedFrom.')
-  }
+/**
+ * As validateTradeQuery, with the page: every invalid parameter is reported at once, in
+ * TRADE_PAGE_QUERY_PARAMETERS order.
+ *
+ * - `page`: from 1 to MAX_PAGE, default 1. A page past the last is valid: it holds no trades.
+ * - `pageSize`: from 1 to MAX_PAGE_SIZE, default DEFAULT_PAGE_SIZE.
+ *
+ * Both are digits only: no sign, point, exponent or space. Empty means omitted, and a repeated
+ * parameter is refused, as for the others.
+ */
+export function validateTradePageQuery(request: TradePageQueryRequest, rules: TradeQueryRules): TradePageQueryValidationResult {
+  const { value, results } = readTradeQuery(request, rules)
+  const page = checkWholeNumber(request.page, 'page', MAX_PAGE, 1)
+  const pageSize = checkWholeNumber(request.pageSize, 'pageSize', MAX_PAGE_SIZE, DEFAULT_PAGE_SIZE)
+  if (value === undefined || !page.ok || !pageSize.ok) return { ok: false, errors: errorsOf({ ...results, page, pageSize }) }
+  return { ok: true, value: { query: value, page: { page: page.value, pageSize: pageSize.value } } }
+}
 
-  if (symbol.ok && side.ok && executedFrom.ok && executedTo.ok && sortBy.ok && sortDirection.ok) {
-    const filter: { -readonly [K in keyof TradeFilter]: TradeFilter[K] } = {}
-    if (symbol.value !== undefined) filter.symbolContains = symbol.value
-    if (side.value !== undefined) filter.side = side.value
-    if (executedFrom.value !== undefined) filter.executedFrom = executedFrom.value
-    if (executedTo.value !== undefined) filter.executedTo = executedTo.value
-    return { ok: true, value: { filter, sort: { field: sortBy.value, direction: sortDirection.value } } }
-  }
+/** The number of pages `totalCount` matching trades fill: 0 when none match. */
+export function pageCount(totalCount: number, pageSize: number): number {
+  return Math.ceil(totalCount / pageSize)
+}
 
-  const results: Record<TradeQueryParameter, ParameterResult<unknown>> = { symbol, side, executedFrom, executedTo, sortBy, sortDirection }
-  const errors: Partial<Record<TradeQueryParameter, readonly string[]>> = {}
-  for (const parameter of TRADE_QUERY_PARAMETERS) {
-    const result = results[parameter]
-    if (!result.ok) errors[parameter] = [result.message]
-  }
-  return { ok: false, errors }
+/**
+ * Where a page starts among `totalCount` matching trades in sort order, and how many it holds, or
+ * undefined for a page past the last. Only a page that exists gets an offset, so the offset is
+ * always below totalCount, however large the page number.
+ */
+export function pageWindow(page: PageRequest, totalCount: number): { readonly offset: number; readonly limit: number } | undefined {
+  if (page.page > pageCount(totalCount, page.pageSize)) return undefined
+  const offset = (page.page - 1) * page.pageSize
+  return { offset, limit: Math.min(page.pageSize, totalCount - offset) }
 }
 
 type SortableTrade = Pick<Trade, 'symbol' | 'quantity' | 'price' | 'executedAt' | 'bookingSequence'>
@@ -188,6 +279,8 @@ function compareField(field: TradeSortField, a: SortableTrade, b: SortableTrade)
  * (executedAt, then booking sequence) in the same direction. Booking sequences are unique, so the
  * order is total and the descending order is exactly the ascending order reversed. Symbols compare
  * by code point and decimals by exact value, never through a JavaScript number.
+ *
+ * The reference definition of the order: the repository sorts in SQL, and is tested against it.
  */
 export function compareTrades(sort: TradeSort): (a: SortableTrade, b: SortableTrade) => number {
   const sign = sort.direction === 'asc' ? 1 : -1

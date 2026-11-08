@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { TradeQueryValidationError, TradeValidationError } from '../../src/application/errors.ts'
+import type { TradeRepository } from '../../src/application/ports.ts'
 import { createTradeService } from '../../src/application/trade-service.ts'
 import { decimalText } from '../../src/domain/decimal.ts'
 import { notional, type Trade, type TradeRequest } from '../../src/domain/trade.ts'
@@ -20,6 +21,20 @@ function setup(options: { symbolMaxLength?: number } = {}) {
 
 const request = (overrides: TradeRequest = {}): TradeRequest =>
   ({ symbol: 'ABC', side: 'Buy', quantity: '1', price: '1', executedAt: '2026-01-01T09:00:00Z', ...overrides })
+
+/** A service over `trades` that calls `read` before every read of the repository. */
+function countingReads(trades: TradeRepository, read: () => void) {
+  return createTradeService({
+    trades: {
+      ...trades,
+      listInTradeOrder: (filter) => { read(); return trades.listInTradeOrder(filter) },
+      list: (query) => { read(); return trades.list(query) },
+      listPage: (query, page) => { read(); return trades.listPage(query, page) },
+    },
+    clock: createFixedClock(CLOCK_TIME),
+    ids: createSequentialIds(),
+  })
+}
 
 async function rejection(promise: Promise<unknown>): Promise<TradeValidationError> {
   try {
@@ -188,11 +203,7 @@ describe('application: searching, filtering and sorting trades', () => {
   it('refuses an invalid query with every problem at once, before reading any trade', async () => {
     const { service, trades } = await booked()
     let reads = 0
-    const counting = createTradeService({
-      trades: { ...trades, listInTradeOrder: (filter) => { reads++; return trades.listInTradeOrder(filter) } },
-      clock: createFixedClock(CLOCK_TIME),
-      ids: createSequentialIds(),
-    })
+    const counting = countingReads(trades, () => { reads++ })
 
     const error = await counting.listTrades({ side: 'hold', sortBy: 'notional' }).catch((caught: unknown) => caught)
 
@@ -221,5 +232,74 @@ describe('application: searching, filtering and sorting trades', () => {
     await service.listTrades({ sortBy: 'price' })
 
     expect(trades.stored).toEqual(before)
+  })
+})
+
+describe('application: listing a page of trades', () => {
+  async function bookedMany(count: number) {
+    const context = setup()
+    for (let index = 0; index < count; index++) {
+      await context.service.createTrade(request({ symbol: index % 2 === 0 ? 'EVEN' : 'ODD', price: `1.${String(index)}`,
+        executedAt: `2026-01-01T09:${String(index % 60).padStart(2, '0')}:00Z` }))
+    }
+    return context
+  }
+
+  const ids = (trades: readonly Trade[]): string[] => trades.map((trade) => trade.id)
+
+  it('answers the first page of 50 by default, with the totals', async () => {
+    const { service } = await bookedMany(60)
+
+    const page = await service.listTradePage()
+
+    expect({ ...page, trades: page.trades.length }).toEqual({ trades: 50, page: 1, pageSize: 50, totalCount: 60, totalPages: 2 })
+    expect(ids(page.trades)).toEqual(ids(await service.listTrades()).slice(0, 50))
+  })
+
+  it('pages through exactly what listTrades lists for the same query', async () => {
+    const { service } = await bookedMany(23)
+    const query = { symbol: 'odd', sortBy: 'price', sortDirection: 'asc' }
+    const listed = ids(await service.listTrades(query))
+
+    const pages = [1, 2, 3].map((page) => service.listTradePage({ ...query, page: String(page), pageSize: '4' }))
+    const resolved = await Promise.all(pages)
+
+    expect(resolved.map((page) => [page.page, page.totalCount, page.totalPages])).toEqual([[1, 11, 3], [2, 11, 3], [3, 11, 3]])
+    expect(resolved.flatMap((page) => ids(page.trades))).toEqual(listed)
+  })
+
+  it('answers a page past the last with no trades and the real totals', async () => {
+    const { service } = await bookedMany(5)
+
+    expect(await service.listTradePage({ page: '2', pageSize: '5' }))
+      .toEqual({ trades: [], page: 2, pageSize: 5, totalCount: 5, totalPages: 1 })
+    expect(await service.listTradePage({ symbol: 'none', page: '9007199254740991' }))
+      .toEqual({ trades: [], page: 9007199254740991, pageSize: 50, totalCount: 0, totalPages: 0 })
+  })
+
+  it('refuses invalid page parameters with every problem at once, before reading any trade', async () => {
+    const { trades } = await bookedMany(1)
+    let reads = 0
+    const counting = countingReads(trades, () => { reads++ })
+
+    const error = await counting.listTradePage({ side: 'hold', page: '0', pageSize: '101' }).catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(TradeQueryValidationError)
+    expect((error as TradeQueryValidationError).errors).toEqual({
+      side: ['side must be Buy or Sell.'],
+      page: ['page must be a whole number from 1 to 9007199254740991.'],
+      pageSize: ['pageSize must be a whole number from 1 to 100.'],
+    })
+    expect(reads).toBe(0)
+  })
+
+  it('reads the page and the count with one repository call', async () => {
+    const { trades } = await bookedMany(3)
+    let reads = 0
+    const counting = countingReads(trades, () => { reads++ })
+
+    await counting.listTradePage({ pageSize: '2', page: '2' })
+
+    expect(reads).toBe(1)
   })
 })

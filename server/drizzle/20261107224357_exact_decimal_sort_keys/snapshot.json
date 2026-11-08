@@ -1,0 +1,281 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "id": "e3dc58b2-d3b5-49a5-842b-91a82b0426e8",
+  "prevIds": [
+    "c5182d28-2676-4d6d-bee3-7aa9b55a03c4"
+  ],
+  "ddl": [
+    {
+      "name": "trades",
+      "entityType": "tables"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": true,
+      "default": null,
+      "generated": null,
+      "name": "booking_sequence",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "symbol",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "side",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "quantity",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "price",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "executed_at",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": {
+        "as": "(printf('%010d', case when instr(\"quantity\", '.') = 0 then length(\"quantity\") else instr(\"quantity\", '.') - 1 end) || \"quantity\")",
+        "type": "virtual"
+      },
+      "name": "quantity_key",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": {
+        "as": "(printf('%010d', case when instr(\"price\", '.') = 0 then length(\"price\") else instr(\"price\", '.') - 1 end) || \"price\")",
+        "type": "virtual"
+      },
+      "name": "price_key",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "columns": [
+        "booking_sequence"
+      ],
+      "nameExplicit": false,
+      "name": "trades_pk",
+      "table": "trades",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        {
+          "value": "executed_at",
+          "isExpression": false
+        },
+        {
+          "value": "booking_sequence",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "trades_trade_order",
+      "entityType": "indexes",
+      "table": "trades"
+    },
+    {
+      "columns": [
+        {
+          "value": "symbol",
+          "isExpression": false
+        },
+        {
+          "value": "executed_at",
+          "isExpression": false
+        },
+        {
+          "value": "booking_sequence",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "trades_symbol_trade_order",
+      "entityType": "indexes",
+      "table": "trades"
+    },
+    {
+      "columns": [
+        {
+          "value": "quantity_key",
+          "isExpression": false
+        },
+        {
+          "value": "executed_at",
+          "isExpression": false
+        },
+        {
+          "value": "booking_sequence",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "trades_quantity_order",
+      "entityType": "indexes",
+      "table": "trades"
+    },
+    {
+      "columns": [
+        {
+          "value": "price_key",
+          "isExpression": false
+        },
+        {
+          "value": "executed_at",
+          "isExpression": false
+        },
+        {
+          "value": "booking_sequence",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "trades_price_order",
+      "entityType": "indexes",
+      "table": "trades"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "trades_id_unique",
+      "entityType": "uniques",
+      "table": "trades"
+    },
+    {
+      "value": "typeof(\"id\") = 'text' and length(\"id\") > 0",
+      "name": "trades_id",
+      "entityType": "checks",
+      "table": "trades"
+    },
+    {
+      "value": "typeof(\"symbol\") = 'text'\n      and length(\"symbol\") between 1 and 255\n      and \"symbol\" = trim(\"symbol\")",
+      "name": "trades_symbol",
+      "entityType": "checks",
+      "table": "trades"
+    },
+    {
+      "value": "\"side\" in ('Buy', 'Sell')",
+      "name": "trades_side",
+      "entityType": "checks",
+      "table": "trades"
+    },
+    {
+      "value": "typeof(\"quantity\") = 'text'\n    and (\"quantity\" glob '[0-9]' or \"quantity\" glob '[0-9]*[0-9]')\n    and \"quantity\" not glob '*[^0-9.]*'\n    and \"quantity\" not glob '*.*.*'\n    and \"quantity\" not glob '0[0-9]*'\n    and not (\"quantity\" glob '*.*' and \"quantity\" glob '*0')\n    and \"quantity\" <> '0'",
+      "name": "trades_quantity",
+      "entityType": "checks",
+      "table": "trades"
+    },
+    {
+      "value": "typeof(\"price\") = 'text'\n    and (\"price\" glob '[0-9]' or \"price\" glob '[0-9]*[0-9]')\n    and \"price\" not glob '*[^0-9.]*'\n    and \"price\" not glob '*.*.*'\n    and \"price\" not glob '0[0-9]*'\n    and not (\"price\" glob '*.*' and \"price\" glob '*0')\n    and \"price\" <> '0'",
+      "name": "trades_price",
+      "entityType": "checks",
+      "table": "trades"
+    },
+    {
+      "value": "typeof(\"executed_at\") = 'text'\n    and \"executed_at\" glob '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'",
+      "name": "trades_executed_at",
+      "entityType": "checks",
+      "table": "trades"
+    },
+    {
+      "value": "typeof(\"created_at\") = 'text'\n    and \"created_at\" glob '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'",
+      "name": "trades_created_at",
+      "entityType": "checks",
+      "table": "trades"
+    },
+    {
+      "value": "typeof(\"updated_at\") = 'text'\n    and \"updated_at\" glob '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' and \"updated_at\" >= \"created_at\"",
+      "name": "trades_updated_at",
+      "entityType": "checks",
+      "table": "trades"
+    }
+  ],
+  "renames": []
+}

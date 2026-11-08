@@ -1,11 +1,12 @@
-import type { TradeRepository } from '../../src/application/ports.ts'
+import type { TradePageResult, TradeRepository } from '../../src/application/ports.ts'
 import { positionAfterTrade } from '../../src/domain/position.ts'
-import type { TradeFilter } from '../../src/domain/trade-query.ts'
+import { compareTrades, pageWindow, type PageRequest, type TradeFilter, type TradeQuery } from '../../src/domain/trade-query.ts'
 import { compareTradeOrder, type NewTrade, type Trade } from '../../src/domain/trade.ts'
 
 /**
  * The repository contract in memory: checks each trade against its symbol's history, assigns
- * booking sequences 1, 2, 3, ... and lists matching trades in trade order. Exposes what it stores
+ * booking sequences 1, 2, 3, ... and lists matching trades in trade order, or sorted and paged
+ * with compareTrades and pageWindow, the definitions the SQL is tested against. Exposes what it stores
  * so tests can check what reached persistence.
  */
 export function createInMemoryTradeRepository() {
@@ -22,6 +23,17 @@ export function createInMemoryTradeRepository() {
     },
     listInTradeOrder(filter: TradeFilter = {}): Promise<readonly Trade[]> {
       return Promise.resolve(stored.filter((trade) => matches(trade, filter)).sort(compareTradeOrder))
+    },
+    list(query: TradeQuery): Promise<readonly Trade[]> {
+      return Promise.resolve(stored.filter((trade) => matches(trade, query.filter)).sort(compareTrades(query.sort)))
+    },
+    listPage(query: TradeQuery, page: PageRequest): Promise<TradePageResult> {
+      const matching = stored.filter((trade) => matches(trade, query.filter)).sort(compareTrades(query.sort))
+      const window = pageWindow(page, matching.length)
+      return Promise.resolve({
+        trades: window === undefined ? [] : matching.slice(window.offset, window.offset + window.limit),
+        totalCount: matching.length,
+      })
     },
     /** Every stored trade in booking order. */
     get stored(): readonly Trade[] {

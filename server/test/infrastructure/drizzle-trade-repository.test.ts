@@ -6,7 +6,7 @@ import { decimalText } from '../../src/domain/decimal.ts'
 import { PositionLimitError } from '../../src/domain/position.ts'
 import type { Trade } from '../../src/domain/trade.ts'
 import type { Database } from '../../src/infrastructure/database/connection.ts'
-import { createDrizzleTradeRepository } from '../../src/infrastructure/drizzle-trade-repository.ts'
+import { createDrizzleTradeRepository, planPageRead } from '../../src/infrastructure/drizzle-trade-repository.ts'
 import { createTestDatabase, rawRows } from '../support/database.ts'
 import { createFixedClock, createSequentialIds } from '../support/fixed-clock.ts'
 import { newTrade, utc } from '../support/trades.ts'
@@ -340,5 +340,94 @@ describe('infrastructure: Drizzle trade repository filters', () => {
 
     expect(await repository.listInTradeOrder({ symbolContains: "') > 0 OR 1=1 --" })).toEqual([])
     expect(count()).toBe(HISTORY.length)
+  })
+})
+
+describe('infrastructure: Drizzle trade repository pages', () => {
+  const NEWEST_FIRST = { filter: {}, sort: { field: 'executedAt', direction: 'desc' } } as const
+
+  it('answers an empty table with no trades and a count of zero', async () => {
+    const repository = createDrizzleTradeRepository(db)
+
+    expect(await repository.listPage(NEWEST_FIRST, { page: 1, pageSize: 50 })).toEqual({ trades: [], totalCount: 0 })
+  })
+
+  it('answers a page past the last, even the highest page number, without reading any trade', async () => {
+    const repository = createDrizzleTradeRepository(db)
+    for (const id of ['a', 'b', 'c']) await repository.add(newTrade({ id }))
+
+    expect(await repository.listPage(NEWEST_FIRST, { page: 2, pageSize: 3 })).toEqual({ trades: [], totalCount: 3 })
+    expect(await repository.listPage(NEWEST_FIRST, { page: Number.MAX_SAFE_INTEGER, pageSize: 100 })).toEqual({ trades: [], totalCount: 3 })
+  })
+
+  it('reads in a transaction it always ends, and changes no row', async () => {
+    const repository = createDrizzleTradeRepository(db)
+    for (const id of ['a', 'b', 'c']) await repository.add(newTrade({ id, executedAt: `2026-01-0${id === 'a' ? '1' : id === 'b' ? '2' : '3'}T00:00:00Z` }))
+    const before = rawRows(db)
+
+    const page = await repository.listPage(NEWEST_FIRST, { page: 2, pageSize: 2 })
+
+    expect(page.trades.map((trade) => trade.id)).toEqual(['a'])
+    expect(page.totalCount).toBe(3)
+    expect(db.$client.isTransaction).toBe(false)
+    expect(rawRows(db)).toEqual(before)
+  })
+
+  it('counts and lists trades another connection booked since the last page', async () => {
+    const reader = createDrizzleTradeRepository(database.open())
+    const writer = createDrizzleTradeRepository(db)
+    await writer.add(newTrade({ id: 'first', executedAt: '2026-01-01T00:00:00Z' }))
+    expect(await reader.listPage(NEWEST_FIRST, { page: 1, pageSize: 1 })).toMatchObject({ totalCount: 1 })
+
+    await writer.add(newTrade({ id: 'second', executedAt: '2026-01-02T00:00:00Z' }))
+    const page = await reader.listPage(NEWEST_FIRST, { page: 1, pageSize: 1 })
+
+    expect([page.totalCount, page.trades.map((trade) => trade.id)]).toEqual([2, ['second']])
+  })
+})
+
+describe('infrastructure: how a page is read', () => {
+  const never = (): number => {
+    throw new Error('The number of trades was not needed.')
+  }
+
+  it('reads a page in the first half from the start, without asking how many trades there are', () => {
+    expect(planPageRead({ offset: 0, limit: 50 }, 25_000, 'quantity', {}, never)).toEqual({ fromEnd: false, skip: 0, useSortIndex: true })
+    expect(planPageRead({ offset: 100, limit: 50 }, 250, 'quantity', {}, never)).toEqual({ fromEnd: false, skip: 100, useSortIndex: true })
+  })
+
+  it('reads a page in the second half from the end, skipping the rows after it', () => {
+    expect(planPageRead({ offset: 24_950, limit: 50 }, 25_000, 'quantity', {}, never)).toEqual({ fromEnd: true, skip: 0, useSortIndex: true })
+    expect(planPageRead({ offset: 100, limit: 20 }, 120, 'quantity', {}, never)).toEqual({ fromEnd: true, skip: 0, useSortIndex: true })
+    expect(planPageRead({ offset: 150, limit: 50 }, 250, 'quantity', {}, never)).toEqual({ fromEnd: true, skip: 50, useSortIndex: true })
+  })
+
+  it('walks the sort index for date filters, which an index serves, however deep the page', () => {
+    const dates = { executedFrom: utc('2025-01-01T00:00:00Z'), executedTo: utc('2026-01-01T00:00:00Z') }
+
+    expect(planPageRead({ offset: 7_000, limit: 50 }, 15_000, 'quantity', dates, never).useSortIndex).toBe(true)
+  })
+
+  it('walks to a first or last page among few matches, and sorts the matches for a page deep among them', () => {
+    const few = { symbolContains: 'BRK' }
+
+    expect(planPageRead({ offset: 0, limit: 50 }, 1_017, 'quantity', few, () => 25_000).useSortIndex).toBe(true)
+    expect(planPageRead({ offset: 1_000, limit: 17 }, 1_017, 'quantity', few, () => 25_000)).toEqual({ fromEnd: true, skip: 0, useSortIndex: true })
+    expect(planPageRead({ offset: 500, limit: 50 }, 1_017, 'quantity', few, () => 25_000).useSortIndex).toBe(false)
+    expect(planPageRead({ offset: 250, limit: 50 }, 1_017, 'quantity', few, () => 25_000).useSortIndex).toBe(false)
+  })
+
+  it('keeps walking when half the trades match, where walking measured no dearer than sorting', () => {
+    expect(planPageRead({ offset: 6_200, limit: 50 }, 12_441, 'quantity', { side: 'Buy' }, () => 25_000).useSortIndex).toBe(true)
+  })
+
+  it('always walks the execution-time index, which lists trades in about the order they are stored', () => {
+    for (const filter of [{ symbolContains: 'BRK' }, { side: 'Buy' as const }]) {
+      expect(planPageRead({ offset: 500, limit: 50 }, 1_017, 'executedAt', filter, never).useSortIndex).toBe(true)
+    }
+  })
+
+  it('weighs symbol sorts like quantity and price: the symbol index is not in stored order either', () => {
+    expect(planPageRead({ offset: 500, limit: 50 }, 1_017, 'symbol', { side: 'Sell' }, () => 25_000).useSortIndex).toBe(false)
   })
 })

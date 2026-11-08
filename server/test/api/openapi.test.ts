@@ -59,12 +59,40 @@ describe('API: OpenAPI document', () => {
     expect(document.openapi).toBe('3.1.0')
   })
 
-  it('documents exactly the three endpoints', () => {
+  it('documents exactly the four endpoints', () => {
     const operations = Object.entries(document.paths)
       .filter(([path]) => !path.startsWith('/documentation'))
       .flatMap(([path, methods]) => Object.entries(methods).map(([method, op]) => `${method.toUpperCase()} ${path} ${op.operationId}`))
 
-    expect(operations.sort()).toEqual(['GET /positions listPositions', 'GET /trades listTrades', 'POST /trades createTrade'])
+    expect(operations.sort()).toEqual([
+      'GET /positions listPositions', 'GET /trades listTrades', 'GET /trades/page listTradePage', 'POST /trades createTrade',
+    ])
+  })
+
+  it('documents GET /trades/page: the GET /trades parameters, then page and pageSize with their limits and defaults', () => {
+    const page = operation('/trades/page', 'get')
+    const parameters = page.parameters ?? []
+    const byName = Object.fromEntries(parameters.map((parameter) => [parameter.name, parameter]))
+    const list = operation('/trades', 'get').parameters ?? []
+
+    expect(parameters.map((parameter) => [parameter.name, parameter.in, parameter.required])).toEqual([
+      ...list.map((parameter) => [parameter.name, parameter.in, parameter.required]), ['page', 'query', false], ['pageSize', 'query', false],
+    ])
+    for (const parameter of list) expect(byName[parameter.name]).toEqual(parameter)
+    expect(byName['page']?.schema).toEqual({ type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER, default: 1 })
+    expect(byName['pageSize']?.schema).toEqual({ type: 'integer', minimum: 1, maximum: 100, default: 50 })
+    expect(byName['page']?.description).toContain('A page past the last is not an error')
+    expect(page.responses['200']?.content?.['application/json']?.schema).toEqual({ $ref: '#/components/schemas/TradePage' })
+    expect(page.responses['400']?.description).toContain('urn:trade-blotter:problem:invalid-query')
+    expect(Object.keys(page.responses).sort()).toEqual(['200', '400', '500'])
+  })
+
+  it('documents the page envelope', () => {
+    const envelope = schema('TradePage')
+
+    expect(Object.keys(envelope.properties ?? {})).toEqual(['items', 'page', 'pageSize', 'totalCount', 'totalPages'])
+    expect(envelope.required).toEqual(['items', 'page', 'pageSize', 'totalCount', 'totalPages'])
+    expect(JSON.stringify(envelope.properties?.['items'])).toContain('#/components/schemas/Trade')
   })
 
   it('documents the request body, its decimal rules and executedAt default', () => {

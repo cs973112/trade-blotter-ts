@@ -2,7 +2,7 @@ import { Type } from 'typebox'
 
 import { MAX_DECIMAL_PLACES, MAX_INTEGER_DIGITS } from '../domain/decimal.ts'
 import { DEFAULT_SYMBOL_MAX_LENGTH } from '../domain/symbol.ts'
-import { DEFAULT_TRADE_SORT, SORT_DIRECTIONS, TRADE_SORT_FIELDS } from '../domain/trade-query.ts'
+import { DEFAULT_PAGE_SIZE, DEFAULT_TRADE_SORT, MAX_PAGE, MAX_PAGE_SIZE, SORT_DIRECTIONS, TRADE_SORT_FIELDS } from '../domain/trade-query.ts'
 import { TRADE_SIDES } from '../domain/trade.ts'
 import { JSON_NUMBER_PATTERN } from './json.ts'
 
@@ -94,7 +94,8 @@ export const Problem = Type.Object(
     detail: Type.Optional(Type.String()),
     errors: Type.Optional(Type.Record(Type.String(), Type.Array(Type.String()), {
       description: 'Invalid trade fields, in request order (symbol, side, quantity, price, executedAt), or invalid query ' +
-        'parameters, in documented order (symbol, side, executedFrom, executedTo, sortBy, sortDirection), each with its messages.',
+        'parameters, in documented order (symbol, side, executedFrom, executedTo, sortBy, sortDirection, then page and ' +
+        'pageSize for GET /trades/page), each with its messages.',
     })),
     symbol: Type.Optional(Type.String({ description: 'The symbol whose position limit would be breached.' })),
   },
@@ -140,7 +141,40 @@ export const ListTradesQuery = Type.Object({
   })),
 })
 
+const WholeNumberRule = 'Digits only: no sign, decimal point, exponent or spaces.'
+
+/**
+ * GET /trades/page query parameters: those of GET /trades, which mean the same there, and the
+ * page. Inline, like ListTradesQuery.
+ */
+export const ListTradePageQuery = Type.Object({
+  ...ListTradesQuery.properties,
+  page: Type.Optional(Type.Integer({
+    minimum: 1,
+    maximum: MAX_PAGE,
+    default: 1,
+    description: `The page to list, counting from 1. A page past the last is not an error: it has no items. ${WholeNumberRule}`,
+  })),
+  pageSize: Type.Optional(Type.Integer({
+    minimum: 1,
+    maximum: MAX_PAGE_SIZE,
+    default: DEFAULT_PAGE_SIZE,
+    description: `Trades per page, at most ${String(MAX_PAGE_SIZE)}. ${WholeNumberRule}`,
+  })),
+})
+
+export const TradePageResponse = Type.Object(
+  {
+    items: Type.Array(Type.Ref('Trade'), { description: 'The trades on this page, in the requested order; empty past the last page.' }),
+    page: Type.Integer({ minimum: 1, description: 'The page number, as requested.' }),
+    pageSize: Type.Integer({ minimum: 1, maximum: MAX_PAGE_SIZE, description: 'The page size, as requested.' }),
+    totalCount: Type.Integer({ minimum: 0, description: 'Trades matching the filters, on every page. Counted with the page, so they agree.' }),
+    totalPages: Type.Integer({ minimum: 0, description: 'Pages the matching trades fill: totalCount divided by pageSize, rounded up; 0 when none match.' }),
+  },
+  { $id: 'TradePage', description: 'One page of the trades GET /trades would list for the same query.' },
+)
+
 /** The only check made on a trade request before the domain sees it: the body is a JSON object. */
 export const TradeRequestContainer = Type.Object({})
 
-export const SHARED_SCHEMAS = [CreateTradeRequest, TradeResponse, PositionResponse, Problem]
+export const SHARED_SCHEMAS = [CreateTradeRequest, TradeResponse, TradePageResponse, PositionResponse, Problem]
