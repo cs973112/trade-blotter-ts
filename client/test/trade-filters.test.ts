@@ -1,11 +1,18 @@
 import { describe, expect, it } from 'vitest'
 
+import type { Trade } from '../src/api/contracts.ts'
 import {
+  DEFAULT_PAGE_SIZE,
   DEFAULT_TRADE_FILTERS,
+  DEFAULT_TRADE_SORT,
+  directionLabel,
   narrowsList,
+  nextSort,
+  PAGE_SIZES,
   SORT_FIELDS,
   sortDirections,
   toTradeQuery,
+  tradeMatchesFilters,
   type TradeFilters,
 } from '../src/lib/trade-filters.ts'
 import type { OffsetAt } from '../src/lib/timestamps.ts'
@@ -28,8 +35,8 @@ function errors(overrides: Partial<TradeFilters>, offsetAt: OffsetAt = NEW_YORK)
 }
 
 describe('trade filters: building the query', () => {
-  it('gives an empty query for the defaults, so the list is requested exactly as before', () => {
-    expect(DEFAULT_TRADE_FILTERS).toEqual({ symbol: '', side: '', fromDate: '', toDate: '', sortBy: 'executedAt', sortDirection: 'desc' })
+  it('gives an empty query for the defaults: no filter', () => {
+    expect(DEFAULT_TRADE_FILTERS).toEqual({ symbol: '', side: '', fromDate: '', toDate: '' })
     expect(query({})).toEqual({})
   })
 
@@ -65,21 +72,9 @@ describe('trade filters: building the query', () => {
       .toEqual({ executedFrom: '2026-01-14T18:30:00.000Z', executedTo: '2026-01-15T18:29:59.999Z' })
   })
 
-  it('sends the sort only when it is not the default, and then both its field and direction', () => {
-    expect(query({ sortBy: 'executedAt', sortDirection: 'desc' })).toEqual({})
-    expect(query({ sortBy: 'executedAt', sortDirection: 'asc' })).toEqual({ sortBy: 'executedAt', sortDirection: 'asc' })
-    for (const field of ['symbol', 'quantity', 'price'] as const) {
-      expect(query({ sortBy: field, sortDirection: 'asc' })).toEqual({ sortBy: field, sortDirection: 'asc' })
-      expect(query({ sortBy: field, sortDirection: 'desc' })).toEqual({ sortBy: field, sortDirection: 'desc' })
-    }
-  })
-
-  it('combines every filter and the sort', () => {
-    expect(query({ symbol: 'ms', side: 'Sell', fromDate: '2026-03-08', toDate: '2026-11-01', sortBy: 'price', sortDirection: 'asc' }))
-      .toEqual({
-        symbol: 'ms', side: 'Sell', executedFrom: '2026-03-08T05:00:00.000Z', executedTo: '2026-11-02T04:59:59.999Z',
-        sortBy: 'price', sortDirection: 'asc',
-      })
+  it('combines every filter, and never includes a sort: the column headers set it', () => {
+    expect(query({ symbol: 'ms', side: 'Sell', fromDate: '2026-03-08', toDate: '2026-11-01' }))
+      .toEqual({ symbol: 'ms', side: 'Sell', executedFrom: '2026-03-08T05:00:00.000Z', executedTo: '2026-11-02T04:59:59.999Z' })
   })
 })
 
@@ -129,5 +124,72 @@ describe('trade filters: labels', () => {
     expect(narrowsList({ side: 'Buy' })).toBe(true)
     expect(narrowsList({ executedFrom: '2026-01-01T00:00:00.000Z' })).toBe(true)
     expect(narrowsList({ executedTo: '2026-01-01T00:00:00.000Z' })).toBe(true)
+  })
+})
+
+describe('trade filters: sorting by a column', () => {
+  it('starts newest execution first', () => {
+    expect(DEFAULT_TRADE_SORT).toEqual({ sortBy: 'executedAt', sortDirection: 'desc' })
+  })
+
+  it('starts another column in its first direction: ascending, or newest first for the execution date', () => {
+    expect(nextSort(DEFAULT_TRADE_SORT, 'symbol')).toEqual({ sortBy: 'symbol', sortDirection: 'asc' })
+    expect(nextSort(DEFAULT_TRADE_SORT, 'quantity')).toEqual({ sortBy: 'quantity', sortDirection: 'asc' })
+    expect(nextSort({ sortBy: 'price', sortDirection: 'desc' }, 'executedAt')).toEqual({ sortBy: 'executedAt', sortDirection: 'desc' })
+    expect(nextSort({ sortBy: 'quantity', sortDirection: 'desc' }, 'price')).toEqual({ sortBy: 'price', sortDirection: 'asc' })
+  })
+
+  it('reverses the active column, back and forth', () => {
+    expect(nextSort(DEFAULT_TRADE_SORT, 'executedAt')).toEqual({ sortBy: 'executedAt', sortDirection: 'asc' })
+    expect(nextSort({ sortBy: 'executedAt', sortDirection: 'asc' }, 'executedAt')).toEqual(DEFAULT_TRADE_SORT)
+    expect(nextSort({ sortBy: 'price', sortDirection: 'asc' }, 'price')).toEqual({ sortBy: 'price', sortDirection: 'desc' })
+    expect(nextSort({ sortBy: 'price', sortDirection: 'desc' }, 'price')).toEqual({ sortBy: 'price', sortDirection: 'asc' })
+  })
+
+  it('names each direction for its field', () => {
+    expect([directionLabel('executedAt', 'desc'), directionLabel('executedAt', 'asc'), directionLabel('price', 'asc'), directionLabel('symbol', 'desc')])
+      .toEqual(['Newest first', 'Oldest first', 'Ascending', 'Descending'])
+  })
+
+  it('offers pages of 25, 50 and 100 trades, 50 to begin with', () => {
+    expect([...PAGE_SIZES]).toEqual([25, 50, 100])
+    expect(DEFAULT_PAGE_SIZE).toBe(50)
+  })
+})
+
+describe('trade filters: whether a booked trade matches the applied filters', () => {
+  const trade = (overrides: Partial<Trade> = {}): Trade => ({
+    id: 't', bookingSequence: 1, symbol: 'BRK.B', side: 'Buy', quantity: '1', price: '1', notional: '1',
+    executedAt: '2026-03-08T05:00:00.000Z', createdAt: '2026-03-08T05:00:00.000Z', updatedAt: '2026-03-08T05:00:00.000Z', ...overrides,
+  })
+
+  it('matches everything without filters, and ignores the sort', () => {
+    expect(tradeMatchesFilters(trade(), {})).toBe(true)
+    expect(tradeMatchesFilters(trade(), { sortBy: 'price', sortDirection: 'asc' })).toBe(true)
+  })
+
+  it('matches the symbol search anywhere, normalised as the API does: trimmed, NFC and upper case', () => {
+    for (const symbol of ['brk', ' rk.b ', 'K.', 'BRK.B']) expect(tradeMatchesFilters(trade(), { symbol })).toBe(true)
+    expect(tradeMatchesFilters(trade(), { symbol: 'brkb' })).toBe(false)
+    // "e" followed by a combining acute accent composes to the É the API stores.
+    expect(tradeMatchesFilters(trade({ symbol: 'ÉCOLE' }), { symbol: `e${String.fromCodePoint(0x301)}co` })).toBe(true)
+    expect(tradeMatchesFilters(trade({ symbol: 'ECOLE' }), { symbol: 'É' })).toBe(false)
+  })
+
+  it('matches the side exactly', () => {
+    expect(tradeMatchesFilters(trade(), { side: 'Buy' })).toBe(true)
+    expect(tradeMatchesFilters(trade(), { side: 'Sell' })).toBe(false)
+  })
+
+  it('includes both execution-time bounds, to the millisecond', () => {
+    const at = '2026-03-08T05:00:00.000Z'
+    expect(tradeMatchesFilters(trade(), { executedFrom: at, executedTo: at })).toBe(true)
+    expect(tradeMatchesFilters(trade(), { executedFrom: '2026-03-08T05:00:00.001Z' })).toBe(false)
+    expect(tradeMatchesFilters(trade(), { executedTo: '2026-03-08T04:59:59.999Z' })).toBe(false)
+  })
+
+  it('requires every filter at once', () => {
+    expect(tradeMatchesFilters(trade(), { symbol: 'brk', side: 'Buy', executedFrom: '2026-01-01T00:00:00.000Z' })).toBe(true)
+    expect(tradeMatchesFilters(trade(), { symbol: 'brk', side: 'Sell', executedFrom: '2026-01-01T00:00:00.000Z' })).toBe(false)
   })
 })

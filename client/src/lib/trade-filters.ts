@@ -1,10 +1,11 @@
-import type { Side, SortDirection, SortField, TradeQuery } from '../api/contracts.ts'
+import type { Side, SortDirection, SortField, Trade, TradeQuery } from '../api/contracts.ts'
 import { localDayEnd, localDayStart } from './local-dates.ts'
 import { browserOffsetAt, type OffsetAt } from './timestamps.ts'
 
 /**
- * The trade list's search, filter and sort controls as the user sets them, and their translation
- * into GET /trades query parameters. Dates are local calendar dates; both are included.
+ * The trade list's search and filter controls as the user sets them, their translation into
+ * GET /trades/page query parameters, and the list's sort and page sizes. Dates are local calendar
+ * dates; both are included.
  */
 export interface TradeFilters {
   symbol: string
@@ -13,14 +14,21 @@ export interface TradeFilters {
   /** Local calendar dates from <input type="date">, such as "2026-03-08"; empty for no bound. */
   fromDate: string
   toDate: string
-  sortBy: SortField
-  sortDirection: SortDirection
 }
 
-/** No filter, newest execution first: the list as it is without any query. */
-export const DEFAULT_TRADE_FILTERS: Readonly<TradeFilters> = Object.freeze({
-  symbol: '', side: '', fromDate: '', toDate: '', sortBy: 'executedAt', sortDirection: 'desc',
-})
+/** No filter: every trade. */
+export const DEFAULT_TRADE_FILTERS: Readonly<TradeFilters> = Object.freeze({ symbol: '', side: '', fromDate: '', toDate: '' })
+
+/** The filter members of a query: what narrows the list. */
+export type TradeFilterQuery = Pick<TradeQuery, 'symbol' | 'side' | 'executedFrom' | 'executedTo'>
+
+export interface TradeSort {
+  readonly sortBy: SortField
+  readonly sortDirection: SortDirection
+}
+
+/** Newest execution first: the list's order until a column is chosen, and again after Clear. */
+export const DEFAULT_TRADE_SORT: TradeSort = Object.freeze({ sortBy: 'executedAt', sortDirection: 'desc' })
 
 export const SORT_FIELDS: readonly { readonly value: SortField; readonly label: string }[] = [
   { value: 'executedAt', label: 'Execution date' },
@@ -36,6 +44,25 @@ export function sortDirections(field: SortField): readonly { readonly value: Sor
     : [{ value: 'asc', label: 'Ascending' }, { value: 'desc', label: 'Descending' }]
 }
 
+/** The name of a direction for a field, such as "Newest first" or "Ascending". */
+export function directionLabel(field: SortField, direction: SortDirection): string {
+  return sortDirections(field).find((option) => option.value === direction)?.label ?? direction
+}
+
+/**
+ * The sort after choosing a column: the active column reverses; another column starts in its first
+ * direction, newest first for the execution date and ascending for the others.
+ */
+export function nextSort(current: TradeSort, field: SortField): TradeSort {
+  if (current.sortBy === field) return { sortBy: field, sortDirection: current.sortDirection === 'asc' ? 'desc' : 'asc' }
+  return { sortBy: field, sortDirection: sortDirections(field)[0]?.value ?? 'asc' }
+}
+
+/** Page sizes the list offers, and the one it starts with. */
+export const PAGE_SIZES = [25, 50, 100] as const
+
+export const DEFAULT_PAGE_SIZE = 50
+
 export type DateFilterErrors = Partial<Record<'fromDate' | 'toDate', string>>
 
 /** For a date that is not a complete calendar date the API can accept, including one only partly typed. */
@@ -45,14 +72,13 @@ export const INCOMPLETE_DATE_MESSAGES: Readonly<Record<keyof DateFilterErrors, s
 }
 
 export type TradeQueryResult =
-  | { readonly ok: true; readonly query: TradeQuery }
+  | { readonly ok: true; readonly query: TradeFilterQuery }
   | { readonly ok: false; readonly errors: DateFilterErrors }
 
 /**
- * Builds the query for a set of filters. Only what narrows or reorders the list is included: an
- * empty symbol or side, a missing date and the default sort are left out, so the default filters
- * give an empty query. Refuses an invalid date, or a From date after the To date, without
- * guessing.
+ * Builds the filter query for a set of filters. Only what narrows the list is included: an empty
+ * symbol or side and a missing date are left out, so the default filters give an empty query.
+ * Refuses an invalid date, or a From date after the To date, without guessing.
  */
 export function toTradeQuery(filters: TradeFilters, offsetAt: OffsetAt = browserOffsetAt): TradeQueryResult {
   const errors: DateFilterErrors = {}
@@ -71,7 +97,6 @@ export function toTradeQuery(filters: TradeFilters, offsetAt: OffsetAt = browser
   if (errors.fromDate !== undefined || errors.toDate !== undefined) return { ok: false, errors }
 
   const symbol = filters.symbol.trim()
-  const sorted = filters.sortBy !== DEFAULT_TRADE_FILTERS.sortBy || filters.sortDirection !== DEFAULT_TRADE_FILTERS.sortDirection
   return {
     ok: true,
     query: {
@@ -79,7 +104,6 @@ export function toTradeQuery(filters: TradeFilters, offsetAt: OffsetAt = browser
       ...(filters.side === '' ? {} : { side: filters.side }),
       ...(executedFrom === undefined ? {} : { executedFrom }),
       ...(executedTo === undefined ? {} : { executedTo }),
-      ...(sorted ? { sortBy: filters.sortBy, sortDirection: filters.sortDirection } : {}),
     },
   }
 }
@@ -87,4 +111,18 @@ export function toTradeQuery(filters: TradeFilters, offsetAt: OffsetAt = browser
 /** Whether a query leaves out any trades, as opposed to only reordering them. */
 export function narrowsList(query: TradeQuery): boolean {
   return query.symbol !== undefined || query.side !== undefined || query.executedFrom !== undefined || query.executedTo !== undefined
+}
+
+/**
+ * Whether a trade the API returned matches a query's filters, by the API's rules: the search,
+ * normalised like a symbol (trimmed, NFC, upper case), appears anywhere in the trade's symbol,
+ * which the API has already normalised; the side is equal; and the execution time is within the
+ * inclusive bounds. Times are canonical UTC text, so text order is time order.
+ */
+export function tradeMatchesFilters(trade: Trade, query: TradeQuery): boolean {
+  const search = query.symbol?.trim().normalize('NFC').toUpperCase()
+  return (search === undefined || search === '' || trade.symbol.includes(search)) &&
+    (query.side === undefined || trade.side === query.side) &&
+    (query.executedFrom === undefined || trade.executedAt >= query.executedFrom) &&
+    (query.executedTo === undefined || trade.executedAt <= query.executedTo)
 }

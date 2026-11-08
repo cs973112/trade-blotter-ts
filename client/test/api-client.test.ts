@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { api, ApiError } from '../src/api/client.ts'
 import type { CreateTradeRequest } from '../src/api/contracts.ts'
-import { fakeApi, json, problem, tradeJson } from './support/fake-api.ts'
+import { fakeApi, json, pageJson, problem, tradeJson } from './support/fake-api.ts'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -234,5 +234,81 @@ describe('API client: GET /trades query parameters', () => {
     fakeApi({ 'GET /trades': problem(400, { type: 'urn:trade-blotter:problem:invalid-query', title: 'Invalid query' }) })
 
     expect(await failure(api.listTrades({ side: 'Buy' }))).toMatchObject({ kind: 'invalid-query', message: 'The filters were not accepted.' })
+  })
+})
+
+describe('API client: GET /trades/page', () => {
+  const trade = (id: string) => tradeJson({ id, bookingSequence: 1, symbol: 'A', side: 'Buy', quantity: '1', price: '1', notional: '1',
+    executedAt: '2026-01-01T00:00:00.000Z' })
+
+  it('always sends page and pageSize, after the filters and sort, which are sent as for GET /trades', async () => {
+    const server = fakeApi({ 'GET /trades/page': pageJson([], { page: 3, pageSize: 25, totalCount: 0 }) })
+
+    await api.listTradePage({ page: 3, pageSize: 25 })
+    await api.listTradePage({ symbol: 'ms', side: 'Sell', sortBy: 'price', sortDirection: 'asc', page: 3, pageSize: 25 })
+
+    expect(server.calls.map((call) => call.url)).toEqual([
+      '/trades/page?page=3&pageSize=25',
+      '/trades/page?symbol=ms&side=Sell&sortBy=price&sortDirection=asc&page=3&pageSize=25',
+    ])
+  })
+
+  it('reads the page, its numbers and its trades with exact decimals, in the order the API sends', async () => {
+    fakeApi({ 'GET /trades/page': pageJson([TRADE, trade('b')], { page: 2, pageSize: 2, totalCount: 5 }) })
+
+    const page = await api.listTradePage({ page: 2, pageSize: 2 })
+
+    expect({ ...page, items: page.items.map((item) => item.id) }).toEqual({ items: ['t1', 'b'], page: 2, pageSize: 2, totalCount: 5, totalPages: 3 })
+    expect(page.items[0]).toMatchObject({ quantity: '123456789012345.1234567891', price: '0.0000000001', notional: '12345.67890123451234567891' })
+  })
+
+  it('reads an empty result, and a page past the last, as pages without trades', async () => {
+    const server = fakeApi({ 'GET /trades/page': pageJson([], { page: 1, pageSize: 50, totalCount: 0 }) })
+    expect(await api.listTradePage({ page: 1, pageSize: 50 })).toEqual({ items: [], page: 1, pageSize: 50, totalCount: 0, totalPages: 0 })
+
+    server.set('GET /trades/page', pageJson([], { page: 9, pageSize: 50, totalCount: 120 }))
+    expect(await api.listTradePage({ page: 9, pageSize: 50 })).toEqual({ items: [], page: 9, pageSize: 50, totalCount: 120, totalPages: 3 })
+  })
+
+  it.each([
+    ['not an object', '[]'],
+    ['without items', '{"page":1,"pageSize":50,"totalCount":0,"totalPages":0}'],
+    ['another page than asked for', '{"items":[],"page":2,"pageSize":50,"totalCount":0,"totalPages":0}'],
+    ['another page size than asked for', '{"items":[],"page":1,"pageSize":25,"totalCount":0,"totalPages":0}'],
+    ['a total of pages that does not fit the count', '{"items":[],"page":1,"pageSize":50,"totalCount":51,"totalPages":1}'],
+    ['fewer trades than the page should hold', `{"items":[${trade('a')}],"page":1,"pageSize":50,"totalCount":2,"totalPages":1}`],
+    ['more trades than the page should hold', `{"items":[${trade('a')},${trade('b')}],"page":1,"pageSize":50,"totalCount":1,"totalPages":1}`],
+    ['trades past the last page', `{"items":[${trade('a')}],"page":1,"pageSize":50,"totalCount":0,"totalPages":0}`],
+    ['a count that is not a whole number', '{"items":[],"page":1,"pageSize":50,"totalCount":1.5,"totalPages":1}'],
+    ['a negative count', '{"items":[],"page":1,"pageSize":50,"totalCount":-1,"totalPages":0}'],
+    ['a count no JavaScript number holds exactly', '{"items":[],"page":1,"pageSize":50,"totalCount":9007199254740993,"totalPages":180143985094820}'],
+    ['a trade that is not a trade', '{"items":[{"id":"a"}],"page":1,"pageSize":50,"totalCount":1,"totalPages":1}'],
+  ])('refuses a page that is %s', async (_name, body) => {
+    fakeApi({ 'GET /trades/page': json(body) })
+
+    const error = await failure(api.listTradePage({ page: 1, pageSize: 50 }))
+
+    expect(error.kind).toBe('server')
+    expect(error.message).toContain('does not understand')
+  })
+
+  it('reports invalid page parameters with the filters\' messages, page last', async () => {
+    fakeApi({
+      'GET /trades/page': problem(400, {
+        type: 'urn:trade-blotter:problem:invalid-query', title: 'Invalid query',
+        errors: { pageSize: ['pageSize must be a whole number from 1 to 100.'], side: ['side must be Buy or Sell.'] },
+      }),
+    })
+
+    const error = await failure(api.listTradePage({ page: 1, pageSize: 500 }))
+
+    expect(error).toMatchObject({ kind: 'invalid-query', message: 'The filters were not accepted. side must be Buy or Sell. pageSize must be a whole number from 1 to 100.' })
+  })
+
+  it('keeps GET /trades for every match, unchanged', async () => {
+    const server = fakeApi({ 'GET /trades': json(`[${TRADE}]`) })
+
+    expect((await api.listTrades({ side: 'Buy' })).map((item) => item.id)).toEqual(['t1'])
+    expect(server.calls.map((call) => call.url)).toEqual(['/trades?side=Buy'])
   })
 })

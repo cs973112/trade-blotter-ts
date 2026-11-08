@@ -2,10 +2,10 @@
 import { computed, nextTick, reactive, ref, useTemplateRef, watch } from 'vue'
 
 import { ApiError } from '../api/client.ts'
-import type { CreateTradeRequest, FieldErrors, Side, TradeField } from '../api/contracts.ts'
+import type { CreateTradeRequest, FieldErrors, Side, Trade, TradeField } from '../api/contracts.ts'
 import { checkDecimalInput, formatDecimal, type DecimalInputProblem } from '../lib/decimal-text.ts'
 import { browserTimeZone, resolveLocalDateTime } from '../lib/timestamps.ts'
-import { narrowsList } from '../lib/trade-filters.ts'
+import { narrowsList, tradeMatchesFilters } from '../lib/trade-filters.ts'
 import { useBlotterStore } from '../stores/blotter.ts'
 
 const store = useBlotterStore()
@@ -126,6 +126,21 @@ function buildRequest(): CreateTradeRequest | undefined {
   }
 }
 
+/**
+ * Where the booked trade is, after the list reloaded the same page with the same filters and sort:
+ * on this page, on another page, or left out by the filters. Judged only from the list on screen
+ * when it is that reload, not while a newer load (filters applied meanwhile) is on its way or
+ * after it failed. No page number is guessed.
+ */
+function whereListed(trade: Trade): string {
+  if (store.trades.error !== undefined || store.trades.loading) return ''
+  if (store.trades.items.some((listed) => listed.id === trade.id)) return ' It is on this page of the trade list.'
+  if (!tradeMatchesFilters(trade, store.shownTradeQuery)) return ' It is not in the trade list because it does not match the current filters.'
+  return narrowsList(store.shownTradeQuery)
+    ? ' It matches the filters but is on another page of the trade list.'
+    : ' It is on another page of the trade list.'
+}
+
 async function submit(): Promise<void> {
   submitted.value = true
   formError.value = undefined
@@ -140,12 +155,8 @@ async function submit(): Promise<void> {
   submitting.value = true
   try {
     const trade = await store.createTrade(request)
-    // The list was reloaded with its filters, which may leave the new trade out: say so, rather than let it look lost.
-    // Only about the list on screen: not while a newer load (filters applied meanwhile) is still on its way.
-    const hidden = narrowsList(store.shownTradeQuery) && store.trades.error === undefined && !store.trades.loading &&
-      !store.trades.items.some((listed) => listed.id === trade.id)
     success.value = `Booked: ${trade.side} ${formatDecimal(trade.quantity)} ${trade.symbol} at ${formatDecimal(trade.price)}.` +
-      (hidden ? ' It is not in the trade list because it does not match the current filters.' : '')
+      whereListed(trade)
     Object.assign(form, { symbol: '', side: '', quantity: '', price: '', executedAt: '', occurrence: '' })
     submitted.value = false
     serverErrors.value = {}

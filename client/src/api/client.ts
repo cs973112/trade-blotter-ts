@@ -1,4 +1,5 @@
 import {
+  TRADE_PAGE_QUERY_PARAMETERS,
   TRADE_QUERY_PARAMETERS,
   type CreateTradeRequest,
   type FieldErrors,
@@ -6,12 +7,14 @@ import {
   type Side,
   type Trade,
   type TradeField,
+  type TradePage,
+  type TradePageQuery,
   type TradeQuery,
 } from './contracts.ts'
 import { parseJsonKeepingNumberText } from './json.ts'
 
 /**
- * A small typed client for the three API endpoints. Paths are relative: in development the Vite
+ * A small typed client for the four API endpoints. Paths are relative: in development the Vite
  * server forwards them to the API. Every failure becomes an ApiError whose message is safe to
  * show; server-side details are never passed on.
  */
@@ -92,6 +95,31 @@ function toList<T>(value: unknown, convert: (item: unknown) => T): T[] {
   return value.map(convert)
 }
 
+/** A count or page number: the exact text of a non-negative JSON integer that a number holds exactly. */
+function toWholeNumber(value: unknown): number {
+  if (!isString(value) || !/^(?:0|[1-9][0-9]*)$/.test(value)) throw unexpected()
+  const number = Number(value)
+  if (!Number.isSafeInteger(number)) throw unexpected()
+  return number
+}
+
+/**
+ * A page of trades, refused unless it is the page asked for and its numbers agree: totalPages is
+ * totalCount divided by pageSize, rounded up, and the page holds exactly the trades that fall on it.
+ */
+function toTradePage(value: unknown, query: TradePageQuery): TradePage {
+  if (!isObject(value)) throw unexpected()
+  const items = toList(value['items'], toTrade)
+  const page = toWholeNumber(value['page'])
+  const pageSize = toWholeNumber(value['pageSize'])
+  const totalCount = toWholeNumber(value['totalCount'])
+  const totalPages = toWholeNumber(value['totalPages'])
+  if (page !== query.page || pageSize !== query.pageSize || totalPages !== Math.ceil(totalCount / pageSize)) throw unexpected()
+  const onPage = page > totalPages ? 0 : Math.min(pageSize, totalCount - (page - 1) * pageSize)
+  if (items.length !== onPage) throw unexpected()
+  return { items, page, pageSize, totalCount, totalPages }
+}
+
 function toFieldErrors(value: unknown): FieldErrors {
   if (!isObject(value)) return {}
   const errors: Partial<Record<TradeField, readonly string[]>> = {}
@@ -105,7 +133,7 @@ function toFieldErrors(value: unknown): FieldErrors {
 /** The messages of an invalid-query problem, in parameter order. They name the parameters, not the page's labels. */
 function queryMessages(value: unknown): string[] {
   if (!isObject(value)) return []
-  return TRADE_QUERY_PARAMETERS.flatMap((parameter) => {
+  return TRADE_PAGE_QUERY_PARAMETERS.flatMap((parameter) => {
     const messages = value[parameter]
     return Array.isArray(messages) ? messages.filter(isString) : []
   })
@@ -131,6 +159,16 @@ function toApiError(status: number, body: string): ApiError {
     return new ApiError('rejected', `The trade was not booked. ${problem['detail']}`)
   }
   return new ApiError('rejected', `The request was not accepted (HTTP ${String(status)}). Reload the page and try again.`)
+}
+
+/** The members of a query that are set and not empty, in TRADE_QUERY_PARAMETERS order. */
+function queryParameters(query: TradeQuery): URLSearchParams {
+  const parameters = new URLSearchParams()
+  for (const name of TRADE_QUERY_PARAMETERS) {
+    const value = query[name]
+    if (value !== undefined && value !== '') parameters.append(name, value)
+  }
+  return parameters
 }
 
 interface RequestOptions {
@@ -175,13 +213,20 @@ export const api = {
    * the query members that are set and not empty are sent, so an empty query is plain /trades.
    */
   async listTrades(query: TradeQuery = {}): Promise<Trade[]> {
-    const parameters = new URLSearchParams()
-    for (const name of TRADE_QUERY_PARAMETERS) {
-      const value = query[name]
-      if (value !== undefined && value !== '') parameters.append(name, value)
-    }
-    const search = parameters.toString()
+    const search = queryParameters(query).toString()
     return toList(await request(search === '' ? '/trades' : `/trades?${search}`), toTrade)
+  },
+
+  /**
+   * GET /trades/page: one page of what listTrades would return for the same query, sorted and
+   * counted by the API. page and pageSize are always sent; the other members as for listTrades.
+   * The response must be the page asked for, with numbers that agree (see toTradePage).
+   */
+  async listTradePage(query: TradePageQuery): Promise<TradePage> {
+    const parameters = queryParameters(query)
+    parameters.append('page', String(query.page))
+    parameters.append('pageSize', String(query.pageSize))
+    return toTradePage(await request(`/trades/page?${parameters.toString()}`), query)
   },
 
   /** GET /positions: open positions sorted by symbol, as the API orders them. */
