@@ -1,9 +1,20 @@
 import { DEFAULT_SYMBOL_MAX_LENGTH, SYMBOL_MAX_LENGTH_RANGE } from '../domain/symbol.ts'
 import { toUtcTimestamp } from '../domain/timestamp.ts'
-import { compareTrades, validateTradeQuery, type TradeQueryRequest } from '../domain/trade-query.ts'
+import { pageCount, validateTradePageQuery, validateTradeQuery, type TradePageQueryRequest, type TradeQueryRequest } from '../domain/trade-query.ts'
 import { createTrade, validateTradeRequest, type Trade, type TradeRequest } from '../domain/trade.ts'
 import { TradeQueryValidationError, TradeValidationError } from './errors.ts'
 import type { Clock, IdGenerator, TradeRepository } from './ports.ts'
+
+/** A page of the trades matching a query, with what the blotter needs to page through them. */
+export interface TradePage {
+  readonly trades: readonly Trade[]
+  readonly page: number
+  readonly pageSize: number
+  /** Trades matching the query, on every page. */
+  readonly totalCount: number
+  /** Pages they fill: 0 when none match. */
+  readonly totalPages: number
+}
 
 export interface TradeServiceDependencies {
   readonly trades: TradeRepository
@@ -42,8 +53,21 @@ export function createTradeService(deps: TradeServiceDependencies) {
     async listTrades(request: TradeQueryRequest = {}): Promise<readonly Trade[]> {
       const result = validateTradeQuery(request, { symbolMaxLength })
       if (!result.ok) throw new TradeQueryValidationError(result.errors)
-      const { filter, sort } = result.value
-      return [...(await deps.trades.listInTradeOrder(filter))].sort(compareTrades(sort))
+      return deps.trades.list(result.value)
+    },
+
+    /**
+     * One page of what listTrades returns for the same query, with the number of matching trades
+     * and pages, read together. Page 1 of 50 trades unless the request says otherwise; a page past
+     * the last holds no trades. Throws TradeQueryValidationError, naming every invalid parameter,
+     * before anything is read.
+     */
+    async listTradePage(request: TradePageQueryRequest = {}): Promise<TradePage> {
+      const result = validateTradePageQuery(request, { symbolMaxLength })
+      if (!result.ok) throw new TradeQueryValidationError(result.errors)
+      const { query, page } = result.value
+      const { trades, totalCount } = await deps.trades.listPage(query, page)
+      return { trades, page: page.page, pageSize: page.pageSize, totalCount, totalPages: pageCount(totalCount, page.pageSize) }
     },
   }
 }

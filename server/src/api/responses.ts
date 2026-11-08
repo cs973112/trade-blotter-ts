@@ -1,3 +1,4 @@
+import type { TradePage } from '../application/trade-service.ts'
 import { decimalText, type Dec } from '../domain/decimal.ts'
 import type { Position } from '../domain/position.ts'
 import { notional, type Trade } from '../domain/trade.ts'
@@ -19,6 +20,17 @@ export function toTradeResponse(trade: Trade) {
     executedAt: trade.executedAt,
     createdAt: trade.createdAt,
     updatedAt: trade.updatedAt,
+  }
+}
+
+/** The JSON shape of a page of trades (schema: TradePage). */
+export function toTradePageResponse(page: TradePage) {
+  return {
+    items: page.trades.map(toTradeResponse),
+    page: page.page,
+    pageSize: page.pageSize,
+    totalCount: page.totalCount,
+    totalPages: page.totalPages,
   }
 }
 

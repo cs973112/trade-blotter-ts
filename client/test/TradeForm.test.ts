@@ -4,7 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import TradeForm from '../src/components/TradeForm.vue'
 import { useBlotterStore } from '../src/stores/blotter.ts'
-import { fakeApi, json, problem, tradeJson, type FakeResponse } from './support/fake-api.ts'
+import { fakeApi, json, pageJson, problem, tradeJson, type FakeResponse } from './support/fake-api.ts'
+
+/** The trade list's reload after a booking: page 1 of 50, with no filters. */
+const RELOAD = 'GET /trades/page?page=1&pageSize=50'
+const EMPTY_PAGE = pageJson([], { page: 1, pageSize: 50, totalCount: 0 })
 
 const CREATED = tradeJson({
   id: 't1', bookingSequence: 1, symbol: 'MSFT', side: 'Buy', quantity: '10.50', price: '301.25', notional: '3163.125',
@@ -21,7 +25,7 @@ function mountForm(): VueWrapper {
 }
 
 beforeEach(() => {
-  fakeApi({ 'POST /trades': json(CREATED, 201), 'GET /trades': json(`[${CREATED}]`), 'GET /positions': json('[]') })
+  fakeApi({ 'POST /trades': json(CREATED, 201), 'GET /trades/page': pageJson([CREATED], { page: 1, pageSize: 50, totalCount: 1 }), 'GET /positions': json('[]') })
 })
 
 afterEach(() => {
@@ -232,12 +236,12 @@ describe('trade form: after sending', () => {
     await fill(form, { symbol: 'MSFT', side: 'Buy', quantity: '10.50', price: '301.25' })
     await submit(form)
 
-    expect(form.find('[role="status"]').text()).toBe('Booked: Buy 10.50 MSFT at 301.25.')
+    expect(form.find('[role="status"]').text()).toBe('Booked: Buy 10.50 MSFT at 301.25. It is on this page of the trade list.')
     expect((form.find('#trade-symbol').element as HTMLInputElement).value).toBe('')
     expect((form.find('#trade-quantity').element as HTMLInputElement).value).toBe('')
     expect((form.find('#trade-side-buy').element as HTMLInputElement).checked).toBe(false)
     expect(server.mock.calls.map(([url, init]) => `${init?.method ?? 'GET'} ${url as string}`))
-      .toEqual(['POST /trades', 'GET /trades', 'GET /positions'])
+      .toEqual(['POST /trades', RELOAD, 'GET /positions'])
     expect(document.activeElement).toBe(form.find('#trade-symbol').element)
     expect(form.find('.field-error').exists()).toBe(false)
   })
@@ -291,7 +295,7 @@ describe('trade form: after sending', () => {
 
   it('disables the button while booking', async () => {
     let release: (response: FakeResponse) => void = () => undefined
-    fakeApi({ 'POST /trades': () => new Promise<FakeResponse>((resolve) => { release = resolve }), 'GET /trades': json('[]'),
+    fakeApi({ 'POST /trades': () => new Promise<FakeResponse>((resolve) => { release = resolve }), 'GET /trades/page': EMPTY_PAGE,
       'GET /positions': json('[]') })
     const form = mountForm()
     await fill(form, { symbol: 'A', side: 'Buy', quantity: '1', price: '1' })
@@ -314,7 +318,7 @@ describe('trade form: after the API comes back', () => {
   const BARE_502: FakeResponse = { status: 502, body: '', contentType: 'text/plain' }
 
   async function failBooking(response: FakeResponse | Error, extra: Parameters<typeof fakeApi>[0] = {}) {
-    const server = fakeApi({ 'POST /trades': response, 'GET /trades': BARE_502, 'GET /positions': BARE_502, ...extra })
+    const server = fakeApi({ 'POST /trades': response, 'GET /trades/page': BARE_502, 'GET /positions': BARE_502, ...extra })
     const form = mountForm()
     await fill(form, { symbol: 'ACME', side: 'Buy', quantity: '100', price: '10' })
     await submit(form)
@@ -337,7 +341,7 @@ describe('trade form: after the API comes back', () => {
     await flushPromises()
     expect(alert(form)).toBeDefined()
 
-    server.set('GET /trades', json('[]'))
+    server.set('GET /trades/page', EMPTY_PAGE)
     await store.loadTrades()
     await flushPromises()
 
@@ -377,18 +381,18 @@ describe('trade form: after the API comes back', () => {
       type: 'urn:trade-blotter:problem:invalid-trade', errors: { price: ['Price must be less than 10^15 with at most 10 decimal places.'] },
     }), 'Some fields need attention.'],
   ])('keeps the alert after a successful refresh when %s, because it still applies', async (_name, response, message) => {
-    const { server, form, store } = await failBooking(response, { 'GET /trades': json('[]'), 'GET /positions': json('[]') })
+    const { server, form, store } = await failBooking(response, { 'GET /trades/page': EMPTY_PAGE, 'GET /positions': json('[]') })
 
     await store.refresh()
     await flushPromises()
 
     expect(alert(form)).toContain(message)
-    expect(server.sequence()).toEqual(['POST /trades', 'GET /trades', 'GET /positions'])
+    expect(server.sequence()).toEqual(['POST /trades', RELOAD, 'GET /positions'])
   })
 
   it('shows a new outage alert if the next attempt fails too', async () => {
     const { server, form, store } = await failBooking(BARE_502)
-    server.set('GET /trades', json('[]'))
+    server.set('GET /trades/page', EMPTY_PAGE)
     await store.loadTrades()
     await flushPromises()
     expect(alert(form)).toBeUndefined()

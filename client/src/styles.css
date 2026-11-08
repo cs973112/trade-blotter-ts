@@ -171,6 +171,47 @@ button:disabled { cursor: default; opacity: 0.65; }
 .filter-actions .button-primary { width: auto; padding: 5px 16px; }
 .filter-pending { margin: 0; }
 
+/* Trade list pages and sortable column headers */
+
+/* The trade list's status line keeps its height while empty, so the pager below never moves. */
+.list-status { display: flow-root; min-height: calc(1.5em + 16px); }
+
+.pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin: 10px 0; }
+.pager-range { margin: 0; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pager-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.pager-position { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pager-size { display: flex; align-items: center; gap: 6px; }
+.pager-size label { margin: 0; font-weight: 400; color: var(--muted); white-space: nowrap; }
+.pager-size select { width: auto; padding: 4px 8px; }
+
+.data-table thead th.sortable { padding: 0; }
+/*
+ * Positioned, so the hidden "sort ..." text (absolutely positioned, see .visually-hidden) is placed
+ * within the button and clipped by the table's scroll box; otherwise it widens a narrow page.
+ */
+.sort-button {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 7px 10px;
+  font: inherit;
+  color: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  text-align: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+.data-table thead th.numeric .sort-button { justify-content: flex-end; }
+.sort-button:hover, th[aria-sort] .sort-button { color: var(--text); }
+th[aria-sort] .sort-button { font-weight: 600; }
+.sort-button:focus-visible { outline-offset: -2px; }
+.sort-indicator { font-family: var(--mono); }
+th:not([aria-sort]) .sort-indicator { opacity: 0.55; }
+
 /* Tables */
 
 .table-scroll { overflow-x: auto; }

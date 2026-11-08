@@ -22,9 +22,11 @@ import { DEFAULT_PROTECTION, refuseProtectedDatabase, TargetError, type Protecti
 /**
  * npm run perf:api -- --database <path> [--api-url <url>] [--warmup <n>] [--iterations <n>] [--json <file>]
  *
- * Measures the running API, started with app:start, on the database it names: GET /trades with
- * each search, filter and sort, and GET /positions. It only reads: it never starts, stops, seeds
- * or clears anything, and checks at the end that the trade records are exactly as they were.
+ * Measures the running API, started with app:start, on the database it names: GET /trades (every
+ * match) with each search, filter and sort; GET /trades/page, first, middle and last pages of
+ * every sort, both page sizes, the filters and deep filtered pages; and GET /positions. It only
+ * reads: it never starts, stops, seeds or clears anything, and checks at the end that the trade
+ * records are exactly as they were.
  *
  * Before measuring, it checks that the API is the one app:start started on that exact database
  * (its process, holding its token, is the one listening on the port) and that the API serves
@@ -140,12 +142,34 @@ interface TradeScenario {
   readonly sort: TradeSort
 }
 
+/** Which page of the matches a page scenario asks for; the number depends on how many trades match. */
+export type PagePosition = 'first' | 'middle' | 'last' | 'past the last'
+
+interface PageScenario {
+  readonly kind: 'page'
+  readonly name: string
+  readonly query: Readonly<Record<string, string>>
+  readonly matches: (trade: Trade) => boolean
+  readonly sort: TradeSort
+  readonly pageSize: number
+  readonly at: PagePosition
+}
+
 interface PositionScenario {
   readonly kind: 'positions'
   readonly name: string
 }
 
-export type Scenario = TradeScenario | PositionScenario
+export type Scenario = TradeScenario | PageScenario | PositionScenario
+
+/** The page number for a position among `matched` trades: the last page past the end is one more than the last. */
+export function pageNumber(at: PagePosition, matched: number, pageSize: number): number {
+  const pages = Math.ceil(matched / pageSize)
+  if (at === 'first') return 1
+  if (at === 'middle') return Math.max(1, Math.ceil(pages / 2))
+  if (at === 'last') return Math.max(1, pages)
+  return pages + 1
+}
 
 const everything = (): boolean => true
 const utc = (timestamp: string): string => new Date(timestamp).toISOString()
@@ -185,11 +209,65 @@ export const SCENARIOS: readonly Scenario[] = [
   sorted('symbol', 'asc'), sorted('symbol', 'desc'),
   sorted('quantity', 'asc'), sorted('quantity', 'desc'),
   sorted('price', 'asc'), sorted('price', 'desc'),
+  ...pageScenarios(),
   { kind: 'positions', name: 'Positions' },
 ]
 
-export function scenarioPath(scenario: Scenario): string {
+/**
+ * GET /trades/page: the first, middle and last page of every sort at 50 a page, and the default
+ * order and price at 100; the filters of the scenarios above, page by page; deep pages of filtered
+ * lists sorted by something other than execution time, which no index serves directly; a page
+ * past the last, and a search that matches nothing.
+ */
+function pageScenarios(): PageScenario[] {
+  const page = (base: Omit<PageScenario, 'kind' | 'name' | 'pageSize' | 'at'> & { label: string }, pageSize: number, at: PagePosition): PageScenario => {
+    const { label, ...rest } = base
+    return { kind: 'page', name: `Page: ${label}, ${at} page of ${String(pageSize)}`, pageSize, at, ...rest }
+  }
+  const order = (field: TradeSort['field'], direction: TradeSort['direction']) => ({
+    label: field === DEFAULT_TRADE_SORT.field && direction === DEFAULT_TRADE_SORT.direction ? 'default order' : `${field} ${direction}`,
+    query: field === DEFAULT_TRADE_SORT.field && direction === DEFAULT_TRADE_SORT.direction ? {} : { sortBy: field, sortDirection: direction },
+    matches: everything, sort: { field, direction },
+  })
+  const ms = { label: '"ms"', query: { symbol: 'ms' }, matches: (t: Trade) => t.symbol.includes('MS'), sort: DEFAULT_TRADE_SORT }
+  const buy = { label: 'side Buy', query: { side: 'Buy' }, matches: (t: Trade) => t.side === 'Buy', sort: DEFAULT_TRADE_SORT }
+  const half = { label: '2026-01-01 to 2026-06-30', query: FIRST_HALF_2026, matches: executedBetween(FIRST_HALF_2026.executedFrom, FIRST_HALF_2026.executedTo), sort: DEFAULT_TRADE_SORT }
+  const combined = {
+    label: '"ms" + Sell + 2025-07-01 to 2026-06-30', query: { symbol: 'ms', side: 'Sell', ...YEAR_TO_JUNE_2026 },
+    matches: (t: Trade) => t.symbol.includes('MS') && t.side === 'Sell' && executedBetween(YEAR_TO_JUNE_2026.executedFrom, YEAR_TO_JUNE_2026.executedTo)(t),
+    sort: DEFAULT_TRADE_SORT,
+  }
+  const positions: PagePosition[] = ['first', 'middle', 'last']
+  const sorts = [['executedAt', 'desc'], ['executedAt', 'asc'], ['symbol', 'asc'], ['symbol', 'desc'], ['quantity', 'asc'], ['quantity', 'desc'], ['price', 'asc'], ['price', 'desc']] as const
+  type Filter = Omit<PageScenario, 'kind' | 'name' | 'pageSize' | 'at'> & { readonly label: string }
+  const sortedBy = (base: Filter, field: TradeSort['field'], direction: TradeSort['direction']): Filter => ({
+    ...base, label: `${base.label} by ${field} ${direction}`, query: { ...base.query, sortBy: field, sortDirection: direction }, sort: { field, direction },
+  })
+  return [
+    ...sorts.flatMap(([field, direction]) => positions.map((at) => page(order(field, direction), 50, at))),
+    page(order('executedAt', 'desc'), 50, 'past the last'),
+    ...positions.map((at) => page(order('executedAt', 'desc'), 100, at)),
+    ...positions.map((at) => page(order('price', 'asc'), 100, at)),
+    ...[ms, buy, half, combined].flatMap((filter) => positions.map((at) => page(filter, 50, at))),
+    page(sortedBy(ms, 'price', 'asc'), 50, 'middle'),
+    page(sortedBy(buy, 'quantity', 'desc'), 50, 'middle'),
+    page(sortedBy({ ...half, query: YEAR_TO_JUNE_2026, label: '2025-07-01 to 2026-06-30', matches: executedBetween(YEAR_TO_JUNE_2026.executedFrom, YEAR_TO_JUNE_2026.executedTo) }, 'symbol', 'asc'), 50, 'middle'),
+    page({ label: 'search matching nothing', query: { symbol: 'zzzz' }, matches: () => false, sort: DEFAULT_TRADE_SORT }, 50, 'first'),
+  ]
+}
+
+/** The endpoint a scenario measures. */
+export function endpointOf(scenario: Scenario): ScenarioResult['endpoint'] {
+  return scenario.kind === 'positions' ? 'GET /positions' : scenario.kind === 'page' ? 'GET /trades/page' : 'GET /trades'
+}
+
+/** The request path of a scenario; a page scenario's page number depends on how many trades match. */
+export function scenarioPath(scenario: Scenario, matched = 0): string {
   if (scenario.kind === 'positions') return '/positions'
+  if (scenario.kind === 'page') {
+    const query = new URLSearchParams({ ...scenario.query, page: String(pageNumber(scenario.at, matched, scenario.pageSize)), pageSize: String(scenario.pageSize) })
+    return `/trades/page?${query.toString()}`
+  }
   const query = new URLSearchParams(scenario.query).toString()
   return query === '' ? '/trades' : `/trades?${query}`
 }
@@ -197,15 +275,69 @@ export function scenarioPath(scenario: Scenario): string {
 /** Response fields that are exact decimals: read from their JSON source text, never through a JavaScript number. */
 const DECIMAL_FIELDS: ReadonlySet<string> = new Set(['quantity', 'price', 'notional', 'netQuantity', 'averageCost'])
 
-/** What the response must hold, field by field, decimals as canonical text (decimalText); computed from the snapshot. */
-function expectedRows(scenario: Scenario, snapshot: Snapshot): Record<string, string | number>[] {
+type Row = Record<string, string | number>
+
+/** A trade as the API writes it, decimals as canonical text (decimalText). */
+const tradeRow = (t: Trade): Row => ({
+  id: t.id, bookingSequence: t.bookingSequence, symbol: t.symbol, side: t.side,
+  quantity: decimalText(t.quantity), price: decimalText(t.price), notional: decimalText(notional(t)), executedAt: t.executedAt,
+})
+
+/** The numbers of a GET /trades/page response. */
+export interface PageNumbers {
+  readonly page: number
+  readonly pageSize: number
+  readonly totalCount: number
+  readonly totalPages: number
+}
+
+/** What a scenario's response must hold, computed from the snapshot with the domain's own order and accounting. */
+export interface Expected {
+  /** Every matching trade (or position) for GET /trades and /positions; the page's trades for GET /trades/page. */
+  readonly rows: readonly Row[]
+  /** How many trades match the query, on every page. */
+  readonly matched: number
+  readonly page?: PageNumbers
+}
+
+export function expectedResponse(scenario: Scenario, snapshot: Snapshot): Expected {
   if (scenario.kind === 'positions') {
-    return calculatePositions(snapshot.trades).map((p) => ({ symbol: p.symbol, netQuantity: decimalText(p.netQuantity), averageCost: decimalText(p.averageCost) }))
+    const rows = calculatePositions(snapshot.trades).map((p) => ({ symbol: p.symbol, netQuantity: decimalText(p.netQuantity), averageCost: decimalText(p.averageCost) }))
+    return { rows, matched: rows.length }
   }
-  return snapshot.trades.filter(scenario.matches).sort(compareTrades(scenario.sort)).map((t) => ({
-    id: t.id, bookingSequence: t.bookingSequence, symbol: t.symbol, side: t.side,
-    quantity: decimalText(t.quantity), price: decimalText(t.price), notional: decimalText(notional(t)), executedAt: t.executedAt,
-  }))
+  const matching = snapshot.trades.filter(scenario.matches).sort(compareTrades(scenario.sort))
+  if (scenario.kind === 'trades') return { rows: matching.map(tradeRow), matched: matching.length }
+  return pageFrom(matching, scenario.pageSize, pageNumber(scenario.at, matching.length, scenario.pageSize))
+}
+
+/** The response GET /trades/page must give for any page of the trades matching a query, in its sort order. */
+export function expectedPage(snapshot: Snapshot, matches: (trade: Trade) => boolean, sort: TradeSort, pageSize: number, page: number): Expected {
+  return pageFrom(snapshot.trades.filter(matches).sort(compareTrades(sort)), pageSize, page)
+}
+
+function pageFrom(ordered: readonly Trade[], pageSize: number, page: number): Expected {
+  return {
+    rows: ordered.slice((page - 1) * pageSize, page * pageSize).map(tradeRow),
+    matched: ordered.length,
+    page: { page, pageSize, totalCount: ordered.length, totalPages: Math.ceil(ordered.length / pageSize) },
+  }
+}
+
+/** The first difference between a response body and what was expected, or undefined when it matches. */
+export function expectedDifference(body: string, expected: Expected): string | undefined {
+  if (expected.page === undefined) return responseDifference(body, expected.rows)
+  let envelope: unknown
+  try {
+    envelope = parseJsonPreservingDecimals(body, DECIMAL_FIELDS)
+  } catch {
+    return 'the body is not JSON'
+  }
+  if (typeof envelope !== 'object' || envelope === null || Array.isArray(envelope)) return 'the body is not a JSON object'
+  const members = envelope as Record<string, unknown>
+  for (const [name, value] of Object.entries(expected.page)) {
+    if (members[name] !== value) return `${name} is ${JSON.stringify(members[name])}, expected ${String(value)}`
+  }
+  return rowsDifference(members['items'], expected.rows, 'items')
 }
 
 /** The first difference between a response body and the expected rows, or undefined when it matches. */
@@ -217,7 +349,11 @@ export function responseDifference(body: string, expected: readonly Record<strin
   } catch {
     return 'the body is not JSON'
   }
-  if (!Array.isArray(rows)) return 'the body is not a JSON array'
+  return rowsDifference(rows, expected, 'the body')
+}
+
+function rowsDifference(rows: unknown, expected: readonly Record<string, string | number>[], what: string): string | undefined {
+  if (!Array.isArray(rows)) return `${what} is not a JSON array`
   if (rows.length !== expected.length) return `${String(rows.length)} rows, expected ${String(expected.length)}`
   for (const [index, want] of expected.entries()) {
     const row = rows[index] as Record<string, unknown> | undefined
@@ -282,8 +418,12 @@ export function statistics(samples: readonly number[]): Stats {
 
 export interface ScenarioResult {
   readonly name: string
+  readonly endpoint: 'GET /trades' | 'GET /trades/page' | 'GET /positions'
   readonly path: string
+  /** Trades (or positions) matching the query, on every page. */
   readonly matchedRows: number
+  /** Rows in the response: every match for GET /trades and /positions, one page's for GET /trades/page. */
+  readonly returnedRows: number
   readonly responseBytes: number
   readonly warmupIterations: number
   readonly measuredIterations: number
@@ -343,6 +483,12 @@ export const METHOD: Readonly<Record<string, string>> = {
     'The frontend\'s own exact-decimal parsing is measured in the browser by perf:ui',
   validation: 'every response, warmup included, must be 200 application/json with the same bytes as the first, which is checked row by row ' +
     'against the database; checking happens outside the timed part; an invalid response stops the benchmark',
+  pages: 'GET /trades/page scenarios ask for the first, middle (number of pages divided by 2, rounded up) or last page of the matches, ' +
+    'or the page after the last; the expected items and the numbers (page, pageSize, totalCount, totalPages) are computed from the ' +
+    'database with the domain\'s own order (compareTrades), and every response must match them exactly, decimals included',
+  queryCounts: 'not measured: the API exposes no count of the SQL statements a request runs, and counting them would mean changing the ' +
+    'application. By design a page is read with two or three statements in one read transaction (the count, the page, and for a deep ' +
+    'filtered page sorted by symbol, quantity or price, the number of all trades)',
   p95: 'nearest rank; with 10 measured samples it equals the maximum',
   memory: 'the API process\'s resident memory, sampled between scenarios, not during requests; the peak is the process\'s own since it started',
 }
@@ -365,7 +511,7 @@ export async function runBenchmark(api: ManagedApi, options: BenchmarkOptions = 
   try {
     // The API must serve exactly the trades in this file, or the numbers describe another database.
     const all = await timedGet(new URL('/trades', api.url), agent)
-    const served = all.status === 200 ? responseDifference(all.body.toString('utf8'), expectedRows(ALL_TRADES, before)) : `status ${String(all.status)}`
+    const served = all.status === 200 ? expectedDifference(all.body.toString('utf8'), expectedResponse(ALL_TRADES, before)) : `status ${String(all.status)}`
     if (served !== undefined) {
       throw new TargetError(`The API at ${api.url.origin} does not serve the trades in ${api.databasePath} (${served}). Nothing was measured.`)
     }
@@ -373,9 +519,9 @@ export async function runBenchmark(api: ManagedApi, options: BenchmarkOptions = 
     const serverMemoryBefore = memory()
     const results: ScenarioResult[] = []
     for (const scenario of options.scenarios ?? SCENARIOS) {
-      const path = scenarioPath(scenario)
+      const expected = expectedResponse(scenario, before)
+      const path = scenarioPath(scenario, expected.matched)
       const url = new URL(path, api.url)
-      const expected = expectedRows(scenario, before)
       let reference: string | undefined
       const check = (response: Response, label: string): void => {
         const type = response.headers['content-type'] ?? ''
@@ -384,7 +530,7 @@ export async function runBenchmark(api: ManagedApi, options: BenchmarkOptions = 
         }
         const hash = createHash('sha256').update(response.body).digest('hex')
         if (reference === undefined) {
-          const problem = responseDifference(response.body.toString('utf8'), expected)
+          const problem = expectedDifference(response.body.toString('utf8'), expected)
           if (problem !== undefined) throw new BenchmarkError(`${scenario.name} (${path}), ${label}: ${problem}. No result was recorded.`)
           reference = hash
         } else if (hash !== reference) {
@@ -404,7 +550,7 @@ export async function runBenchmark(api: ManagedApi, options: BenchmarkOptions = 
         jsonParse.push(performance.now() - parseStart)
       }
       const result: ScenarioResult = {
-        name: scenario.name, path, matchedRows: expected.length, responseBytes: samples[0]?.body.length ?? 0,
+        name: scenario.name, endpoint: endpointOf(scenario), path, matchedRows: expected.matched, returnedRows: expected.rows.length, responseBytes: samples[0]?.body.length ?? 0,
         warmupIterations: warmup, measuredIterations: iterations,
         latencyMs: statistics(samples.map((sample) => sample.milliseconds)),
         headersMs: statistics(samples.map((sample) => sample.headersMilliseconds)),
@@ -464,10 +610,10 @@ export function formatResult(result: BenchmarkResult): string {
       `${result.environment.cpu} (${String(result.environment.logicalCores)} logical cores).`,
     '',
     table(
-      ['Scenario', 'Matched', 'Bytes', 'Min ms', 'Median ms', 'p95 ms', 'Max ms', 'JSON.parse ms','Server RSS after'],
+      ['Scenario', 'Matched', 'Returned', 'Bytes', 'Min ms', 'Median ms', 'p95 ms', 'Max ms', 'JSON.parse ms', 'Server RSS after'],
       result.scenarios.map((s) => [
-        s.name, grouped(s.matchedRows), grouped(s.responseBytes), ms(s.latencyMs.min), ms(s.latencyMs.median), ms(s.latencyMs.p95), ms(s.latencyMs.max),
-        ms(s.jsonParseMs.median),mib(s.serverMemoryAfter?.residentBytes),
+        s.name, grouped(s.matchedRows), grouped(s.returnedRows), grouped(s.responseBytes), ms(s.latencyMs.min), ms(s.latencyMs.median), ms(s.latencyMs.p95),
+        ms(s.latencyMs.max), ms(s.jsonParseMs.median), mib(s.serverMemoryAfter?.residentBytes),
       ]),
     ),
     '',
@@ -478,6 +624,8 @@ export function formatResult(result: BenchmarkResult): string {
       : `Server memory (${memorySource}), sampled between scenarios: ${mib(result.serverMemoryBefore?.residentBytes)} before the first request` +
         `${peak === undefined ? '' : `; peak since the API started ${mib(peak)}`}.`,
     `Trade records unchanged afterwards: ${result.datasetUnchanged ? 'yes' : 'NO'} (SHA-256 ${result.datasetFingerprint.slice(0, 16)}...).`,
+    'Matched: trades (or positions) matching the query; Returned: rows in the response, one page for GET /trades/page.',
+    'SQL statements per request: not measured (no counter in the API; see the method in the JSON results).',
   ].join('\n')
 }
 

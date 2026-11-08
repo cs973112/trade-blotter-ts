@@ -3,7 +3,9 @@ import { createPinia } from 'pinia'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import App from '../src/App.vue'
-import { fakeApi, json, tradeJson } from './support/fake-api.ts'
+import { fakeApi, json, pagedTrades, tradeJson } from './support/fake-api.ts'
+
+const FIRST_PAGE = 'GET /trades/page?page=1&pageSize=50'
 
 let wrapper: VueWrapper | undefined
 
@@ -19,13 +21,13 @@ const second = tradeJson({ id: 'b', bookingSequence: 2, symbol: 'MSFT', side: 'S
   notional: '1506.25', executedAt: '2026-01-03T14:30:00.000Z' })
 
 describe('app', () => {
-  it('loads trades and positions when it opens', async () => {
-    const server = fakeApi({ 'GET /trades': json(`[${first}]`), 'GET /positions': json('[{"symbol":"AAPL","netQuantity":10,"averageCost":100}]') })
+  it('loads the first page of trades, and positions, when it opens: never the whole history', async () => {
+    const server = fakeApi({ 'GET /trades/page': pagedTrades([first]), 'GET /positions': json('[{"symbol":"AAPL","netQuantity":10,"averageCost":100}]') })
 
     wrapper = mount(App, { global: { plugins: [createPinia()] } })
     await flushPromises()
 
-    expect(server.sequence()).toEqual(['GET /trades', 'GET /positions'])
+    expect(server.sequence()).toEqual([FIRST_PAGE, 'GET /positions'])
     expect(wrapper.find('h1').text()).toBe('Trade Blotter')
     expect(wrapper.findAll('h2').map((heading) => heading.text())).toEqual(['Book a trade', 'Positions', 'Trades'])
     expect(wrapper.find('section[aria-labelledby="blotter-heading"] tbody').text()).toContain('AAPL')
@@ -33,13 +35,13 @@ describe('app', () => {
 
   it('shows the new trade and the updated position after booking, as the API returns them', async () => {
     const server = fakeApi({
-      'GET /trades': json(`[${first}]`),
+      'GET /trades/page': pagedTrades([first]),
       'GET /positions': json('[{"symbol":"AAPL","netQuantity":10,"averageCost":100}]'),
       'POST /trades': json(second, 201),
     })
     wrapper = mount(App, { global: { plugins: [createPinia()] } })
     await flushPromises()
-    server.set('GET /trades', json(`[${second},${first}]`))
+    server.set('GET /trades/page', pagedTrades([second, first]))
     server.set('GET /positions', json('[{"symbol":"AAPL","netQuantity":10,"averageCost":100},' +
       '{"symbol":"MSFT","netQuantity":-5,"averageCost":301.25}]'))
 
@@ -50,7 +52,7 @@ describe('app', () => {
     await wrapper.find('form').trigger('submit')
     await flushPromises()
 
-    expect(server.sequence()).toEqual(['GET /trades', 'GET /positions', 'POST /trades', 'GET /trades', 'GET /positions'])
+    expect(server.sequence()).toEqual([FIRST_PAGE, 'GET /positions', 'POST /trades', FIRST_PAGE, 'GET /positions'])
     const tradeSymbols = wrapper.findAll('section[aria-labelledby="blotter-heading"] tbody th').map((cell) => cell.text())
     expect(tradeSymbols).toEqual(['MSFT', 'AAPL'])
     const positions = wrapper.findAll('section[aria-labelledby="positions-heading"] tbody tr').map((row) => row.text())

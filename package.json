@@ -25,7 +25,14 @@
     "perf:api": "node --disable-warning=ExperimentalWarning server/scripts/perf-api.ts",
     "perf:api:sizes": "node --disable-warning=ExperimentalWarning server/scripts/perf-sizes.ts api",
     "perf:ui": "node --disable-warning=ExperimentalWarning server/scripts/perf-ui.ts",
-    "perf:ui:sizes": "node --disable-warning=ExperimentalWarning server/scripts/perf-sizes.ts ui"
+    "perf:ui:sizes": "node --disable-warning=ExperimentalWarning server/scripts/perf-sizes.ts ui",
+    "review:01": "node --disable-warning=ExperimentalWarning server/scripts/review.ts 01",
+    "review:02": "node --disable-warning=ExperimentalWarning server/scripts/review.ts 02",
+    "review:03": "node --disable-warning=ExperimentalWarning server/scripts/review.ts 03",
+    "review:04": "node --disable-warning=ExperimentalWarning server/scripts/review.ts 04",
+    "review:05": "node --disable-warning=ExperimentalWarning server/scripts/review.ts 05",
+    "review:06": "node --disable-warning=ExperimentalWarning server/scripts/review.ts 06",
+    "review:07": "node --disable-warning=ExperimentalWarning server/scripts/review.ts 07"
   },
   "devDependencies": {
     "@eslint/js": "~10.0.1",

@@ -6,7 +6,7 @@ import type { Component } from 'vue'
 import PositionsPanel from '../src/components/PositionsPanel.vue'
 import TradeBlotter from '../src/components/TradeBlotter.vue'
 import { useBlotterStore } from '../src/stores/blotter.ts'
-import { fakeApi, json, problem, tradeJson, type FakeResponse } from './support/fake-api.ts'
+import { fakeApi, json, pagedTrades, problem, tradeJson, type FakeResponse } from './support/fake-api.ts'
 
 let wrapper: VueWrapper | undefined
 
@@ -43,11 +43,14 @@ describe('trade blotter', () => {
   })
 
   it('shows every column, in the order the API sends, with exact decimals and local times', async () => {
-    fakeApi({ 'GET /trades': json(`[${newest},${older}]`) })
+    fakeApi({ 'GET /trades/page': pagedTrades([newest, older]) })
     const table = await show(TradeBlotter, 'loadTrades')
 
-    expect(table.findAll('thead th').map((cell) => cell.text()))
-      .toEqual(['Symbol', 'Side', 'Quantity', 'Price', 'Notional', 'Executed at', 'Created at', 'Updated at'])
+    // Four headers sort: each shows its state with an arrow, and says what choosing it does.
+    expect(table.findAll('thead th').map((cell) => cell.text())).toEqual([
+      'Symbol↕, sort ascending', 'Side', 'Quantity↕, sort ascending', 'Price↕, sort ascending', 'Notional',
+      'Executed at↓, sort oldest first', 'Created at', 'Updated at',
+    ])
     expect(rows(table)).toEqual([
       ['MSFT', 'Sell', '123,456,789,012,345.1234567891', '0.0000000001', '12,345.67890123451234567891',
         '2026-07-01 09:30:15.250 UTC−04:00', '2026-07-02 04:00:00.000 UTC−04:00', '2026-07-02 04:00:00.000 UTC−04:00'],
@@ -57,7 +60,7 @@ describe('trade blotter', () => {
   })
 
   it('keeps the exact UTC value on each time, and separates execution from recording', async () => {
-    fakeApi({ 'GET /trades': json(`[${older}]`) })
+    fakeApi({ 'GET /trades/page': pagedTrades([older]) })
     const table = await show(TradeBlotter, 'loadTrades')
 
     const [executed, created] = table.findAll('tbody time')
@@ -70,7 +73,7 @@ describe('trade blotter', () => {
   })
 
   it('marks Buy and Sell in words, not only colour', async () => {
-    fakeApi({ 'GET /trades': json(`[${newest},${older}]`) })
+    fakeApi({ 'GET /trades/page': pagedTrades([newest, older]) })
     const table = await show(TradeBlotter, 'loadTrades')
 
     expect(table.findAll('.side-badge').map((badge) => [badge.text(), badge.classes()])).toEqual([
@@ -80,7 +83,7 @@ describe('trade blotter', () => {
   })
 
   it('says it is loading until the first response', async () => {
-    fakeApi({ 'GET /trades': pending() })
+    fakeApi({ 'GET /trades/page': pending() })
     const table = await show(TradeBlotter, 'loadTrades', false)
     await flushPromises()
 
@@ -89,7 +92,7 @@ describe('trade blotter', () => {
   })
 
   it('says when there are no trades', async () => {
-    fakeApi({ 'GET /trades': json('[]') })
+    fakeApi({ 'GET /trades/page': pagedTrades([]) })
     const table = await show(TradeBlotter, 'loadTrades')
 
     expect(table.text()).toContain('No trades yet.')
@@ -97,7 +100,7 @@ describe('trade blotter', () => {
   })
 
   it('explains a failure without server details, and recovers on refresh', async () => {
-    const server = fakeApi({ 'GET /trades': problem(500, { detail: 'disk I/O error' }) })
+    const server = fakeApi({ 'GET /trades/page': problem(500, { detail: 'disk I/O error' }) })
     const table = await show(TradeBlotter, 'loadTrades')
 
     expect(table.find('[role="alert"]').text()).toBe(
@@ -105,7 +108,7 @@ describe('trade blotter', () => {
     )
     expect(table.text()).not.toContain('disk')
 
-    server.set('GET /trades', json(`[${older}]`))
+    server.set('GET /trades/page', pagedTrades([older]))
     await table.find('button').trigger('click')
     await flushPromises()
     expect(table.find('[role="alert"]').exists()).toBe(false)
@@ -113,10 +116,10 @@ describe('trade blotter', () => {
   })
 
   it('keeps showing the last trades if a later refresh fails', async () => {
-    const server = fakeApi({ 'GET /trades': json(`[${older}]`) })
+    const server = fakeApi({ 'GET /trades/page': pagedTrades([older]) })
     const table = await show(TradeBlotter, 'loadTrades')
 
-    server.set('GET /trades', new TypeError('Failed to fetch'))
+    server.set('GET /trades/page', new TypeError('Failed to fetch'))
     await table.find('button').trigger('click')
     await flushPromises()
 
@@ -125,10 +128,10 @@ describe('trade blotter', () => {
   })
 
   it('says the API is not available when the frontend server cannot reach it', async () => {
-    const server = fakeApi({ 'GET /trades': json(`[${older}]`) })
+    const server = fakeApi({ 'GET /trades/page': pagedTrades([older]) })
     const table = await show(TradeBlotter, 'loadTrades')
 
-    server.set('GET /trades', { status: 502, body: '', contentType: 'text/plain' })
+    server.set('GET /trades/page', { status: 502, body: '', contentType: 'text/plain' })
     await table.find('button').trigger('click')
     await flushPromises()
 

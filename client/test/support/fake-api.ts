@@ -13,7 +13,7 @@ export type Route =
   | Error
   | ((body: string | undefined, url: string) => FakeResponse | Error | Promise<FakeResponse | Error>)
 
-export type RouteKey = 'GET /trades' | 'GET /positions' | 'POST /trades'
+export type RouteKey = 'GET /trades' | 'GET /trades/page' | 'GET /positions' | 'POST /trades'
 
 export interface RecordedCall {
   readonly method: string
@@ -80,6 +80,27 @@ export function tradeJson(fields: {
 }
 
 export const json = (body: string, status = 200): FakeResponse => ({ status, body })
+
+/** A GET /trades/page body: the items given (as JSON text) and the page's numbers, as the API writes them. */
+export function pageJson(items: readonly string[], page: { page: number; pageSize: number; totalCount: number }): FakeResponse {
+  const totalPages = Math.ceil(page.totalCount / page.pageSize)
+  return json(`{"items":[${items.join(',')}],"page":${String(page.page)},"pageSize":${String(page.pageSize)},` +
+    `"totalCount":${String(page.totalCount)},"totalPages":${String(totalPages)}}`)
+}
+
+/**
+ * A GET /trades/page route over trades already in the order the API would list them: answers the
+ * page and page size the request asks for (default 1 and 50), with the totals, as the API does.
+ * It neither filters nor sorts; tests give it the list the query should produce.
+ */
+export function pagedTrades(ordered: readonly string[]): (body: string | undefined, url: string) => FakeResponse {
+  return (_body, url) => {
+    const parameters = new URL(url, 'http://localhost').searchParams
+    const page = Number(parameters.get('page') ?? '1')
+    const pageSize = Number(parameters.get('pageSize') ?? '50')
+    return pageJson(ordered.slice((page - 1) * pageSize, page * pageSize), { page, pageSize, totalCount: ordered.length })
+  }
+}
 
 export const problem = (status: number, members: Record<string, unknown>): FakeResponse => ({
   status,

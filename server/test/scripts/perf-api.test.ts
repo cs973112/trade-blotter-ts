@@ -1,19 +1,20 @@
-import { writeFileSync } from 'node:fs'
+import { readdirSync, writeFileSync } from 'node:fs'
 import { createServer as createTcpServer, type AddressInfo } from 'node:net'
 import { join } from 'node:path'
 
 import type { FastifyInstance } from 'fastify'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { writeState, type AppRecord } from '../../scripts/lifecycle.ts'
+import { isAlive, writeState, type AppRecord } from '../../scripts/lifecycle.ts'
 import {
-  BenchmarkError, findManagedApi, readSnapshot, responseDifference, runBenchmark, SCENARIOS, scenarioPath, statistics, type ManagedApi, type Scenario,
+  BenchmarkError, expectedDifference, findManagedApi, pageNumber, readSnapshot, responseDifference, runBenchmark, SCENARIOS, scenarioPath, statistics,
+  type Expected, type ManagedApi, type Scenario,
 } from '../../scripts/perf-api.ts'
 import { listenersOnPort, processMemory } from '../../scripts/process-probe.ts'
 import { seedDatabase, type Protection } from '../../scripts/trade-data.ts'
 import { loadConfig } from '../../src/config.ts'
 import { createServer } from '../../src/server.ts'
-import { isolatedEnv, startNode, stopChild } from '../support/child-process.ts'
+import { isolatedEnv, runNode, startNode, stopChild } from '../support/child-process.ts'
 import { createTempDir, removeTempDir } from '../support/temp-dir.ts'
 
 /**
@@ -56,8 +57,8 @@ describe('perf:api: statistics', () => {
 })
 
 describe('perf:api: scenarios', () => {
-  it('cover every search, filter and sort, and positions, with the offsets encoded', () => {
-    const paths = SCENARIOS.map(scenarioPath)
+  it('cover every search, filter and sort of GET /trades, and positions, with the offsets encoded', () => {
+    const paths = SCENARIOS.filter((scenario) => scenario.kind !== 'page').map((scenario) => scenarioPath(scenario))
 
     expect(paths).toHaveLength(15)
     expect(new Set(paths).size).toBe(15)
@@ -70,6 +71,32 @@ describe('perf:api: scenarios', () => {
       for (const direction of ['asc', 'desc']) expect(paths).toContain(`/trades?sortBy=${field}&sortDirection=${direction}`)
     }
     expect(paths.at(-1)).toBe('/positions')
+  })
+
+  it('cover GET /trades/page: first, middle and last pages of every sort, both page sizes, the filters, deep filtered pages and the edges', () => {
+    const pages = SCENARIOS.filter((scenario) => scenario.kind === 'page')
+    const paths = pages.map((scenario) => scenarioPath(scenario, 25_000))
+
+    expect(pages).toHaveLength(47)
+    expect(new Set(pages.map((scenario) => scenario.name)).size).toBe(47)
+    for (const field of ['executedAt', 'symbol', 'quantity', 'price']) {
+      for (const direction of ['asc', 'desc']) {
+        const query = field === 'executedAt' && direction === 'desc' ? '' : `sortBy=${field}&sortDirection=${direction}&`
+        for (const page of [1, 250, 500]) expect(paths).toContain(`/trades/page?${query}page=${String(page)}&pageSize=50`)
+      }
+    }
+    expect(paths).toContain('/trades/page?page=501&pageSize=50')
+    for (const page of [1, 125, 250]) expect(paths).toContain(`/trades/page?page=${String(page)}&pageSize=100`)
+    expect(paths).toContain('/trades/page?symbol=ms&sortBy=price&sortDirection=asc&page=250&pageSize=50')
+    expect(paths).toContain('/trades/page?symbol=zzzz&page=1&pageSize=50')
+    expect(SCENARIOS.at(-1)?.kind).toBe('positions')
+  })
+
+  it('numbers the first, middle and last page, and the page past the last, from the matches', () => {
+    expect([pageNumber('first', 25_000, 50), pageNumber('middle', 25_000, 50), pageNumber('last', 25_000, 50), pageNumber('past the last', 25_000, 50)])
+      .toEqual([1, 250, 500, 501])
+    expect([pageNumber('middle', 101, 50), pageNumber('last', 101, 50)]).toEqual([2, 3])
+    expect([pageNumber('first', 0, 50), pageNumber('middle', 0, 50), pageNumber('last', 0, 50), pageNumber('past the last', 0, 50)]).toEqual([1, 1, 1, 1])
   })
 })
 
@@ -89,6 +116,22 @@ describe('perf:api: checking a response', () => {
   })
 })
 
+describe('perf:api: checking a page', () => {
+  const expected: Expected = {
+    rows: [{ id: 'a', quantity: '0.12345678901234567890123' }], matched: 3, page: { page: 2, pageSize: 1, totalCount: 3, totalPages: 3 },
+  }
+
+  it('checks the numbers, then the items, decimals by their exact text', () => {
+    expect(expectedDifference('{"items":[{"id":"a","quantity":0.12345678901234567890123}],"page":2,"pageSize":1,"totalCount":3,"totalPages":3}', expected)).toBeUndefined()
+    expect(expectedDifference('{"items":[{"id":"a","quantity":0.12345678901234567890124}],"page":2,"pageSize":1,"totalCount":3,"totalPages":3}', expected))
+      .toBe('row 1: quantity is "0.12345678901234567890124", expected "0.12345678901234567890123"')
+    expect(expectedDifference('{"items":[{"id":"a","quantity":0.12345678901234567890123}],"page":2,"pageSize":1,"totalCount":4,"totalPages":4}', expected))
+      .toBe('totalCount is 4, expected 3')
+    expect(expectedDifference('{"items":[],"page":2,"pageSize":1,"totalCount":3,"totalPages":3}', expected)).toBe('0 rows, expected 1')
+    expect(expectedDifference('[]', expected)).toBe('the body is not a JSON object')
+  })
+})
+
 describe('perf:api: measuring', () => {
   it('measures every scenario on the real API, checks each response against the database, and leaves the trades as they were', async () => {
     const before = await readSnapshot(database)
@@ -99,9 +142,10 @@ describe('perf:api: measuring', () => {
     expect(result.datasetUnchanged).toBe(true)
     expect(result.datasetFingerprint).toBe(before.fingerprint)
     expect((await readSnapshot(database)).fingerprint).toBe(before.fingerprint)
-    expect(result.scenarios).toHaveLength(15)
+    expect(result.scenarios).toHaveLength(SCENARIOS.length)
     for (const scenario of result.scenarios) {
-      expect(scenario.matchedRows, scenario.name).toBeGreaterThan(0)
+      if (scenario.name !== 'Page: search matching nothing, first page of 50') expect(scenario.matchedRows, scenario.name).toBeGreaterThan(0)
+      expect(scenario.returnedRows, scenario.name).toBeLessThanOrEqual(scenario.endpoint === 'GET /trades/page' ? 100 : scenario.matchedRows)
       expect(scenario.responseBytes, scenario.name).toBeGreaterThan(0)
       expect([scenario.warmupIterations, scenario.measuredIterations]).toEqual([1, 2])
       expect(scenario.latencyMs.min).toBeLessThanOrEqual(scenario.latencyMs.max)
@@ -112,7 +156,14 @@ describe('perf:api: measuring', () => {
     expect((matched['Side Buy'] ?? 0) + (matched['Side Sell'] ?? 0)).toBe(300)
     expect(matched['Symbol search "ms"']).toBe(before.trades.filter((t) => ['MS', 'MSFT', 'MSTR'].includes(t.symbol)).length)
     expect(matched['"ms" + Sell + 2025-07-01 to 2026-06-30']).toBeLessThan(matched['Symbol search "ms"'] ?? 0)
-  }, 60_000)
+    const returned = Object.fromEntries(result.scenarios.map((s) => [s.name, s.returnedRows]))
+    // 300 trades at 50 a page: six pages, the last one full; nothing past it.
+    expect([returned['Page: default order, first page of 50'], returned['Page: default order, last page of 50'], returned['Page: default order, past the last page of 50']])
+      .toEqual([50, 50, 0])
+    expect(result.scenarios.find((s) => s.name === 'Page: default order, middle page of 50')?.path).toBe('/trades/page?page=3&pageSize=50')
+    expect(returned['Page: price asc, last page of 100']).toBe(100)
+    expect(returned['Page: search matching nothing, first page of 50']).toBe(0)
+  }, 120_000)
 
   it('refuses an API that serves other trades than the selected database holds', async () => {
     const other = join(dir, 'other.db')
@@ -216,18 +267,57 @@ describe('perf:api: which API it measures', () => {
 })
 
 describe('perf:api: process probes', () => {
-  it('tell which process listens on a port, and how much memory a process holds', async () => {
+  /** A TCP listener on 127.0.0.1 held by this process, on a port the system picks. */
+  async function listening<T>(use: (port: number) => Promise<T> | T): Promise<T> {
     const listener = createTcpServer()
     await new Promise<void>((resolve) => listener.listen(0, '127.0.0.1', resolve))
     const { port } = listener.address() as AddressInfo
     try {
-      expect(listenersOnPort(port, process.pid)).toBe('only')
-      expect(listenersOnPort(port, process.pid + 1)).toBe('others')
+      return await use(port)
     } finally {
       await new Promise((resolve) => listener.close(resolve))
     }
-    expect(listenersOnPort(port, process.pid)).toBe('none')
+  }
 
+  it('tell this process from a real other process, and see the port freed', async () => {
+    const port = await listening(async (open) => {
+      expect(listenersOnPort(open, process.pid)).toBe('only')
+      // Another process that exists: a child that only waits. It holds no socket on the port.
+      const other = startNode(['-e', 'setInterval(() => {}, 1000)'], isolatedEnv({ DATABASE_PATH: join(dir, 'probe.db') }))
+      try {
+        expect(other.pid).toBeDefined()
+        expect(listenersOnPort(open, other.pid ?? 0)).toBe('others')
+      } finally {
+        await stopChild(other)
+      }
+      return open
+    })
+    expect(listenersOnPort(port, process.pid)).toBe('none')
+  })
+
+  it('never takes an id that no process has for the listener: one that has just exited', async () => {
+    const { pid } = runNode(['-e', ''], isolatedEnv({ DATABASE_PATH: join(dir, 'probe.db') }))
+    expect(pid).toBeDefined()
+    expect(isAlive(pid ?? 0)).toBe(false)
+
+    await listening((port) => {
+      expect(listenersOnPort(port, pid ?? 0)).toBe('others')
+    })
+  })
+
+  // Linux gives threads ids from the same range as processes, and /proc/<thread id>/fd shows the
+  // whole process's sockets. A thread is not the process: the listener belongs to its process.
+  it.runIf(process.platform === 'linux')('does not take a thread of the listening process for the process', async () => {
+    const threads = readdirSync('/proc/self/task').map(Number).filter((id) => id !== process.pid)
+    expect(threads.length).toBeGreaterThan(0)
+
+    await listening((port) => {
+      for (const thread of threads) expect(listenersOnPort(port, thread), `thread ${String(thread)}`).toBe('others')
+      expect(listenersOnPort(port, process.pid)).toBe('only')
+    })
+  })
+
+  it('report how much memory a process holds', () => {
     const memory = processMemory(process.pid)
     expect(memory?.residentBytes).toBeGreaterThan(10 * 2 ** 20)
     if (process.platform !== 'darwin') expect(memory?.peakResidentBytes).toBeGreaterThanOrEqual(memory?.residentBytes ?? 0)

@@ -5,8 +5,6 @@ import { browserTimeZone } from '../lib/timestamps.ts'
 import {
   DEFAULT_TRADE_FILTERS,
   INCOMPLETE_DATE_MESSAGES,
-  SORT_FIELDS,
-  sortDirections,
   toTradeQuery,
   type DateFilterErrors,
   type TradeFilters,
@@ -15,14 +13,16 @@ import { useBlotterStore } from '../stores/blotter.ts'
 
 const store = useBlotterStore()
 
-/** What the controls show. Only Apply and Clear send it to the store; until then the list keeps its query. */
+/**
+ * What the controls show. Only Apply and Clear send it to the store; until then the list, its
+ * sort and its pages keep the filters last applied.
+ */
 const draft = reactive<TradeFilters>({ ...DEFAULT_TRADE_FILTERS })
 /** The filters the list was last asked to show. */
 const applied = ref<TradeFilters>({ ...DEFAULT_TRADE_FILTERS })
 const errors = ref<DateFilterErrors>({})
 const timeZone = browserTimeZone()
 
-const directions = computed(() => sortDirections(draft.sortBy))
 const unapplied = computed(() => (Object.keys(DEFAULT_TRADE_FILTERS) as (keyof TradeFilters)[])
   .some((name) => draft[name] !== applied.value[name]))
 
@@ -56,7 +56,7 @@ async function apply(): Promise<void> {
   }
   errors.value = {}
   applied.value = { ...draft }
-  await store.applyTradeQuery(result.query)
+  await store.applyFilters(result.query)
 }
 
 async function clear(): Promise<void> {
@@ -68,7 +68,7 @@ async function clear(): Promise<void> {
   }
   errors.value = {}
   applied.value = { ...DEFAULT_TRADE_FILTERS }
-  await store.applyTradeQuery({})
+  await store.clearFilters()
 }
 
 const describedBy = (field: keyof DateFilterErrors): string =>
@@ -76,7 +76,7 @@ const describedBy = (field: keyof DateFilterErrors): string =>
 </script>
 
 <template>
-  <form ref="formElement" class="trade-filters" role="search" aria-label="Search, filter and sort trades" novalidate @submit.prevent="apply">
+  <form ref="formElement" class="trade-filters" role="search" aria-label="Search and filter trades" novalidate @submit.prevent="apply">
     <div class="filter-grid">
       <div class="field">
         <label for="filter-symbol">Symbol</label>
@@ -130,20 +130,6 @@ const describedBy = (field: keyof DateFilterErrors): string =>
           :aria-describedby="describedBy('toDate')"
         >
         <p v-if="errors.toDate" id="filter-to-date-error" class="field-error">{{ errors.toDate }}</p>
-      </div>
-
-      <div class="field">
-        <label for="filter-sort-by">Sort by</label>
-        <select id="filter-sort-by" v-model="draft.sortBy" name="sortBy">
-          <option v-for="field in SORT_FIELDS" :key="field.value" :value="field.value">{{ field.label }}</option>
-        </select>
-      </div>
-
-      <div class="field">
-        <label for="filter-sort-direction">Order</label>
-        <select id="filter-sort-direction" v-model="draft.sortDirection" name="sortDirection">
-          <option v-for="direction in directions" :key="direction.value" :value="direction.value">{{ direction.label }}</option>
-        </select>
       </div>
     </div>
     <p id="filter-dates-hint" class="hint">

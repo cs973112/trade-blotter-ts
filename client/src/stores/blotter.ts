@@ -1,8 +1,9 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 
 import { api, ApiError } from '../api/client.ts'
-import type { CreateTradeRequest, Position, Trade, TradeQuery } from '../api/contracts.ts'
+import type { CreateTradeRequest, Position, SortField, Trade, TradePageQuery, TradeQuery } from '../api/contracts.ts'
+import { DEFAULT_PAGE_SIZE, DEFAULT_TRADE_SORT, nextSort, type TradeFilterQuery, type TradeSort } from '../lib/trade-filters.ts'
 
 /** The state of one list loaded from the API. */
 export interface ListState<T> {
@@ -15,6 +16,14 @@ export interface ListState<T> {
   error: string | undefined
 }
 
+/** Where the trades shown sit among every matching trade, as the API counted them. */
+export interface ShownPage {
+  readonly page: number
+  readonly pageSize: number
+  readonly totalCount: number
+  readonly totalPages: number
+}
+
 function emptyList<T>(): ListState<T> {
   return { items: [], loading: false, loaded: false, error: undefined }
 }
@@ -24,20 +33,35 @@ function messageFor(error: unknown): string {
 }
 
 /**
- * The trades and positions shown on the page, shared by the form (which books trades) and the two
- * tables. Positions come from the API; the client never calculates them. Booking a trade
- * refreshes both lists.
+ * The trades and positions shown on the page, shared by the form (which books trades), the trade
+ * list and the positions table. Positions come from the API; the client never calculates them.
+ * Booking a trade refreshes both lists.
  *
- * The trade list is loaded with the applied query, which only applyTradeQuery changes. Positions
- * never use it: they always cover every trade.
+ * The trade list is one page from GET /trades/page, chosen by the applied filters, the sort, the
+ * page and the page size. Each is changed only through the actions below, which reload the list;
+ * changing the filters, the sort or the page size goes back to page 1. Positions never use any of
+ * it: they always cover every trade.
  */
 export const useBlotterStore = defineStore('blotter', () => {
   const trades = ref<ListState<Trade>>(emptyList())
   const positions = ref<ListState<Position>>(emptyList())
-  /** The search, filters and sort the trade list is loaded with. Empty: every trade, newest first. */
-  const tradeQuery = ref<TradeQuery>({})
+
+  /** The filters last applied. Empty: every trade. */
+  const filters = ref<TradeFilterQuery>({})
+  const sort = ref<TradeSort>(DEFAULT_TRADE_SORT)
+  /** The page asked for, which may differ from the page shown while it loads. */
+  const page = ref(1)
+  const pageSize = ref<number>(DEFAULT_PAGE_SIZE)
+
+  /** The filters and sort the list is loaded with; the default sort is left out, as the API's default. */
+  const tradeQuery = computed<TradeQuery>(() => ({
+    ...filters.value,
+    ...(sort.value.sortBy === DEFAULT_TRADE_SORT.sortBy && sort.value.sortDirection === DEFAULT_TRADE_SORT.sortDirection ? {} : sort.value),
+  }))
   /** The query the trades in the list were loaded with, which may differ while a new one loads. */
   const shownTradeQuery = ref<TradeQuery>({})
+  /** The page the trades in the list are, and the counts that came with it. Undefined until one loads. */
+  const shownPage = ref<ShownPage | undefined>(undefined)
 
   // Each list keeps only the newest response, so a slow earlier request cannot overwrite a later one.
   let tradesRequest = 0
@@ -57,18 +81,26 @@ export const useBlotterStore = defineStore('blotter', () => {
     return requestsStarted
   }
 
-  /** Loads the trade list with the applied query. */
+  /** Loads the page asked for, with the applied filters and sort. */
   async function loadTrades(): Promise<void> {
     const request = ++tradesRequest
     const number = ++requestsStarted
-    const query = tradeQuery.value
+    const shown = tradeQuery.value
+    const query: TradePageQuery = { ...shown, page: page.value, pageSize: pageSize.value }
     trades.value.loading = true
     try {
-      const items = await api.listTrades(query)
+      const result = await api.listTradePage(query)
       answered(number)
       if (request !== tradesRequest) return
-      trades.value = { items, loading: false, loaded: true, error: undefined }
-      shownTradeQuery.value = query
+      if (result.page > result.totalPages && result.totalPages > 0) {
+        // Past the last page: show the last one rather than an empty page of a list that has trades.
+        page.value = result.totalPages
+        await loadTrades()
+        return
+      }
+      trades.value = { items: [...result.items], loading: false, loaded: true, error: undefined }
+      shownTradeQuery.value = shown
+      shownPage.value = { page: result.page, pageSize: result.pageSize, totalCount: result.totalCount, totalPages: result.totalPages }
     } catch (error) {
       if (request !== tradesRequest) return
       trades.value = { ...trades.value, loading: false, error: messageFor(error) }
@@ -90,9 +122,40 @@ export const useBlotterStore = defineStore('blotter', () => {
     }
   }
 
-  /** Applies a new search, filter and sort (an empty query for none), and reloads the trade list with it. */
-  async function applyTradeQuery(query: TradeQuery): Promise<void> {
-    tradeQuery.value = query
+  /** Applies new filters (empty for none), keeping the sort, and shows their first page. */
+  async function applyFilters(query: TradeFilterQuery): Promise<void> {
+    filters.value = query
+    page.value = 1
+    await loadTrades()
+  }
+
+  /** No filters, newest execution first, page 1: the list as the page opens. The page size is kept. */
+  async function clearFilters(): Promise<void> {
+    filters.value = {}
+    sort.value = DEFAULT_TRADE_SORT
+    page.value = 1
+    await loadTrades()
+  }
+
+  /** Sorts by a column (see nextSort), with the applied filters, from page 1. */
+  async function sortBy(field: SortField): Promise<void> {
+    sort.value = nextSort(sort.value, field)
+    page.value = 1
+    await loadTrades()
+  }
+
+  /** Shows another page. Asking for the page already asked for sends nothing. */
+  async function goToPage(target: number): Promise<void> {
+    if (!Number.isInteger(target) || target < 1 || target === page.value) return
+    page.value = target
+    await loadTrades()
+  }
+
+  /** Changes the page size and shows page 1. Choosing the current size sends nothing. */
+  async function setPageSize(size: number): Promise<void> {
+    if (size === pageSize.value) return
+    pageSize.value = size
+    page.value = 1
     await loadTrades()
   }
 
@@ -101,7 +164,10 @@ export const useBlotterStore = defineStore('blotter', () => {
     await Promise.all([loadTrades(), loadPositions()])
   }
 
-  /** Books a trade, then refreshes both lists, the trades with the applied query. Throws ApiError if the trade is not booked. */
+  /**
+   * Books a trade, then refreshes both lists: the trades on the same page, with the same filters
+   * and sort. Throws ApiError if the trade is not booked.
+   */
   async function createTrade(request: CreateTradeRequest): Promise<Trade> {
     const number = ++requestsStarted
     const trade = await api.createTrade(request)
@@ -111,7 +177,7 @@ export const useBlotterStore = defineStore('blotter', () => {
   }
 
   return {
-    trades, positions, tradeQuery, shownTradeQuery, latestAnswered, lastRequestStarted,
-    loadTrades, loadPositions, applyTradeQuery, refresh, createTrade,
+    trades, positions, filters, sort, page, pageSize, tradeQuery, shownTradeQuery, shownPage, latestAnswered, lastRequestStarted,
+    loadTrades, loadPositions, applyFilters, clearFilters, sortBy, goToPage, setPageSize, refresh, createTrade,
   }
 })

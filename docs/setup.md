@@ -4,8 +4,7 @@ How to install, configure, verify and run Trade Blotter from a clone of the repo
 [README](../README.md) has the short version.
 
 - **Verified:** every command here was run on Windows 11 x64 with Node.js 22.23.1 and npm 12.0.1.
-- **Intended, not verified:** macOS and Linux. The commands are the same; see
-  [Platform limitations](#platform-limitations).
+- **Partly verified on Linux, not on macOS:** see [Platform limitations](#platform-limitations).
 
 Run every command from the repository root (the folder that contains `package.json`), unless a
 step says otherwise. Any location on disk works.
@@ -20,8 +19,9 @@ step says otherwise. Any location on disk works.
 6. [Starting the API](#starting-the-api)
 7. [Starting the frontend](#starting-the-frontend)
 8. [Ports and running alongside other services](#ports-and-running-alongside-other-services)
-9. [Troubleshooting](#troubleshooting)
-10. [Platform limitations](#platform-limitations)
+9. [Reviewer workflow](#reviewer-workflow)
+10. [Troubleshooting](#troubleshooting)
+11. [Platform limitations](#platform-limitations)
 
 ## Prerequisites
 
@@ -95,8 +95,9 @@ One step at a time:
 npm run lint               # ESLint over the repository
 npm run typecheck          # API and frontend, no output files
 npm run build              # API to server/dist/, frontend to client/dist/
-npm test -w server         # API tests (1087)
-npm test -w client         # frontend tests (220)
+npm test -w server         # API and tool tests (1,423: 1,422 run, 1 Linux-only test skipped elsewhere)
+npm test -w client         # frontend tests (272)
+npm run db:check -w server # the migrations folder has no conflicts (drift is a test: schema-drift.test.ts)
 ```
 
 The tests need no running server, browser, network or existing database. They create their own
@@ -250,6 +251,8 @@ frontend elsewhere, serve `client/dist/` and forward the same paths to the API.
 | 5299 | API | `PORT` |
 | 5173 | Frontend development server | `-- --port <port>` after the command |
 | 4173 | Frontend preview | `-- --port <port>` after the command |
+| 5391, 4191 | Reviewer benchmark API and frontend (`review:03`) | Fixed |
+| 5392, 4192 | Reviewer scratch API and frontend (`review:03`) | Fixed |
 
 The frontend ports are fixed: if one is taken, Vite stops with an error instead of moving to
 another. When you change the API port, point the frontend at it with `API_TARGET`. For example,
@@ -264,6 +267,46 @@ API_TARGET=http://127.0.0.1:5399 npm run preview -w client -- --port 4273 --host
 $env:DATABASE_PATH = "$HOME/trade-blotter-test/trades.db"; $env:PORT = '5399'; $env:HOST = '127.0.0.1'; npm start -w server
 $env:API_TARGET = 'http://127.0.0.1:5399'; npm run preview -w client -- --port 4273 --host 127.0.0.1
 ```
+
+## Reviewer workflow
+
+Seven commands check a clone end to end, the same on Windows PowerShell and Linux; the README has
+[the quick start](../README.md#reviewer-workflow-review01-to-review07). Everything they create is
+in `.run/review/`, which Git ignores:
+
+| Path | What |
+| --- | --- |
+| `.run/review/benchmark.db` | 25,000 deterministic trades (db:seed's generator, seed `trade-blotter`); only ever read |
+| `.run/review/scratch.db` | 120 deterministic trades (seed `trade-blotter-scratch`), and whatever you book in the scratch frontend |
+| `.run/review/run/benchmark/`, `run/scratch/` | Each pair's run record (process ids, tokens, database, ports) and its `api.log` and `web.log` |
+| `.run/review/logs/` | Each step's output (`review-0N.log`), the build log and step 05's command logs |
+| `.run/review/perf/<time>/` | `api.json`, `api.txt`, `ui.json`, `ui.txt` from step 06 |
+| `.run/review/disposable/` | Step 04's throwaway booking database, removed after each run |
+| `.run/review/development-database.json` | Step 01's SHA-256 of the development database's files, compared by step 07 |
+
+- **Databases are never deleted, cleared or reseeded by the workflow.** Step 02 seeds only an
+  empty database, and recognises its own data by comparing every row with the deterministic
+  dataset, not by counting. The scratch database may hold trades you booked after seeding: they
+  are kept, and checked with the application's own accounting. Anything else is refused with what
+  to do; to start afresh, run `npm run review:07`, then either
+  `npm run db:clear -- --database .run/review/scratch.db --confirm` or move the file (and its
+  `-wal` and `-shm`) away, then `review:01` and `review:02`.
+- **Only the reviewer's own applications are ever stopped.** Before stopping a pair, step 07 checks
+  that its record names the pair's database and ports, that every process is alive and still has
+  the random token it was started with in its command line, that it is the only process listening
+  on its port, and that the API and frontend answer as that pair's. Anything that does not hold
+  (a reused process id, another application, another database, another listener) is reported as
+  FAIL and left running, with its record kept. `npm run app:stop` is not used.
+- **Ports in use.** Steps 01 and 03 check the four reviewer ports. A port used by another program
+  is a WARN in step 01 and stops that pair from starting in step 03 (FAIL); the program is left
+  alone.
+- **The development database** (`server/data/trade-blotter.db`) is never opened by the workflow.
+  Step 01 records the SHA-256 of its file, `-wal` and `-shm`; step 07 compares them. A difference
+  is a WARN, not a FAIL: if your own application used it in between, it explains the change, and
+  the warning is not evidence that the workflow touched it.
+- **Without a browser**, step 06 runs the API benchmark, reports the UI benchmark as SKIPPED and
+  ends INCOMPLETE with exit code 3. Chrome or Chromium is found through `CHROME_PATH`, then the
+  usual places (on Linux, `google-chrome`, `chromium` and similar on the `PATH`).
 
 ## Troubleshooting
 
@@ -285,12 +328,23 @@ $env:API_TARGET = 'http://127.0.0.1:5399'; npm run preview -w client -- --port 4
 | Times look shifted | Times are shown in your computer's time zone with the offset beside each; the UTC value is in the tooltip. |
 | An `ExperimentalWarning` about SQLite | Node.js marks `node:sqlite` as experimental. The npm scripts suppress it; behaviour is unaffected. |
 | Tests fail to delete temporary files on Windows | Antivirus or indexing can briefly lock SQLite's `-wal` and `-shm` files. The tests retry; if it persists, exclude the temp folder from real-time scanning. |
+| `review:02` says a database is "unexpected" | It holds something other than its dataset. Nothing was changed; follow the steps printed with it (see [Reviewer workflow](#reviewer-workflow)). |
+| `review:03` says a port "is already in use by another process" | Another program uses a reviewer port (5391, 4191, 5392, 4192). Stop it yourself; the workflow never stops it. |
+| `review:07` says "not stopped, left running" | The recorded process could not be confirmed as the reviewer's (its id may now belong to another program). Check the process named; delete `.run/review/run/<pair>/app.json` only once you know the reviewer's applications are not running. |
+| `review:06` ends INCOMPLETE (exit code 3) | No Chrome or Chromium was found; set `CHROME_PATH` to a Chromium-based browser and run it again. |
 | `npm audit` reports 16 moderate advisories | A known open item; see [Dependency advisories](../README.md#dependency-advisories). Do not run `npm audit fix --force`. |
 
 ## Platform limitations
 
-- **Verified on Windows 11 x64 only.** macOS, Linux and other CPU architectures are intended to
-  work but have not been run.
+- **Fully verified on Windows 11 x64 only** (Node.js 22.23.1, npm 12.0.1, Chrome 156): every
+  command, every test, the seven reviewer steps and the browser checks.
+- **Linux, partly:** on Debian under WSL 2 with Node.js 22.23.1, the Linux-specific code was run:
+  the process probe (`/proc`, including thread ids), the process manager with a stand-in
+  application (start, tokens, process-group stop, reused ids, ports in use), and reviewer steps 01
+  and 02 and the ownership checks of 07, on a temporary folder. The test suite, the build and the
+  real API and frontend were not run there (that needs `npm ci` for Linux packages), and no
+  browser was available, so step 06 was not run on Linux.
+- **macOS: not run at all.** Its process paths (`ps`, `lsof`) are untested.
 - **Native build packages.** Building the frontend and running the tests need the rolldown and
   lightningcss packages for your platform. The lockfile has them for Linux x64 and arm64 (glibc
   and musl), macOS x64 and arm64, Windows x64 and arm64, and FreeBSD x64. Platforms without a

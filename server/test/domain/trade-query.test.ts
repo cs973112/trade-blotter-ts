@@ -4,10 +4,18 @@ import { Dec } from '../../src/domain/decimal.ts'
 import { DEFAULT_SYMBOL_MAX_LENGTH } from '../../src/domain/symbol.ts'
 import {
   compareTrades,
+  DEFAULT_PAGE_SIZE,
   DEFAULT_TRADE_SORT,
+  MAX_PAGE,
+  MAX_PAGE_SIZE,
+  pageCount,
+  pageWindow,
   SORT_DIRECTIONS,
   TRADE_SORT_FIELDS,
+  validateTradePageQuery,
   validateTradeQuery,
+  type TradePageQuery,
+  type TradePageQueryRequest,
   type TradeQuery,
   type TradeQueryRequest,
   type TradeSort,
@@ -258,5 +266,120 @@ describe('domain: trade sort order', () => {
 
     expect(compareTrades({ field: 'price', direction: 'asc' })(a, b)).toBeLessThan(0)
     expect(sorted([b, a], { field: 'price', direction: 'asc' })).toEqual(['a', 'b'])
+  })
+})
+
+function validatedPage(request: TradePageQueryRequest): TradePageQuery {
+  const result = validateTradePageQuery(request, RULES)
+  if (!result.ok) throw new Error(JSON.stringify(result.errors))
+  return result.value
+}
+
+function pageErrorsOf(request: TradePageQueryRequest): Record<string, readonly string[] | undefined> {
+  const result = validateTradePageQuery(request, RULES)
+  if (result.ok) throw new Error('Expected the query to be invalid.')
+  return result.errors
+}
+
+const PAGE_MESSAGE = 'page must be a whole number from 1 to 9007199254740991.'
+const PAGE_SIZE_MESSAGE = 'pageSize must be a whole number from 1 to 100.'
+
+describe('domain: trade page query validation', () => {
+  it('reads no parameters as the first page of 50 trades, every trade, newest first', () => {
+    expect(validatedPage({})).toEqual({ query: validated({}), page: { page: 1, pageSize: 50 } })
+    expect([DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MAX_PAGE]).toEqual([50, 100, Number.MAX_SAFE_INTEGER])
+  })
+
+  it('reads the filters and sort exactly as validateTradeQuery does', () => {
+    const request = { symbol: 'ms', side: 'sell', executedFrom: '2026-01-01T00:00:00+01:00', sortBy: 'price', sortDirection: 'asc' }
+
+    expect(validatedPage({ ...request, page: '3', pageSize: '25' })).toEqual({ query: validated(request), page: { page: 3, pageSize: 25 } })
+  })
+
+  it.each([
+    ['1', 1], ['2', 2], ['007', 7], ['9007199254740991', Number.MAX_SAFE_INTEGER],
+  ])('reads page %j as %d', (page, expected) => {
+    expect(validatedPage({ page }).page.page).toBe(expected)
+  })
+
+  it.each([['1', 1], ['25', 25], ['50', 50], ['100', 100], ['099', 99]])('reads pageSize %j as %d', (pageSize, expected) => {
+    expect(validatedPage({ pageSize }).page.pageSize).toBe(expected)
+  })
+
+  it('treats an empty page or pageSize as omitted', () => {
+    expect(validatedPage({ page: '', pageSize: '' }).page).toEqual({ page: 1, pageSize: 50 })
+  })
+
+  it.each([
+    ['0'], ['-1'], ['+1'], ['1.5'], ['1.0'], ['1e3'], ['0x10'], [' 1'], ['1 '], ['abc'], ['Infinity'], ['NaN'],
+    ['9007199254740992'], ['99999999999999999999999999999999'],
+  ])('refuses page %j, never rounding it', (page) => {
+    expect(pageErrorsOf({ page })).toEqual({ page: [PAGE_MESSAGE] })
+  })
+
+  it.each([['0'], ['101'], ['1000'], ['-50'], ['50.5'], ['5e1'], ['fifty'], ['99999999999999999999']])('refuses pageSize %j', (pageSize) => {
+    expect(pageErrorsOf({ pageSize })).toEqual({ pageSize: [PAGE_SIZE_MESSAGE] })
+  })
+
+  it('refuses a repeated page or pageSize instead of choosing one of its values', () => {
+    expect(pageErrorsOf({ page: ['1', '2'], pageSize: ['50', '50'] })).toEqual({
+      page: ['page must be given at most once.'],
+      pageSize: ['pageSize must be given at most once.'],
+    })
+  })
+
+  it('reports every invalid parameter at once, the page parameters last', () => {
+    const errors = pageErrorsOf({ pageSize: '0', page: 'x', sortDirection: 'up', sortBy: 'x', executedTo: 'y', executedFrom: 'z', side: 'hold', symbol: '\u0000' })
+
+    expect(Object.keys(errors)).toEqual(['symbol', 'side', 'executedFrom', 'executedTo', 'sortBy', 'sortDirection', 'page', 'pageSize'])
+  })
+
+  it('reports an invalid page even when every filter is valid, and an invalid filter when the page is valid', () => {
+    expect(pageErrorsOf({ symbol: 'MS', page: '0' })).toEqual({ page: [PAGE_MESSAGE] })
+    expect(pageErrorsOf({ side: 'hold', page: '2' })).toEqual({ side: ['side must be Buy or Sell.'] })
+  })
+
+  it('leaves validateTradeQuery ignoring page and pageSize, as GET /trades does', () => {
+    expect(validated({ page: '0', pageSize: 'x' } as TradeQueryRequest)).toEqual(validated({}))
+  })
+})
+
+describe('domain: page windows', () => {
+  it('counts the pages the matching trades fill, none when nothing matches', () => {
+    expect([pageCount(0, 50), pageCount(1, 50), pageCount(50, 50), pageCount(51, 50), pageCount(25_000, 100)]).toEqual([0, 1, 1, 2, 250])
+  })
+
+  it.each([
+    [{ page: 1, pageSize: 50 }, 120, { offset: 0, limit: 50 }],
+    [{ page: 2, pageSize: 50 }, 120, { offset: 50, limit: 50 }],
+    [{ page: 3, pageSize: 50 }, 120, { offset: 100, limit: 20 }],
+    [{ page: 3, pageSize: 50 }, 150, { offset: 100, limit: 50 }],
+    [{ page: 1, pageSize: 1 }, 1, { offset: 0, limit: 1 }],
+  ])('places page %o of %d trades at %o', (page, total, expected) => {
+    expect(pageWindow(page, total)).toEqual(expected)
+  })
+
+  it.each([
+    [{ page: 1, pageSize: 50 }, 0],
+    [{ page: 4, pageSize: 50 }, 150],
+    [{ page: 2, pageSize: 100 }, 100],
+    [{ page: Number.MAX_SAFE_INTEGER, pageSize: 100 }, 25_000],
+  ])('has no window for page %o of %d trades: it is past the last', (page, total) => {
+    expect(pageWindow(page, total)).toBeUndefined()
+  })
+
+  it('never computes an offset at or beyond the number of trades, so a huge page number is harmless', () => {
+    for (const total of [0, 1, 49, 50, 51, 99, 100, 101, 25_000]) {
+      for (const pageSize of [1, 25, 50, 100]) {
+        for (const page of [1, 2, pageCount(total, pageSize), pageCount(total, pageSize) + 1, MAX_PAGE]) {
+          const window = pageWindow({ page: Math.max(page, 1), pageSize }, total)
+          if (window === undefined) continue
+          expect(window.offset).toBeLessThan(total)
+          expect(window.limit).toBeGreaterThan(0)
+          expect(window.offset + window.limit).toBeLessThanOrEqual(total)
+          expect(Number.isSafeInteger(window.offset)).toBe(true)
+        }
+      }
+    }
   })
 })

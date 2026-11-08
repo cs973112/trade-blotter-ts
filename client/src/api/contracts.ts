@@ -71,3 +71,25 @@ export interface TradeQuery {
 
 /** The query parameters, in the order they are sent and the API reports them. */
 export const TRADE_QUERY_PARAMETERS = ['symbol', 'side', 'executedFrom', 'executedTo', 'sortBy', 'sortDirection'] as const
+
+/** GET /trades/page: the GET /trades query, and which page of it. */
+export interface TradePageQuery extends TradeQuery {
+  /** From 1. A page past the last is not an error: it has no items. */
+  readonly page: number
+  /** 1 to 100. */
+  readonly pageSize: number
+}
+
+/** GET /trades/page query parameters, in the order they are sent and the API reports them. */
+export const TRADE_PAGE_QUERY_PARAMETERS = [...TRADE_QUERY_PARAMETERS, 'page', 'pageSize'] as const
+
+/** One page of the trades GET /trades would list for the same query. */
+export interface TradePage {
+  readonly items: readonly Trade[]
+  readonly page: number
+  readonly pageSize: number
+  /** Trades matching the query, on every page. */
+  readonly totalCount: number
+  /** Pages they fill: 0 when none match. */
+  readonly totalPages: number
+}
