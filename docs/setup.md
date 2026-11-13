@@ -4,7 +4,8 @@ How to install, configure, verify and run Trade Blotter from a clone of the repo
 [README](../README.md) has the short version.
 
 - **Verified:** every command here was run on Windows 11 x64 with Node.js 22.23.1 and npm 12.0.1.
-- **Partly verified on Linux, not on macOS:** see [Platform limitations](#platform-limitations).
+- **Partly run under WSL Linux, not on macOS or in a Linux sandbox:** see
+  [Platform limitations](#platform-limitations).
 
 Run every command from the repository root (the folder that contains `package.json`), unless a
 step says otherwise. Any location on disk works.
@@ -32,7 +33,7 @@ step says otherwise. Any location on disk works.
 | Git | To clone the repository. |
 | Network access to the npm registry | `npm ci` downloads 300 packages, or see [Installing without internet access](#installing-without-internet-access). |
 | A writable temp folder | The tests create temporary databases in the operating system's temp folder. |
-| A web browser | Only to use the frontend; no test starts a browser. |
+| A web browser | To use the frontend. `npm run check:ui` and reviewer steps 05 and 06 also need a Chromium-based browser (Chrome, Edge or Chromium, or Chrome for Testing); it is found automatically, see [Finding a browser](../README.md#finding-a-browser). `npm test` and `verify` start none. |
 | Compiler, Python, Docker, a database server | Not needed. SQLite is built into Node.js (`node:sqlite`). |
 
 Install Node.js 22.23.1 exactly; installers that pick "the latest LTS" may give another version.
@@ -65,8 +66,8 @@ npm ci
 ```
 
 `npm ci` installs exactly the versions in `package-lock.json` for both workspaces (`server/` and
-`client/`) and never edits the lockfile. No package runs an install script. It reports 19
-moderate advisories from `npm audit`; see
+`client/`) and never edits the lockfile. No package runs an install script. It reports
+moderate advisories from `npm audit` (15 on 2026-11-13); see
 [Dependency advisories](../README.md#dependency-advisories).
 
 The repository uses LF line endings (`.gitattributes`). If Git converts them on Windows, run
@@ -89,14 +90,17 @@ The repository uses LF line endings (`.gitattributes`). If Git converts them on 
 npm run verify             # all of the steps below, in order; exit code 0 means the setup works
 ```
 
+`npm run check:ui` (after `npm run build`) runs 49 checks of the page in a real headless browser,
+on throwaway databases of its own, and saves screenshots: `npm run check:ui -- --out <folder>`.
+
 One step at a time:
 
 ```bash
 npm run lint               # ESLint over the repository
 npm run typecheck          # API and frontend, no output files
 npm run build              # API to server/dist/, frontend to client/dist/
-npm test -w server         # API and tool tests (1,423: 1,422 run, 1 Linux-only test skipped elsewhere)
-npm test -w client         # frontend tests (272)
+npm test -w server         # API and tool tests (1,572: 1,571 run, 1 Linux-only test skipped elsewhere)
+npm test -w client         # frontend tests (406)
 npm run db:check -w server # the migrations folder has no conflicts (drift is a test: schema-drift.test.ts)
 ```
 
@@ -276,21 +280,34 @@ in `.run/review/`, which Git ignores:
 
 | Path | What |
 | --- | --- |
-| `.run/review/benchmark.db` | 25,000 deterministic trades (db:seed's generator, seed `trade-blotter`); only ever read |
+| `.run/review/benchmark.db` | 25,000 deterministic trades (db:seed's generator, dataset version 2, seed `trade-blotter`): 181 symbols, 167 open positions; only ever read |
 | `.run/review/scratch.db` | 120 deterministic trades (seed `trade-blotter-scratch`), and whatever you book in the scratch frontend |
 | `.run/review/run/benchmark/`, `run/scratch/` | Each pair's run record (process ids, tokens, database, ports) and its `api.log` and `web.log` |
-| `.run/review/logs/` | Each step's output (`review-0N.log`), the build log and step 05's command logs |
+| `.run/review/logs/` | The current run only: `run.json` (its id, and each step's status, times, process and exit code), each step's output (`review-0N.log`; a step run again keeps the earlier one as `review-0N.attempt-<n>.log`), the build log and step 05's command logs |
+| `.run/review/logs/history/<run id>/` | Earlier runs' logs and `run.json`, moved there by `review:01` when it starts a new run; a step still marked running then is shown as INTERRUPTED. Logs from before runs were recorded are in `history/before-runs-<time>/`. Nothing in the history is deleted |
 | `.run/review/perf/<time>/` | `api.json`, `api.txt`, `ui.json`, `ui.txt` from step 06 |
 | `.run/review/disposable/` | Step 04's throwaway booking database, removed after each run |
 | `.run/review/development-database.json` | Step 01's SHA-256 of the development database's files, compared by step 07 |
+| `.run/review/backups/<pair>-<time>/` | A database step 01 preserved before replacing it: its files as they were, and a `backup.json` with their SHA-256, the trade count and fingerprint, why, and how to restore it |
 
-- **Databases are never deleted, cleared or reseeded by the workflow.** Step 02 seeds only an
-  empty database, and recognises its own data by comparing every row with the deterministic
-  dataset, not by counting. The scratch database may hold trades you booked after seeding: they
-  are kept, and checked with the application's own accounting. Anything else is refused with what
-  to do; to start afresh, run `npm run review:07`, then either
-  `npm run db:clear -- --database .run/review/scratch.db --confirm` or move the file (and its
-  `-wal` and `-shm`) away, then `review:01` and `review:02`.
+- **A database is recognised by its dataset's identity, never by a count.** Step 02 seeds only an
+  empty database. A database holds its dataset when its trades, in booking order, have the SHA-256
+  fingerprint of what the seed generator's current version (`DATASET_VERSION`, now 2) makes for its
+  seed and count. A dataset an earlier version made is named as such (version 1 had 24 symbols and
+  18 open positions). The scratch database may also hold trades you booked after seeding: they are
+  kept, and checked with the application's own accounting.
+- **A database holding anything else is preserved, then replaced, by step 01, never cleared.** Such
+  a database (an earlier version's dataset, changed trades, or trades booked into the read-only
+  benchmark) is copied byte for byte into `.run/review/backups/<pair>-<time>/` before it is opened
+  at all; the copy is what is inspected. The backup is verified by opening a second copy (SQLite's
+  integrity check, the trade count and the fingerprint of every row must match), the original
+  files are checked unchanged since they were copied, and a `backup.json` records it all. Only then
+  are the original files removed and a new, empty database made, which step 02 seeds; step 01
+  reports this as a WARN with the backup's folder. Nothing is replaced while a reviewer or
+  `app:start` application is recorded as using the database (run `npm run review:07` first), and a
+  file that is not a sound Trade Blotter database is never replaced: it is reported, unchanged,
+  with how to move it away. To restore a backup, stop the reviewer's applications and copy its
+  files back, as its `backup.json` says.
 - **Only the reviewer's own applications are ever stopped.** Before stopping a pair, step 07 checks
   that its record names the pair's database and ports, that every process is alive and still has
   the random token it was started with in its command line, that it is the only process listening
@@ -304,9 +321,15 @@ in `.run/review/`, which Git ignores:
   Step 01 records the SHA-256 of its file, `-wal` and `-shm`; step 07 compares them. A difference
   is a WARN, not a FAIL: if your own application used it in between, it explains the change, and
   the warning is not evidence that the workflow touched it.
-- **Without a browser**, step 06 runs the API benchmark, reports the UI benchmark as SKIPPED and
-  ends INCOMPLETE with exit code 3. Chrome or Chromium is found through `CHROME_PATH`, then the
-  usual places (on Linux, `google-chrome`, `chromium` and similar on the `PATH`).
+- **Runs and logs.** `.run/review/logs/` holds the current run only (see the table above). Step
+  01 starts a run and moves the previous one's logs to `logs/history/<run id>/`; every step prints
+  its run's id and ends with the run's summary, where a step not run yet in this run is NOT RUN and
+  one whose process ended before it finished is INTERRUPTED. No log is deleted, and moving logs
+  never touches a database, backup or fingerprint.
+- **Without a browser**, step 05 reports the UI checks and step 06 the UI benchmark as SKIPPED,
+  and each ends INCOMPLETE with exit code 3. The browser is found automatically, `CHROME_PATH`
+  first when it is set ([Finding a browser](../README.md#finding-a-browser)); under WSL only Linux
+  browsers are used.
 
 ## Troubleshooting
 
@@ -328,22 +351,31 @@ in `.run/review/`, which Git ignores:
 | Times look shifted | Times are shown in your computer's time zone with the offset beside each; the UTC value is in the tooltip. |
 | An `ExperimentalWarning` about SQLite | Node.js marks `node:sqlite` as experimental. The npm scripts suppress it; behaviour is unaffected. |
 | Tests fail to delete temporary files on Windows | Antivirus or indexing can briefly lock SQLite's `-wal` and `-shm` files. The tests retry; if it persists, exclude the temp folder from real-time scanning. |
-| `review:02` says a database is "unexpected" | It holds something other than its dataset. Nothing was changed; follow the steps printed with it (see [Reviewer workflow](#reviewer-workflow)). |
+| `review:02` says a database is "unexpected" | It holds something other than its dataset. Nothing was changed: run `npm run review:07`, then `npm run review:01`, which preserves it in a verified backup and replaces it (see [Reviewer workflow](#reviewer-workflow)). |
+| `review:01` warns that a database "held" something and was replaced | It held an earlier dataset version, changed trades, or trades booked into the benchmark. Its files are in the backup folder named, unchanged; `backup.json` there says how to restore them. |
 | `review:03` says a port "is already in use by another process" | Another program uses a reviewer port (5391, 4191, 5392, 4192). Stop it yourself; the workflow never stops it. |
 | `review:07` says "not stopped, left running" | The recorded process could not be confirmed as the reviewer's (its id may now belong to another program). Check the process named; delete `.run/review/run/<pair>/app.json` only once you know the reviewer's applications are not running. |
-| `review:06` ends INCOMPLETE (exit code 3) | No Chrome or Chromium was found; set `CHROME_PATH` to a Chromium-based browser and run it again. |
-| `npm audit` reports 16 moderate advisories | A known open item; see [Dependency advisories](../README.md#dependency-advisories). Do not run `npm audit fix --force`. |
+| `review:05` or `review:06` ends INCOMPLETE (exit code 3) | No Chromium-based browser was found; `review:01`'s browser line lists where it looked. Install Chrome, Edge or Chromium the usual way (or unpack Chrome for Testing into `~/.local/chrome-for-testing/<version>/` on Linux), or set `CHROME_PATH` to one, and run it again. |
+| A step fails with "CHROME_PATH does not name a usable browser" | `CHROME_PATH` is set to something that is not a browser this process can run (under WSL, a Windows `.exe`). Correct it, or unset it to let the search find one. |
+| A step's log seems to show an old result | Look at the run summary at its end and the run id at its start: `.run/review/logs/` holds the current run only, and earlier runs are in `logs/history/<run id>/`. A step not yet run in this run shows NOT RUN. |
+| `npm audit` reports moderate advisories | A known open item; see [Dependency advisories](../README.md#dependency-advisories). Do not run `npm audit fix --force`. |
 
 ## Platform limitations
 
-- **Fully verified on Windows 11 x64 only** (Node.js 22.23.1, npm 12.0.1, Chrome 156): every
-  command, every test, the seven reviewer steps and the browser checks.
-- **Linux, partly:** on Debian under WSL 2 with Node.js 22.23.1, the Linux-specific code was run:
-  the process probe (`/proc`, including thread ids), the process manager with a stand-in
-  application (start, tokens, process-group stop, reused ids, ports in use), and reviewer steps 01
-  and 02 and the ownership checks of 07, on a temporary folder. The test suite, the build and the
-  real API and frontend were not run there (that needs `npm ci` for Linux packages), and no
-  browser was available, so step 06 was not run on Linux.
+The same commands, with no platform-specific source edits, are meant to work on Windows, Linux
+(WSL included) and macOS. The reviewer workflow is run in the environment being developed in.
+
+- **Windows 11 x64** (Node.js 22.23.1, npm 12.0.1, Chrome 157): every command, every test,
+  `check:ui`, both benchmarks and the seven reviewer steps, most recently on 2026-11-13.
+- **Linux under WSL 2** (Debian 11, Node.js 22.23.1, Chrome for Testing 156 in `~/.local`):
+  `check:ui` ran there with Linux Node.js against the Windows checkout, finding the browser without
+  `CHROME_PATH` (44 of 44 on 2026-11-13, before the five checks added since); so did the process probe (`/proc`, including thread
+  ids), the process manager with a stand-in application (start, tokens, process-group stop,
+  reused ids, ports in use), and reviewer steps 01 and 02 and the ownership checks of 07, on a
+  temporary folder. The full test suite, the build and the seven reviewer steps were not run there.
+- **Linux sandboxes** (for example a container with Playwright's browsers in
+  `/opt/playwright-browsers`): not run. The browser search is tested against a described machine
+  of that kind (`server/test/scripts/browser.test.ts`).
 - **macOS: not run at all.** Its process paths (`ps`, `lsof`) are untested.
 - **Native build packages.** Building the frontend and running the tests need the rolldown and
   lightningcss packages for your platform. The lockfile has them for Linux x64 and arm64 (glibc

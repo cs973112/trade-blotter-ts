@@ -3,13 +3,14 @@ import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { stripTypeScriptTypes } from 'node:module'
 import { arch, cpus, release, tmpdir, totalmem } from 'node:os'
-import { delimiter, join, resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { parseArgs } from 'node:util'
 
 import { calculatePositions } from '../src/domain/position.ts'
 import { compareTrades, DEFAULT_TRADE_SORT, type TradeSort, type TradeSortField } from '../src/domain/trade-query.ts'
 import type { Trade } from '../src/domain/trade.ts'
+import { explicitBrowserProblem, lookUpBrowser, systemHost, type BrowserHost } from './browser.ts'
 import { defaultRunDir, processStatus, readState, REPOSITORY_ROOT } from './lifecycle.ts'
 import {
   BenchmarkError, count, expectedDifference, expectedResponse, findManagedApi, grouped, managedUrl, mib, ms, readSnapshot, SCENARIOS, statistics, table,
@@ -51,34 +52,20 @@ const TIME_ZONE = 'America/New_York'
 // ---------------------------------------------------------------------------------------------
 // Chrome
 
-/** Where Chrome is looked for: --chrome, then CHROME_PATH, then the usual install locations. */
-export function chromeCandidates(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string[] {
-  const configured = env['CHROME_PATH']?.trim()
-  const fromEnv = configured === undefined || configured === '' ? [] : [configured]
-  if (platform === 'win32') {
-    const roots = [env['PROGRAMFILES'], env['PROGRAMFILES(X86)'], env['LOCALAPPDATA']].filter((root): root is string => root !== undefined && root !== '')
-    return [...fromEnv, ...roots.map((root) => join(root, 'Google', 'Chrome', 'Application', 'chrome.exe'))]
-  }
-  if (platform === 'darwin') {
-    const app = 'Google Chrome.app/Contents/MacOS/Google Chrome'
-    return [...fromEnv, `/Applications/${app}`, ...(env['HOME'] === undefined ? [] : [join(env['HOME'], 'Applications', app)])]
-  }
-  const names = ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser']
-  const dirs = (env['PATH'] ?? '').split(delimiter).filter((dir) => dir !== '')
-  return [...fromEnv, ...names.flatMap((name) => dirs.map((dir) => join(dir, name)))]
-}
-
-export function findChrome(explicit: string | undefined): string {
+/**
+ * The browser: --chrome as given, else CHROME_PATH, else the usual places (see browser.ts). Any
+ * Chromium-based browser with the DevTools protocol works: Google Chrome, Microsoft Edge, Chromium.
+ */
+export function findChrome(explicit: string | undefined, host: BrowserHost = systemHost()): string {
   if (explicit !== undefined) {
-    if (!existsSync(explicit)) throw new TargetError(`--chrome ${explicit} does not exist.`)
+    const problem = explicitBrowserProblem(explicit, host)
+    if (problem !== undefined) throw new TargetError(problem)
     return explicit
   }
-  const found = chromeCandidates().find((candidate) => existsSync(candidate))
-  if (found === undefined) {
-    throw new TargetError('Chrome was not found. Install Google Chrome, or name it with --chrome <path> or CHROME_PATH ' +
-      '(any Chromium-based browser with the DevTools protocol works, such as Chromium).')
-  }
-  return found
+  const lookup = lookUpBrowser(host)
+  if (lookup.kind === 'found') return lookup.path
+  if (lookup.kind === 'invalid-setting') throw new TargetError(lookup.message)
+  throw new TargetError(`No Chrome, Edge or Chromium was found, so the browser cannot run. Name one with --chrome <path> or CHROME_PATH.\n${lookup.diagnostics}`)
 }
 
 type Json = Record<string, unknown>
@@ -156,7 +143,7 @@ class Cdp {
 }
 
 /** Headless Chrome with a temporary profile, started and stopped by this tool only. */
-class Browser {
+export class Browser {
   readonly cdp: Cdp
   readonly product: string
   readonly #child: ChildProcess
@@ -169,12 +156,13 @@ class Browser {
     this.product = product
   }
 
-  static async launch(path: string, maxHeapMb: number): Promise<Browser> {
+  /** hideScrollbars: false draws scroll bars as the system does (the UI checks measure the room they take). */
+  static async launch(path: string, maxHeapMb: number, options: { readonly hideScrollbars?: boolean } = {}): Promise<Browser> {
     const profile = mkdtempSync(join(tmpdir(), 'trade-blotter-perf-ui-'))
     const child = spawn(path, [
       '--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check',
       '--disable-extensions', '--disable-background-networking', '--disable-component-update', '--disable-sync', '--disable-default-apps',
-      '--mute-audio', '--hide-scrollbars', `--window-size=${String(VIEWPORT.width)},${String(VIEWPORT.height)}`,
+      '--mute-audio', ...(options.hideScrollbars === false ? [] : ['--hide-scrollbars']), `--window-size=${String(VIEWPORT.width)},${String(VIEWPORT.height)}`,
       // A page that grows past this fails with an out-of-memory crash, which is reported, instead of exhausting the machine.
       `--js-flags=--max-old-space-size=${String(maxHeapMb)}`, 'about:blank',
     ], { stdio: 'ignore', windowsHide: true })
@@ -342,7 +330,7 @@ interface FetchTiming {
   readonly decodedBodySize: number
 }
 
-class Page {
+export class Page {
   crashed: string | undefined
   readonly consoleErrors: string[] = []
 
@@ -892,6 +880,9 @@ export async function runUiBenchmark(app: ManagedApplication, options: UiOptions
     }
     if (page === undefined) throw new BenchmarkError('No page was loaded.')
     const target: Page = page
+    // The trade list is on the Trade History tab; open it as a user would before the list scenarios.
+    await target.click('#tab-history')
+    await target.evaluate(`window.__tradeBlotterPerf.when(() => document.getElementById('panel-history')?.checkVisibility() === true, ${String(timeoutMs)})`)
     const afterLoad = await memory(target)
     loaded.memory = afterLoad
     const loadScenario = scenarios.find((s) => s.kind === 'load')

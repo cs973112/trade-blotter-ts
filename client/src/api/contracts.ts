@@ -54,13 +54,18 @@ export type SortField = 'executedAt' | 'symbol' | 'quantity' | 'price'
 
 export type SortDirection = 'asc' | 'desc'
 
+/** How GET /trades matches symbol: anywhere in the symbol, or the whole symbol. Both ignore case. */
+export type SymbolMatch = 'contains' | 'exact'
+
 /**
  * GET /trades query parameters. Every member is optional; an omitted one is not sent, and the API
  * then applies its default: no filter, or newest execution first.
  */
 export interface TradeQuery {
-  /** Matches anywhere in the symbol, ignoring case. */
+  /** Matches anywhere in the symbol, ignoring case; or the whole symbol with symbolMatch exact. */
   readonly symbol?: string
+  /** How symbol matches: contains (the API's default) or exact, so MS matches MS but not MSFT or MSTR. */
+  readonly symbolMatch?: SymbolMatch
   readonly side?: Side
   /** Inclusive bounds on executedAt, as UTC timestamps. */
   readonly executedFrom?: UtcTimestamp
@@ -70,7 +75,7 @@ export interface TradeQuery {
 }
 
 /** The query parameters, in the order they are sent and the API reports them. */
-export const TRADE_QUERY_PARAMETERS = ['symbol', 'side', 'executedFrom', 'executedTo', 'sortBy', 'sortDirection'] as const
+export const TRADE_QUERY_PARAMETERS = ['symbol', 'symbolMatch', 'side', 'executedFrom', 'executedTo', 'sortBy', 'sortDirection'] as const
 
 /** GET /trades/page: the GET /trades query, and which page of it. */
 export interface TradePageQuery extends TradeQuery {

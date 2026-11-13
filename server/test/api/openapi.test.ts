@@ -113,10 +113,12 @@ describe('API: OpenAPI document', () => {
     const byName = Object.fromEntries(parameters.map((parameter) => [parameter.name, parameter]))
 
     expect(parameters.map((parameter) => [parameter.name, parameter.in, parameter.required])).toEqual([
-      ['symbol', 'query', false], ['side', 'query', false], ['executedFrom', 'query', false],
+      ['symbol', 'query', false], ['symbolMatch', 'query', false], ['side', 'query', false], ['executedFrom', 'query', false],
       ['executedTo', 'query', false], ['sortBy', 'query', false], ['sortDirection', 'query', false],
     ])
     expect(byName['symbol']?.description).toContain('contains this text, anywhere in it, ignoring case')
+    expect(byName['symbolMatch']?.schema).toEqual({ enum: ['contains', 'exact'], default: 'contains' })
+    expect(byName['symbolMatch']?.description).toContain('so ms matches MS but not MSFT or MSTR')
     for (const name of ['executedFrom', 'executedTo']) {
       expect(byName[name]?.schema).toMatchObject({ type: 'string', format: 'date-time' })
       expect(byName[name]?.description).toContain('(inclusive)')

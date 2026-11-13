@@ -29,7 +29,7 @@ describe('app', () => {
 
     expect(server.sequence()).toEqual([FIRST_PAGE, 'GET /positions'])
     expect(wrapper.find('h1').text()).toBe('Trade Blotter')
-    expect(wrapper.findAll('h2').map((heading) => heading.text())).toEqual(['Book a trade', 'Positions', 'Trades'])
+    expect(wrapper.findAll('h2').map((heading) => heading.text())).toEqual(['Book a trade', 'Positions', 'Open positions', 'Trade Details', 'Trades'])
     expect(wrapper.find('section[aria-labelledby="blotter-heading"] tbody').text()).toContain('AAPL')
   })
 
@@ -56,6 +56,6 @@ describe('app', () => {
     const tradeSymbols = wrapper.findAll('section[aria-labelledby="blotter-heading"] tbody th').map((cell) => cell.text())
     expect(tradeSymbols).toEqual(['MSFT', 'AAPL'])
     const positions = wrapper.findAll('section[aria-labelledby="positions-heading"] tbody tr').map((row) => row.text())
-    expect(positions).toEqual(['AAPLLong10100', 'MSFTShort-5301.25'])
+    expect(positions).toEqual(['AAPLLong10100.00', 'MSFTShort-5301.25'])
   })
 })

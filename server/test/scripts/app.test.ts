@@ -4,8 +4,8 @@ import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { DEFAULT_DATABASE_PATH } from '../../src/config.ts'
-import { API_ARGS, DEFAULT_WEB_PORT, launches, resolveSettings, SettingsError, urlHost } from '../../scripts/app.ts'
-import { REPOSITORY_ROOT } from '../../scripts/lifecycle.ts'
+import { API_ARGS, DEFAULT_WEB_PORT, launches, resolveSettings, sameSettings, SettingsError, urlHost } from '../../scripts/app.ts'
+import { canonicalPathOn, REPOSITORY_ROOT } from '../../scripts/lifecycle.ts'
 import { isolatedEnv, runNode } from '../support/child-process.ts'
 import { createTempDir, removeTempDir } from '../support/temp-dir.ts'
 
@@ -29,7 +29,38 @@ describe('scripts: app settings', () => {
 
     expect(resolveSettings([], env, REPOSITORY_ROOT)).toMatchObject({ apiPort: 5399, webPort: 4273, host: '127.0.0.1', docsEnabled: false })
     expect(resolveSettings(['--api-port', '6000', '--web-port', '6001', '--host', '::1', '--database', '/data/arg.db'], env, REPOSITORY_ROOT))
-      .toMatchObject({ apiPort: 6000, webPort: 6001, host: '::1', apiUrl: 'http://[::1]:6000', databasePath: resolve('/data/arg.db') })
+      .toMatchObject({ apiPort: 6000, webPort: 6001, host: '::1', apiUrl: 'http://[::1]:6000', databasePath: resolve(REPOSITORY_ROOT, '/data/arg.db') })
+  })
+
+  it('resolves the database against the folder given, not the spelling of the process\'s working directory', () => {
+    // On Windows a shell may report the drive as c:\ or C:\. The folder given decides the
+    // spelling (and, for a rooted path such as /data/arg.db, the drive); both spellings are one file.
+    const otherCase = (path: string): string => /^[a-z]:/i.test(path)
+      ? `${path.charAt(0) === path.charAt(0).toLowerCase() ? path.charAt(0).toUpperCase() : path.charAt(0).toLowerCase()}${path.slice(1)}` : path
+    const original = process.cwd()
+    try {
+      process.chdir(otherCase(original))
+      for (const cwd of [REPOSITORY_ROOT, otherCase(REPOSITORY_ROOT)]) {
+        expect(resolveSettings(['--database', '/data/arg.db'], {}, cwd).databasePath).toBe(resolve(cwd, '/data/arg.db'))
+        expect(resolveSettings(['--database', 'review/trades.db'], {}, cwd).databasePath).toBe(join(cwd, 'review', 'trades.db'))
+      }
+    } finally {
+      process.chdir(original)
+    }
+    expect(canonicalPathOn(resolve(otherCase(REPOSITORY_ROOT), '/data/arg.db'), 'win32')).toBe(canonicalPathOn(resolve(REPOSITORY_ROOT, '/data/arg.db'), 'win32'))
+  })
+
+  it('knows running applications use the settings asked for when the database path differs only in drive-letter case, on Windows only', () => {
+    const running = { databasePath: 'C:\\code\\trade-blotter\\server\\data\\trade-blotter.db', apps: [{ port: 5299 }, { port: 4173 }] }
+    const asked = { databasePath: 'c:\\code\\trade-blotter\\server\\data\\trade-blotter.db', apiPort: 5299, webPort: 4173 }
+
+    expect(sameSettings(running, asked, 'win32')).toBe(true)
+    expect(sameSettings(running, { ...asked, databasePath: 'c:\\code\\trade-blotter\\server\\data\\other.db' }, 'win32')).toBe(false)
+    expect(sameSettings(running, { ...asked, webPort: 4174 }, 'win32')).toBe(false)
+    // Linux paths are case-sensitive: two spellings are two files.
+    const linux = { databasePath: '/srv/Data/trades.db', apps: [{ port: 5299 }, { port: 4173 }] }
+    expect(sameSettings(linux, { databasePath: '/srv/Data/trades.db', apiPort: 5299, webPort: 4173 }, 'linux')).toBe(true)
+    expect(sameSettings(linux, { databasePath: '/srv/data/trades.db', apiPort: 5299, webPort: 4173 }, 'linux')).toBe(false)
   })
 
   it('resolves a relative database path against the folder the command was run from', () => {
@@ -66,7 +97,7 @@ describe('scripts: what app:start launches', () => {
     expect(json('server/package.json').scripts['start']).toBe(`node ${API_ARGS.join(' ')}`)
     expect(api?.args).toEqual(API_ARGS)
     expect(api?.cwd).toBe(join(REPOSITORY_ROOT, 'server'))
-    expect(api?.env).toMatchObject({ PATH: 'x', LOG_LEVEL: 'warn', HOST: 'localhost', PORT: '5399', DATABASE_PATH: resolve('/data/trades.db') })
+    expect(api?.env).toMatchObject({ PATH: 'x', LOG_LEVEL: 'warn', HOST: 'localhost', PORT: '5399', DATABASE_PATH: resolve(REPOSITORY_ROOT, '/data/trades.db') })
     expect(api?.env['API_TARGET']).toBeUndefined()
   })
 

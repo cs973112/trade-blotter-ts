@@ -2,7 +2,9 @@ import { Type } from 'typebox'
 
 import { MAX_DECIMAL_PLACES, MAX_INTEGER_DIGITS } from '../domain/decimal.ts'
 import { DEFAULT_SYMBOL_MAX_LENGTH } from '../domain/symbol.ts'
-import { DEFAULT_PAGE_SIZE, DEFAULT_TRADE_SORT, MAX_PAGE, MAX_PAGE_SIZE, SORT_DIRECTIONS, TRADE_SORT_FIELDS } from '../domain/trade-query.ts'
+import {
+  DEFAULT_PAGE_SIZE, DEFAULT_SYMBOL_MATCH, DEFAULT_TRADE_SORT, MAX_PAGE, MAX_PAGE_SIZE, SORT_DIRECTIONS, SYMBOL_MATCHES, TRADE_SORT_FIELDS,
+} from '../domain/trade-query.ts'
 import { TRADE_SIDES } from '../domain/trade.ts'
 import { JSON_NUMBER_PATTERN } from './json.ts'
 
@@ -94,7 +96,7 @@ export const Problem = Type.Object(
     detail: Type.Optional(Type.String()),
     errors: Type.Optional(Type.Record(Type.String(), Type.Array(Type.String()), {
       description: 'Invalid trade fields, in request order (symbol, side, quantity, price, executedAt), or invalid query ' +
-        'parameters, in documented order (symbol, side, executedFrom, executedTo, sortBy, sortDirection, then page and ' +
+        'parameters, in documented order (symbol, symbolMatch, side, executedFrom, executedTo, sortBy, sortDirection, then page and ' +
         'pageSize for GET /trades/page), each with its messages.',
     })),
     symbol: Type.Optional(Type.String({ description: 'The symbol whose position limit would be breached.' })),
@@ -117,9 +119,14 @@ const QueryTimestamp = (description: string, example: string) =>
  */
 export const ListTradesQuery = Type.Object({
   symbol: Type.Optional(Type.String({
-    description: 'Only trades whose symbol contains this text, anywhere in it, ignoring case. Normalised like a symbol ' +
-      '(trimmed, NFC, upper-cased); blank matches every trade.',
+    description: 'Only trades whose symbol contains this text, anywhere in it, ignoring case; or, with symbolMatch=exact, ' +
+      'only trades whose symbol is this text. Normalised like a symbol (trimmed, NFC, upper-cased); blank matches every trade.',
     examples: ['sf'],
+  })),
+  symbolMatch: Type.Optional(Type.Enum(SYMBOL_MATCHES, {
+    default: DEFAULT_SYMBOL_MATCH,
+    description: 'How symbol matches, exactly as written: contains (anywhere in the symbol) or exact (the whole symbol, ' +
+      'so ms matches MS but not MSFT or MSTR). Both ignore case, as symbols are normalised. Without symbol it changes nothing.',
   })),
   side: Type.Optional(Type.String({
     description: 'Only Buy or only Sell trades, ignoring case and surrounding whitespace. Omitted: both sides.',

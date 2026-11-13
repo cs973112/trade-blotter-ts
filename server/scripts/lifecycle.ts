@@ -453,8 +453,18 @@ export function appStatus(runDir: string): StatusResult {
   return { state, statuses: state === undefined ? [] : processStatuses(state.apps) }
 }
 
-/** One spelling for one file: absolute, links resolved where the file exists, and case-folded on Windows. */
+/**
+ * One spelling for one file, for comparing paths (never for opening or showing them): absolute,
+ * links resolved where the file exists, and case-folded on Windows, whose file names (drive letter
+ * included) ignore case. Elsewhere paths stay case-sensitive. One argument only, so it can be
+ * passed to map.
+ */
 export function canonicalPath(path: string): string {
+  return canonicalPathOn(path, process.platform)
+}
+
+/** canonicalPath with the case rule of the platform given, so tests can apply either rule anywhere. */
+export function canonicalPathOn(path: string, platform: NodeJS.Platform): string {
   const absolute = resolve(path)
   let real = absolute
   try {
@@ -462,7 +472,7 @@ export function canonicalPath(path: string): string {
   } catch {
     // The file does not exist (yet); compare the path as written.
   }
-  return process.platform === 'win32' ? real.toLowerCase() : real
+  return platform === 'win32' ? real.toLowerCase() : real
 }
 
 /** Whether a path is the application's default database, `server/data/trade-blotter.db`. */

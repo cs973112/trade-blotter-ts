@@ -5,12 +5,13 @@ import { runInNewContext } from 'node:vm'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
+import type { BrowserHost } from '../../scripts/browser.ts'
 import { writeState, type AppRecord } from '../../scripts/lifecycle.ts'
 import { readSnapshot, SCENARIOS } from '../../scripts/perf-api.ts'
 import {
-  chromeCandidates, DEFAULT_VIEW, expectedPage, findChrome, findManagedApplication, frontendParserSource, selectScenarios, sortAfterClick, UI_SCENARIOS, uiOptions,
+  DEFAULT_VIEW, expectedPage, findChrome, findManagedApplication, frontendParserSource, selectScenarios, sortAfterClick, UI_SCENARIOS, uiOptions,
 } from '../../scripts/perf-ui.ts'
-import { seedDatabase, type Protection } from '../../scripts/trade-data.ts'
+import { seedDatabase, TargetError, type Protection } from '../../scripts/trade-data.ts'
 import { compareTrades, DEFAULT_TRADE_SORT } from '../../src/domain/trade-query.ts'
 import { isolatedEnv, startNode, stopChild } from '../support/child-process.ts'
 import { createTempDir, removeTempDir } from '../support/temp-dir.ts'
@@ -36,20 +37,17 @@ afterAll(() => {
 })
 
 describe('perf:ui: Chrome', () => {
-  it('is looked for in CHROME_PATH first, then where each system installs it', () => {
-    expect(chromeCandidates({ CHROME_PATH: '/opt/chrome', PROGRAMFILES: 'C:\\Program Files', LOCALAPPDATA: 'C:\\Users\\a\\AppData\\Local' }, 'win32'))
-      .toEqual(['/opt/chrome', join('C:\\Program Files', 'Google', 'Chrome', 'Application', 'chrome.exe'),
-        join('C:\\Users\\a\\AppData\\Local', 'Google', 'Chrome', 'Application', 'chrome.exe')])
-    expect(chromeCandidates({ HOME: '/Users/a' }, 'darwin')).toEqual([
-      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', join('/Users/a', 'Applications', 'Google Chrome.app/Contents/MacOS/Google Chrome'),
-    ])
-    const linux = chromeCandidates({ PATH: ['/usr/bin', '/snap/bin'].join(process.platform === 'win32' ? ';' : ':') }, 'linux')
-    expect(linux).toContain(join('/usr/bin', 'google-chrome'))
-    expect(linux).toContain(join('/snap/bin', 'chromium'))
-  })
-
   it('refuses a --chrome path that does not exist', () => {
     expect(() => findChrome(join(dir, 'no-chrome'))).toThrow(/does not exist/)
+  })
+
+  const nothing = (env: NodeJS.ProcessEnv): BrowserHost =>
+    ({ platform: 'linux', env, home: '/home/a', wsl: false, kind: () => 'missing', list: () => [] })
+
+  it('names what to do and where it looked when no browser is found, or CHROME_PATH is wrong', () => {
+    expect(() => findChrome(undefined, nothing({ PATH: '/usr/bin' }))).toThrow(TargetError)
+    expect(() => findChrome(undefined, nothing({ PATH: '/usr/bin' }))).toThrow(/No Chrome, Edge or Chromium was found[^]*CHROME_PATH: not set[^]*Nothing was installed/)
+    expect(() => findChrome(undefined, nothing({ CHROME_PATH: '/nowhere/chrome' }))).toThrow('CHROME_PATH is set to /nowhere/chrome, which is not found.')
   })
 })
 

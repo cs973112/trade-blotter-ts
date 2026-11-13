@@ -40,7 +40,8 @@ const listTradesSchema = {
   summary: 'List trades: search, filter and sort',
   description:
     'Without query parameters, every trade, ordered by executedAt descending; trades with the same executedAt are ' +
-    'ordered by bookingSequence descending. symbol, side, executedFrom and executedTo filter, combined with AND; ' +
+    'ordered by bookingSequence descending. symbol (anywhere in the symbol, or the whole symbol with symbolMatch=exact), ' +
+    'side, executedFrom and executedTo filter, combined with AND; ' +
     'sortBy and sortDirection sort. Every order is total: ties are broken by executedAt, then bookingSequence, in the ' +
     'sort direction. Filtering never changes stored trades or positions, which always use the full history.',
   querystring: ListTradesQuery,
@@ -59,7 +60,7 @@ const listTradePageSchema = {
   operationId: 'listTradePage',
   summary: 'List one page of trades: search, filter, sort and page',
   description:
-    'The trades GET /trades lists for the same symbol, side, executedFrom, executedTo, sortBy and sortDirection, one ' +
+    'The trades GET /trades lists for the same symbol, symbolMatch, side, executedFrom, executedTo, sortBy and sortDirection, one ' +
     'page at a time, with the number of matching trades and pages. page counts from 1; pageSize is 1 to 100, default ' +
     '50. A page past the last is not an error: it has no items, and totalCount and totalPages are still given. The ' +
     'count and the page are read together, so they always agree. GET /trades itself is unchanged and lists every match.',

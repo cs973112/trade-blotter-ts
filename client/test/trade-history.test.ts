@@ -41,6 +41,8 @@ async function openPage(routes: Parameters<typeof fakeApi>[0] = {}) {
   const server = fakeApi({ 'GET /trades/page': pagedTrades([XMSX, MSFT, AAPL]), 'GET /positions': json(POSITIONS), ...routes })
   wrapper = mount(App, { global: { plugins: [createPinia()] }, attachTo: document.body })
   await flushPromises()
+  // The list is on the Trade History tab, as a user would open it.
+  await wrapper.find('#tab-history').trigger('click')
   return { server, page: wrapper }
 }
 
@@ -333,7 +335,7 @@ describe('trade list: pages', () => {
     // The history is now shorter than the page shown: the API answers page 3 with no trades.
     server.set('GET /trades/page', pagedTrades(many(80)))
 
-    await blotter(page).find('.panel-heading button').trigger('click')
+    await blotter(page).find('button.refresh-trades').trigger('click')
     await flushPromises()
 
     expect(listRequests(server).slice(-2).map((request) => request.query)).toEqual([paged([], 3), paged([], 2)])
@@ -677,7 +679,7 @@ describe('trade list: loading, empty results and errors', () => {
     expect(pagerState(page)[0]).toMatchObject({ position: 'Page 1 of 3' })
 
     server.set('GET /trades/page', pagedTrades(many(120)))
-    await blotter(page).find('.panel-heading button').trigger('click')
+    await blotter(page).find('button.refresh-trades').trigger('click')
     await flushPromises()
 
     expect(blotter(page).find('[role="alert"]').exists()).toBe(false)
@@ -921,7 +923,7 @@ describe('trade list: positions', () => {
 
     await setFilters(page, { symbol: 'zzz', side: 'Sell', fromDate: '2026-01-01' })
     await apply(page)
-    await positionsPanel(page).find('button').trigger('click')
+    await positionsPanel(page).find('button.refresh-positions').trigger('click')
     await flushPromises()
 
     expect(server.calls.filter((call) => call.url.startsWith('/positions')).map((call) => call.url)).toEqual(['/positions', '/positions'])
@@ -937,7 +939,7 @@ describe('trade list: positions', () => {
     await choosePageSize(page, '25')
 
     expect(server.calls.filter((call) => call.url.startsWith('/positions'))).toHaveLength(1)
-    expect(positionsPanel(page).findAll('tbody tr').map((row) => row.text())).toEqual(['AAPLLong10100', 'MSFTShort-9301.25'])
+    expect(positionsPanel(page).findAll('tbody tr').map((row) => row.text())).toEqual(['AAPLLong10100.00', 'MSFTShort-9301.25'])
   })
 
   it('keeps the positions panel working when the trade list fails', async () => {
@@ -958,7 +960,7 @@ describe('trade list: positions', () => {
     await apply(page)
     await pagerButton(page, 'Next')
 
-    await blotter(page).find('.panel-heading button').trigger('click')
+    await blotter(page).find('button.refresh-trades').trigger('click')
     await flushPromises()
 
     expect(listRequests(server).slice(-2).map((request) => request.query)).toEqual([paged([['side', 'Buy']], 2), paged([['side', 'Buy']], 2)])

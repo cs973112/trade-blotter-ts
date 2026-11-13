@@ -246,10 +246,13 @@ describe('API client: GET /trades/page', () => {
 
     await api.listTradePage({ page: 3, pageSize: 25 })
     await api.listTradePage({ symbol: 'ms', side: 'Sell', sortBy: 'price', sortDirection: 'asc', page: 3, pageSize: 25 })
+    await api.listTradePage({ symbol: 'MS', symbolMatch: 'exact', page: 3, pageSize: 25 })
 
     expect(server.calls.map((call) => call.url)).toEqual([
       '/trades/page?page=3&pageSize=25',
       '/trades/page?symbol=ms&side=Sell&sortBy=price&sortDirection=asc&page=3&pageSize=25',
+      // symbolMatch right after symbol, in the API's own parameter order.
+      '/trades/page?symbol=MS&symbolMatch=exact&page=3&pageSize=25',
     ])
   })
 

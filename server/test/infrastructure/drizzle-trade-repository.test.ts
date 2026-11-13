@@ -272,6 +272,31 @@ describe('infrastructure: Drizzle trade repository filters', () => {
     expect(ids(await repository.listInTradeOrder({ symbolContains }))).toEqual(expected)
   })
 
+  it.each([
+    ['MS', ['ms-buy']],
+    ['MSF', ['msf-sell']],
+    ['MSFT', ['msft-buy']],
+    ['XMSFTX', ['xmsftx-sell']],
+    ['M', []],
+    ['SF', []],
+  ])('matches exactly the symbol %s, not symbols that contain it', async (symbolEquals, expected) => {
+    const repository = await seeded([...HISTORY, { id: 'ms-buy', symbol: 'MS', side: 'Buy', executedAt: '2026-01-04T00:00:00.000Z' }])
+
+    expect(ids(await repository.listInTradeOrder({ symbolEquals }))).toEqual(expected)
+  })
+
+  it('counts and pages one symbol exactly', async () => {
+    const repository = await seeded([
+      { id: 'ms-1', symbol: 'MS' }, { id: 'msft-1', symbol: 'MSFT' }, { id: 'ms-2', symbol: 'MS' }, { id: 'mstr-1', symbol: 'MSTR' }, { id: 'ms-3', symbol: 'MS' },
+    ])
+    const query = { filter: { symbolEquals: 'MS' }, sort: { field: 'executedAt', direction: 'asc' } } as const
+
+    expect(await repository.listPage(query, { page: 1, pageSize: 2 })).toMatchObject({ totalCount: 3 })
+    expect(ids((await repository.listPage(query, { page: 2, pageSize: 2 })).trades)).toEqual(['ms-3'])
+    expect(ids(await repository.list(query))).toEqual(['ms-1', 'ms-2', 'ms-3'])
+    expect(await repository.listPage({ ...query, filter: { symbolEquals: 'MSF' } }, { page: 1, pageSize: 2 })).toEqual({ trades: [], totalCount: 0 })
+  })
+
   it('treats LIKE wildcards in the search as plain characters', async () => {
     const repository = await seeded([
       { id: 'percent', symbol: 'A%B' }, { id: 'underscore', symbol: 'A_B' }, { id: 'plain', symbol: 'AXB' },
@@ -429,5 +454,14 @@ describe('infrastructure: how a page is read', () => {
 
   it('weighs symbol sorts like quantity and price: the symbol index is not in stored order either', () => {
     expect(planPageRead({ offset: 500, limit: 50 }, 1_017, 'symbol', { side: 'Sell' }, () => 25_000).useSortIndex).toBe(false)
+  })
+
+  it('walks the symbol index for one exact symbol sorted by symbol or time, and weighs quantity and price sorts', () => {
+    for (const field of ['symbol', 'executedAt'] as const) {
+      expect(planPageRead({ offset: 500, limit: 50 }, 1_017, field, { symbolEquals: 'BRK' }, never).useSortIndex).toBe(true)
+      expect(planPageRead({ offset: 500, limit: 50 }, 1_017, field, { symbolEquals: 'BRK', side: 'Buy' }, never).useSortIndex).toBe(true)
+    }
+    expect(planPageRead({ offset: 500, limit: 50 }, 1_017, 'price', { symbolEquals: 'BRK' }, () => 25_000).useSortIndex).toBe(false)
+    expect(planPageRead({ offset: 0, limit: 50 }, 1_017, 'quantity', { symbolEquals: 'BRK' }, () => 25_000).useSortIndex).toBe(true)
   })
 })

@@ -1,18 +1,22 @@
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createServer as createTcpServer, type AddressInfo, type Server } from 'node:net'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import type { BrowserLookup } from '../../scripts/browser.ts'
 import { isAlive, readState, startApps, StartError, statePath, stopApps, writeState, type AppLaunch } from '../../scripts/lifecycle.ts'
 import { readSnapshot, type BenchmarkResult } from '../../scripts/perf-api.ts'
 import { checkOwnership, startPair, stopPair } from '../../scripts/review-apps.ts'
 import { bookingChecks, readOnlyChecks } from '../../scripts/review-checks.ts'
-import { EXIT, fingerprintFiles, readBaseline, Report, reviewContext, type ReviewContext, type ReviewPair } from '../../scripts/review-context.ts'
+import {
+  EXIT, fingerprintChanges, fingerprintFiles, readBaseline, Report, reviewContext, type FileFingerprint, type ReviewContext, type ReviewPair,
+} from '../../scripts/review-context.ts'
 import { inspectDataset, prepareDatabase } from '../../scripts/review-data.ts'
-import { dependencyProblems, stepPerformance, stepSeed, stepSetup, stepStop, stepTests, testCounts } from '../../scripts/review-steps.ts'
+import type { UiCheckRun } from '../../scripts/ui-check.ts'
+import { dependencyProblems, leftoverUiCheckDatabases, stepPerformance, stepSeed, stepSetup, stepStop, stepTests, testCounts } from '../../scripts/review-steps.ts'
 import { loadConfig } from '../../src/config.ts'
 import { closeDatabase, openDatabase } from '../../src/infrastructure/database/connection.ts'
 import { createDrizzleTradeRepository } from '../../src/infrastructure/drizzle-trade-repository.ts'
@@ -32,6 +36,8 @@ import { newTrade } from '../support/trades.ts'
 const FAKE_APP = join(import.meta.dirname, '../support/fake-app.ts')
 const TIMEOUT = 120_000
 const NPM = { npm_config_user_agent: 'npm/12.0.1 node/v22.23.1 win32 x64' }
+const noBrowser = (): BrowserLookup => ({ kind: 'missing', diagnostics: 'CHROME_PATH: not set' })
+const chromeAt = (): BrowserLookup => ({ kind: 'found', path: '/chrome', description: 'Google Chrome' })
 
 let dir = ''
 let context: ReviewContext
@@ -148,12 +154,12 @@ describe('review 01: setup', () => {
     const development = developmentDatabase()
     const report = silent()
 
-    await stepSetup(context, report, { env: NPM, findBrowser: () => undefined })
+    await stepSetup(context, report, { env: NPM, findBrowser: noBrowser })
 
     expect(report.failed).toBe(false)
     expect(lines(report)).toContain('PASS Benchmark database created and migrated')
     expect(lines(report)).toContain('PASS Scratch database created and migrated')
-    expect(lines(report)).toContain('WARN No Chrome or Chromium found (CHROME_PATH, then the usual places)')
+    expect(lines(report)).toContain('WARN No Chrome, Edge or Chromium found (CHROME_PATH, then the usual places)')
     for (const folder of ['logs', 'perf', 'disposable']) expect(existsSync(join(context.root, folder))).toBe(true)
     for (const target of context.pairs) expect(await inspectDataset(target)).toEqual({ kind: 'empty' })
     expect(readBaseline(context)).toMatchObject({ path: development, exists: true, files: { [development]: sha(development), [`${development}-wal`]: sha(`${development}-wal`) } })
@@ -161,31 +167,44 @@ describe('review 01: setup', () => {
   }, TIMEOUT)
 
   it('keeps existing databases exactly as they are when run again', async () => {
-    await stepSetup(context, silent(), { env: NPM, findBrowser: () => '/chrome' })
+    await stepSetup(context, silent(), { env: NPM, findBrowser: chromeAt })
     await stepSeed(context, silent())
     const before = context.pairs.map((target) => sha(target.databasePath))
     const report = silent()
 
-    await stepSetup(context, report, { env: NPM, findBrowser: () => '/chrome' })
+    await stepSetup(context, report, { env: NPM, findBrowser: chromeAt })
 
     expect(context.pairs.map((target) => sha(target.databasePath))).toEqual(before)
-    expect(lines(report)).toContain('PASS Benchmark database exists, kept as it is: its dataset of 300 trades')
-    expect(lines(report)).toContain('PASS Browser for the UI benchmark: /chrome')
+    expect(lines(report)).toContain('PASS Benchmark database exists, kept as it is: its dataset (version 2) of 300 trades')
+    expect(lines(report)).toContain('PASS Browser for the UI checks and benchmark: /chrome')
+    // The copy it inspected is gone: nothing is kept when nothing was replaced.
+    expect(existsSync(context.backupsDir) ? readdirSync(context.backupsDir) : []).toEqual([])
   }, TIMEOUT)
 
-  it('reports an unexpected file without changing it, with how to recover', async () => {
+  it('fails, with how to correct it, when CHROME_PATH is set but names no usable browser', async () => {
+    const report = silent()
+
+    await stepSetup(context, report, { env: NPM, findBrowser: () => ({ kind: 'invalid-setting', message: 'CHROME_PATH is set to /nowhere, which is not found.' }) })
+
+    expect(lines(report)).toContain('FAIL CHROME_PATH does not name a usable browser')
+    expect(report.lines.find((l) => l.status === 'FAIL')?.detail).toContain('CHROME_PATH is set to /nowhere, which is not found.')
+    expect(report.exitCode).toBe(1)
+  }, TIMEOUT)
+
+  it('reports a file that is not a Trade Blotter database without changing or replacing it, with how to recover', async () => {
     mkdirSync(context.root, { recursive: true })
     writeFileSync(pair('scratch').databasePath, 'not a database at all, but someone\'s file')
     const before = sha(pair('scratch').databasePath)
     const report = silent()
 
-    await stepSetup(context, report, { env: NPM, findBrowser: () => undefined })
+    await stepSetup(context, report, { env: NPM, findBrowser: noBrowser })
 
     expect(sha(pair('scratch').databasePath)).toBe(before)
     const line = report.lines.find((l) => l.name.startsWith('Scratch database is unexpected'))
     expect(line?.status).toBe('FAIL')
     expect(line?.detail).toContain('Nothing was changed')
-    expect(line?.detail).toContain('db:clear')
+    expect(line?.detail).toContain('move the file')
+    expect(existsSync(context.backupsDir) ? readdirSync(context.backupsDir) : []).toEqual([])
     expect(report.exitCode).toBe(1)
   }, TIMEOUT)
 
@@ -194,7 +213,7 @@ describe('review 01: setup', () => {
     const inside = reviewContext({ root: join(dir, 'data'), counts: { benchmark: 10, scratch: 10 }, protection: context.protection })
     const report = silent()
 
-    await stepSetup(inside, report, { env: NPM, findBrowser: () => undefined })
+    await stepSetup(inside, report, { env: NPM, findBrowser: noBrowser })
 
     expect(lines(report)).toContain(`FAIL Reviewer folder ${join(dir, 'data')}`)
     expect(report.lines.find((l) => l.status === 'FAIL')?.detail).toMatch(/holds the development database[\s\S]*Nothing was created there/)
@@ -226,7 +245,7 @@ describe('review 01: setup', () => {
 
 describe('review 02: seed', () => {
   it('seeds both datasets, then recognises them on the next run and changes nothing', async () => {
-    await stepSetup(context, silent(), { env: NPM, findBrowser: () => undefined })
+    await stepSetup(context, silent(), { env: NPM, findBrowser: noBrowser })
     const report = silent()
 
     await stepSeed(context, report)
@@ -238,8 +257,8 @@ describe('review 02: seed', () => {
     expect(lines(report)[0]).toMatch(/^PASS Benchmark database seeded with its dataset of 300 trades in \d+\.\d s$/)
     expect(lines(report)[1]).toMatch(/^PASS Scratch database seeded with its dataset of 20 trades in \d+\.\d s$/)
     expect(lines(again)).toEqual([
-      'PASS Benchmark database already holds its dataset of 300 trades; kept as it is',
-      'PASS Scratch database already holds its dataset of 20 trades; kept as it is',
+      'PASS Benchmark database already holds its dataset (version 2) of 300 trades; kept as it is',
+      'PASS Scratch database already holds its dataset (version 2) of 20 trades; kept as it is',
     ])
     expect(context.pairs.map((target) => sha(target.databasePath))).toEqual(seeded)
   }, TIMEOUT)
@@ -254,10 +273,10 @@ describe('review 02: seed', () => {
     await stepSeed(context, report)
 
     expect(await inspectDataset(pair('scratch'))).toEqual({ kind: 'seeded', trades: 21, bookings: 1 })
-    expect(lines(report)).toContain('PASS Scratch database already holds its dataset of 20 trades, and 1 booked since; kept as it is')
+    expect(lines(report)).toContain('PASS Scratch database already holds its dataset (version 2) of 20 trades, and 1 booked since; kept as it is')
   }, TIMEOUT)
 
-  it('refuses a benchmark database with trades booked after seeding: it is only ever read', async () => {
+  it('never reseeds a benchmark database with trades booked after seeding: step 02 changes nothing and points to step 01', async () => {
     await stepSeed(context, silent())
     const db = openDatabase(pair('benchmark').databasePath)
     await createDrizzleTradeRepository(db).add(newTrade({ id: 'extra', symbol: 'ZZEXTRA' }))
@@ -267,11 +286,12 @@ describe('review 02: seed', () => {
 
     await stepSeed(context, report)
 
-    expect(report.lines[0]).toMatchObject({ status: 'FAIL', name: expect.stringContaining('300 trades and 1 more') as string })
+    expect(report.lines[0]).toMatchObject({ status: 'FAIL', name: expect.stringContaining('dataset version 2 and 1 more trade') as string })
+    expect(report.lines[0]?.detail).toContain('npm run review:01')
     expect(sha(pair('benchmark').databasePath)).toBe(before)
   }, TIMEOUT)
 
-  it('refuses data that differs from the dataset, even with the right number of trades, and never reseeds it', async () => {
+  it('never reseeds data that differs from the dataset, even with the right number of trades', async () => {
     await stepSeed(context, silent())
     const client = new DatabaseSync(pair('benchmark').databasePath)
     client.exec("update trades set price = '1.25' where booking_sequence = 7")
@@ -282,21 +302,139 @@ describe('review 02: seed', () => {
     await stepSeed(context, report)
 
     expect(report.lines[0]?.status).toBe('FAIL')
-    expect(report.lines[0]?.name).toMatch(/trade 7 in booking order differs from the dataset \(price is "1\.25"/)
-    expect(report.lines[0]?.detail).toContain('Nothing was changed')
+    expect(report.lines[0]?.name).toMatch(/not dataset version 2: trade 7 in booking order differs \(price is "1\.25"/)
     expect(sha(pair('benchmark').databasePath)).toBe(before)
     expect(report.lines[1]?.status).toBe('PASS')
+  }, TIMEOUT)
+
+  it('names a database holding an earlier generator version\'s dataset for what it is, not by its count', async () => {
+    await stepSeed(context, silent())
+    const stored = await readSnapshot(pair('benchmark').databasePath)
+    // Stands in for version 1: the same count, other trades, a fingerprint the workflow knows.
+    const client = new DatabaseSync(pair('benchmark').databasePath)
+    client.exec("update trades set symbol = 'OLDV1' where booking_sequence = 1")
+    client.close()
+    const changed = await readSnapshot(pair('benchmark').databasePath)
+    expect(changed.trades).toHaveLength(stored.trades.length)
+    const known = [{ version: 1, seed: pair('benchmark').seed, count: 300, fingerprint: changed.fingerprint }]
+
+    const state = await inspectDataset(pair('benchmark'), known)
+
+    expect(state).toMatchObject({ kind: 'unexpected', reason: 'dataset version 1, made by an earlier seed generator; this version makes dataset version 2' })
+    expect(state.kind === 'unexpected' && state.recoverable).toEqual({ trades: 300, fingerprint: changed.fingerprint })
   }, TIMEOUT)
 
   it('never opens, migrates or changes the development database', async () => {
     const development = developmentDatabase()
     const before = fingerprintFiles(development)
 
-    await stepSetup(context, silent(), { env: NPM, findBrowser: () => undefined })
+    await stepSetup(context, silent(), { env: NPM, findBrowser: noBrowser })
     await stepSeed(context, silent())
 
     expect(fingerprintFiles(development)).toEqual(before)
     expect(readFileSync(development, 'utf8')).toBe('development database bytes')
+  }, TIMEOUT)
+})
+
+describe('review 01: preserving and replacing a database that holds other trades', () => {
+  /** A seeded benchmark with one trade booked into it, as someone using the benchmark application would. */
+  async function bookedIntoBenchmark(): Promise<{ files: Record<string, string>; snapshot: Awaited<ReturnType<typeof readSnapshot>> }> {
+    await stepSetup(context, silent(), { env: NPM, findBrowser: chromeAt })
+    await stepSeed(context, silent())
+    const db = openDatabase(pair('benchmark').databasePath)
+    await createDrizzleTradeRepository(db).add(newTrade({ id: 'user-added', symbol: 'MYTRADE', quantity: '1', price: '1' }))
+    closeDatabase(db)
+    const snapshot = await readSnapshot(pair('benchmark').databasePath)
+    const files = Object.fromEntries(['', '-wal', '-shm'].map((suffix) => `${pair('benchmark').databasePath}${suffix}`).filter((file) => existsSync(file))
+      .map((file) => [basename(file), sha(file)]))
+    return { files, snapshot }
+  }
+
+  it('copies it into a verified backup before anything else, replaces it with a new database, and step 02 seeds the dataset', async () => {
+    const { files, snapshot } = await bookedIntoBenchmark()
+    const before = await inspectDataset(pair('benchmark'))
+    const bookingOrderFingerprint = before.kind === 'unexpected' ? before.recoverable?.fingerprint : undefined
+    expect(bookingOrderFingerprint).toMatch(/^[0-9a-f]{64}$/)
+    const report = silent()
+
+    await stepSetup(context, report, { env: NPM, findBrowser: chromeAt })
+
+    const line = report.lines.find((l) => l.name.startsWith('Benchmark database held'))
+    expect(line?.status).toBe('WARN')
+    expect(line?.name).toBe('Benchmark database held dataset version 2 and 1 more trade; the benchmark database is only ever read: preserved in a verified backup, then replaced by a new, empty database for step 02')
+    expect(report.failed).toBe(false)
+    const folders = readdirSync(context.backupsDir)
+    expect(folders).toHaveLength(1)
+    const folder = join(context.backupsDir, folders[0] ?? '')
+    expect(folders[0]).toMatch(/^benchmark-\d{8}T\d{6}\.\d{3}Z$/)
+    // Every file exactly as it was, and a record of it.
+    for (const [name, hash] of Object.entries(files)) expect(sha(join(folder, name))).toBe(hash)
+    const record = JSON.parse(readFileSync(join(folder, 'backup.json'), 'utf8')) as { trades: number; tradesFingerprint: string; files: { name: string; sha256: string }[]; database: string; restore: string }
+    expect(record).toMatchObject({ trades: 301, tradesFingerprint: bookingOrderFingerprint, database: pair('benchmark').databasePath })
+    expect(snapshot.trades).toHaveLength(301)
+    expect(Object.fromEntries(record.files.map((file) => [file.name, file.sha256]))).toEqual(files)
+    expect(record.restore).toContain('npm run review:07')
+    expect(readdirSync(folder).includes('.verify')).toBe(false)
+    // The reviewer's database is new; the scratch one, valid, is kept.
+    expect(await inspectDataset(pair('benchmark'))).toEqual({ kind: 'empty' })
+    expect(lines(report)).toContain('PASS Scratch database exists, kept as it is: its dataset (version 2) of 20 trades')
+
+    const seeded = silent()
+    await stepSeed(context, seeded)
+    expect(lines(seeded)[0]).toMatch(/^PASS Benchmark database seeded with its dataset of 300 trades/)
+    expect(await inspectDataset(pair('benchmark'))).toEqual({ kind: 'seeded', trades: 300, bookings: 0 })
+  }, TIMEOUT)
+
+  it('keeps a backup that restores every trade, the one added by hand included', async () => {
+    const { snapshot } = await bookedIntoBenchmark()
+    await stepSetup(context, silent(), { env: NPM, findBrowser: chromeAt })
+    const folder = join(context.backupsDir, readdirSync(context.backupsDir)[0] ?? '')
+
+    // Restored as backup.json says: the files copied back beside each other.
+    const restored = join(dir, 'restored')
+    mkdirSync(restored)
+    for (const name of readdirSync(folder).filter((file) => file !== 'backup.json')) writeFileSync(join(restored, name), readFileSync(join(folder, name)))
+    const back = await readSnapshot(join(restored, basename(pair('benchmark').databasePath)))
+
+    expect(back.fingerprint).toBe(snapshot.fingerprint)
+    expect(back.trades.find((trade) => trade.id === 'user-added')).toMatchObject({ symbol: 'MYTRADE' })
+    expect(back.trades).toHaveLength(301)
+  }, TIMEOUT)
+
+  it('preserves and replaces a database whose trades were changed, even with the right count; a second run changes nothing', async () => {
+    await stepSetup(context, silent(), { env: NPM, findBrowser: chromeAt })
+    await stepSeed(context, silent())
+    const client = new DatabaseSync(pair('scratch').databasePath)
+    client.exec("update trades set quantity = '7.5' where booking_sequence = 3")
+    client.close()
+
+    const report = silent()
+    await stepSetup(context, report, { env: NPM, findBrowser: chromeAt })
+    await stepSeed(context, silent())
+
+    expect(report.lines.find((l) => l.name.startsWith('Scratch database held'))?.name).toMatch(/^Scratch database held not dataset version 2: trade 3 in booking order differs \(quantity is "7\.5", expected "/)
+    expect(await inspectDataset(pair('scratch'))).toEqual({ kind: 'seeded', trades: 20, bookings: 0 })
+    const after = context.pairs.map((target) => sha(target.databasePath))
+    const again = silent()
+    await stepSetup(context, again, { env: NPM, findBrowser: chromeAt })
+    await stepSeed(context, again)
+    expect(context.pairs.map((target) => sha(target.databasePath))).toEqual(after)
+    expect(readdirSync(context.backupsDir)).toHaveLength(1)
+    expect(again.lines.filter((l) => l.status === 'WARN' || l.status === 'FAIL')).toEqual([])
+  }, TIMEOUT)
+
+  it('never replaces a database an application is recorded as using: it reports it, and changes nothing', async () => {
+    const { files } = await bookedIntoBenchmark()
+    await startFakes(pair('benchmark'))
+    const report = silent()
+
+    await stepSetup(context, report, { env: NPM, findBrowser: chromeAt })
+
+    const line = report.lines.find((l) => l.name.startsWith('Benchmark database is unexpected'))
+    expect(line?.status).toBe('FAIL')
+    expect(line?.detail).toContain('npm run review:07')
+    expect(sha(pair('benchmark').databasePath)).toBe(files[basename(pair('benchmark').databasePath)])
+    expect(existsSync(context.backupsDir) ? readdirSync(context.backupsDir) : []).toEqual([])
   }, TIMEOUT)
 })
 
@@ -416,7 +554,7 @@ describe('review 06: performance', () => {
     await startFakes(pair('benchmark'))
     const report = silent()
 
-    await stepPerformance(context, report, { ...trusted, findBrowser: () => undefined, apiBenchmark: () => Promise.resolve(fakeApiResult()) })
+    await stepPerformance(context, report, { ...trusted, findBrowser: noBrowser, apiBenchmark: () => Promise.resolve(fakeApiResult()) })
 
     expect(lines(report)).toEqual([
       'PASS API benchmark: 1 scenarios on 300 trades, every response correct, data unchanged',
@@ -429,13 +567,30 @@ describe('review 06: performance', () => {
     expect(readdirSync(join(context.perfDir, out[0] ?? '')).sort()).toEqual(['api.json', 'api.txt'])
   }, TIMEOUT)
 
+  it('fails the UI benchmark, rather than skipping it, when CHROME_PATH names no usable browser', async () => {
+    await stepSeed(context, silent())
+    await startFakes(pair('benchmark'))
+    const report = silent()
+
+    await stepPerformance(context, report, {
+      ...trusted, findBrowser: () => ({ kind: 'invalid-setting', message: 'CHROME_PATH is set to /nowhere, which is not found.' }),
+      apiBenchmark: () => Promise.resolve(fakeApiResult()), uiBenchmark: () => Promise.reject(new Error('must not run')),
+    })
+
+    expect(lines(report)).toEqual([
+      'PASS API benchmark: 1 scenarios on 300 trades, every response correct, data unchanged',
+      'FAIL UI benchmark not run: CHROME_PATH does not name a usable browser',
+    ])
+    expect(report.exitCode).toBe(1)
+  }, TIMEOUT)
+
   it('fails, not incomplete, when a benchmark fails', async () => {
     await stepSeed(context, silent())
     await startFakes(pair('benchmark'))
     const report = silent()
 
     await stepPerformance(context, report, {
-      ...trusted, findBrowser: () => '/chrome', apiBenchmark: () => Promise.resolve(fakeApiResult()),
+      ...trusted, findBrowser: chromeAt, apiBenchmark: () => Promise.resolve(fakeApiResult()),
       uiBenchmark: () => Promise.reject(new Error('the page shows 49 trades; expected 50')),
     })
 
@@ -446,7 +601,7 @@ describe('review 06: performance', () => {
   it('measures nothing when the benchmark applications are not running as the reviewer\'s', async () => {
     const report = silent()
 
-    await stepPerformance(context, report, { findBrowser: () => '/chrome', apiBenchmark: () => Promise.reject(new Error('must not run')) })
+    await stepPerformance(context, report, { findBrowser: chromeAt, apiBenchmark: () => Promise.reject(new Error('must not run')) })
 
     expect(lines(report)).toEqual(['FAIL Benchmark applications are not running as the reviewer\'s'])
   }, TIMEOUT)
@@ -522,12 +677,93 @@ describe('review 05: automated tests', () => {
     expect(report.lines[3]?.detail).toContain('tests: 10 passed | 1 skipped (11)')
     expect(report.exitCode).toBe(1)
   })
+
+  const COMMANDS = ['PASS Lint (ESLint)', 'PASS Typecheck (tsc and vue-tsc)', 'PASS Build (API and frontend)', 'PASS Server tests (vitest)',
+    'PASS Client tests (vitest)', 'PASS Schema check (migrations match the schema)']
+  const passing = (_command: string, _args: readonly string[], _cwd: string, log: string): Promise<number> => {
+    mkdirSync(dirname(log), { recursive: true })
+    writeFileSync(log, 'done\n')
+    return Promise.resolve(0)
+  }
+  const uiRun = (results: UiCheckRun['results'], consoleErrors: readonly string[] = []): UiCheckRun =>
+    ({ browser: '/chrome', product: 'Chrome/1.0', results, screenshots: ['/out/ui-1280-trading.png'], consoleErrors })
+
+  it('then checks the page in a real browser, one line per check, with where the screenshots are', async () => {
+    const report = silent()
+    const asked: string[] = []
+
+    await stepTests(context, report, {
+      runCommand: passing, findBrowser: chromeAt,
+      uiChecks: (chrome, outDir) => {
+        asked.push(chrome, outDir)
+        return Promise.resolve(uiRun([{ name: 'Opens on the Trading tab' }, { name: 'Resizing by keyboard' }]))
+      },
+    })
+
+    expect(lines(report)).toEqual([...COMMANDS, 'PASS UI: Opens on the Trading tab', 'PASS UI: Resizing by keyboard', 'PASS UI: no console errors',
+      'INFO UI checks ran in Chrome/1.0'])
+    expect(asked[0]).toBe('/chrome')
+    expect(asked[1]?.startsWith(context.uiCheckDir)).toBe(true)
+    expect(report.lines.at(-1)?.detail).toContain('/out/ui-1280-trading.png')
+    expect(report.exitCode).toBe(0)
+  })
+
+  it('fails for a failed UI check, or console errors, with why', async () => {
+    const report = silent()
+    await stepTests(context, report, {
+      runCommand: passing, findBrowser: chromeAt,
+      uiChecks: () => Promise.resolve(uiRun([{ name: 'Tabs', problem: 'after End: Trading shown' }], ['TypeError: boom'])),
+    })
+
+    expect(lines(report).slice(COMMANDS.length)).toEqual(['FAIL UI: Tabs', 'FAIL UI: the page logged errors', 'INFO UI checks ran in Chrome/1.0'])
+    expect(report.lines.find((line) => line.name === 'UI: Tabs')?.detail).toBe('after End: Trading shown')
+    expect(report.exitCode).toBe(1)
+  })
+
+  it('reports the UI checks SKIPPED and the step INCOMPLETE without a browser: never passed', async () => {
+    const report = silent()
+    let ran = false
+    await stepTests(context, report, { runCommand: passing, findBrowser: noBrowser, uiChecks: () => { ran = true; return Promise.resolve(uiRun([])) } })
+
+    expect(ran).toBe(false)
+    expect(lines(report).slice(COMMANDS.length)).toEqual(['SKIPPED UI checks in a real browser'])
+    expect(report.lines.at(-1)?.detail).toContain('CHROME_PATH: not set')
+    expect(report.exitCode).toBe(3)
+    expect(report.summary()).toContain('INCOMPLETE: the UI checks were skipped (no browser)')
+  })
+
+  it('fails without running the UI checks when CHROME_PATH names no usable browser', async () => {
+    const report = silent()
+    await stepTests(context, report, {
+      runCommand: passing,
+      findBrowser: () => ({ kind: 'invalid-setting', message: 'CHROME_PATH is set to /nowhere, which is not found.' }),
+      uiChecks: () => Promise.reject(new Error('must not run')),
+    })
+
+    expect(lines(report).slice(COMMANDS.length)).toEqual(['FAIL UI checks not run: CHROME_PATH does not name a usable browser'])
+    expect(report.exitCode).toBe(1)
+  })
+
+  it('reports a UI check run that could not start as a failure', async () => {
+    const report = silent()
+    await stepTests(context, report, { runCommand: passing, findBrowser: chromeAt, uiChecks: () => Promise.reject(new Error('Chrome exited at startup.')) })
+
+    expect(lines(report).slice(COMMANDS.length)).toEqual(['FAIL UI checks'])
+    expect(report.lines.at(-1)?.detail).toBe('Chrome exited at startup.')
+  })
+
+  it('does not look for a browser when a command failed', async () => {
+    const report = silent()
+    let looked = false
+    await stepTests(context, report, { runCommand: () => Promise.resolve(1), findBrowser: () => { looked = true; return chromeAt() } })
+    expect(looked).toBe(false)
+  })
 })
 
 describe('review 07: the development database', () => {
   it('reports it unchanged, or what changed, compared with step 01\'s fingerprint', async () => {
     const development = developmentDatabase()
-    await stepSetup(context, silent(), { env: NPM, findBrowser: () => undefined })
+    await stepSetup(context, silent(), { env: NPM, findBrowser: noBrowser })
 
     const unchanged = silent()
     await stepStop(context, unchanged)
@@ -539,6 +775,90 @@ describe('review 07: the development database', () => {
     const line = changed.lines.find((l) => l.name.startsWith('Development database'))
     expect(line?.status).toBe('WARN')
     expect(line?.detail).toContain(`${development}-shm: absent -> present`)
+  }, TIMEOUT)
+
+  // Step 01 and step 07 can run from shells that spell the drive differently (c:\ and C:\).
+  const fingerprint = (path: string, files: Record<string, string | undefined>): FileFingerprint =>
+    ({ path, exists: files[path] !== undefined, files })
+  const UPPER = 'C:\\repo\\server\\data\\trade-blotter.db'
+  const LOWER = 'c:\\repo\\server\\data\\trade-blotter.db'
+
+  it('matches files whose Windows paths differ only in the drive letter\'s case, and still reports real changes', () => {
+    const before = fingerprint(UPPER, { [UPPER]: 'aa', [`${UPPER}-wal`]: 'bb' })
+
+    expect(fingerprintChanges(before, fingerprint(LOWER, { [LOWER]: 'aa', [`${LOWER}-wal`]: 'bb', [`${LOWER}-shm`]: undefined }), 'win32')).toEqual([])
+    expect(fingerprintChanges(before, fingerprint(LOWER, { [LOWER]: 'aa', [`${LOWER}-wal`]: 'cc', [`${LOWER}-shm`]: 'dd' }), 'win32'))
+      .toEqual([`${LOWER}-wal: present -> changed`, `${LOWER}-shm: absent -> present`])
+    expect(fingerprintChanges(before, fingerprint(LOWER, { [LOWER]: 'aa' }), 'win32')).toEqual([`${UPPER}-wal: present -> absent`])
+  })
+
+  it('keeps paths that differ in case apart on Linux and macOS', () => {
+    const before = fingerprint('/data/Trades.db', { '/data/Trades.db': 'aa' })
+
+    expect(fingerprintChanges(before, fingerprint('/data/Trades.db', { '/data/Trades.db': 'aa' }), 'linux')).toEqual([])
+    expect(fingerprintChanges(before, fingerprint('/data/trades.db', { '/data/trades.db': 'aa' }), 'linux'))
+      .toEqual(['/data/Trades.db: present -> absent', '/data/trades.db: absent -> present'])
+  })
+
+  it('compares step 01\'s fingerprint, recorded under another spelling of the drive, as the same file', async () => {
+    const development = developmentDatabase()
+    await stepSetup(context, silent(), { env: NPM, findBrowser: noBrowser })
+    // Rewrite step 01's record as a shell with the other drive-letter case would have written it.
+    // Elsewhere, a path in another case is another file, so the record names another database.
+    const flip = (path: string): string => process.platform === 'win32'
+      ? `${path.charAt(0) === path.charAt(0).toUpperCase() ? path.charAt(0).toLowerCase() : path.charAt(0).toUpperCase()}${path.slice(1)}`
+      : join(dirname(path), basename(path).toUpperCase())
+    const recorded = JSON.parse(readFileSync(context.baselineFile, 'utf8')) as FileFingerprint & { recordedAt: string }
+    writeFileSync(context.baselineFile, JSON.stringify({
+      ...recorded, path: flip(recorded.path), files: Object.fromEntries(Object.entries(recorded.files).map(([name, hash]) => [flip(name), hash])),
+    }))
+
+    const report = silent()
+    await stepStop(context, report)
+    const line = report.lines.find((l) => l.name.startsWith('Development database'))
+    if (process.platform === 'win32') {
+      expect(line?.status).toBe('PASS')
+      writeFileSync(`${development}-shm`, 'shared memory written by its own application')
+      const changed = silent()
+      await stepStop(context, changed)
+      const after = changed.lines.find((l) => l.name.startsWith('Development database'))
+      expect(after?.status).toBe('WARN')
+      expect(after?.detail).toBe(`${development}-shm: absent -> present\nThe reviewer workflow never opens it; your own application, if it ran meanwhile, would explain this.`)
+    } else {
+      expect(line?.name).toBe('Development database: step 01 fingerprinted another path')
+      expect(line?.status).toBe('WARN')
+    }
+  }, TIMEOUT)
+
+  it('cleans up whatever failed before: a pair that throws does not stop the other being stopped, left UI check databases are removed, the database is still compared', async () => {
+    const run = join(context.uiCheckDir, '2026-11-12T10-00-00-000Z')
+    mkdirSync(join(run, 'db-abc123'), { recursive: true })
+    writeFileSync(join(run, 'db-abc123', 'ui-check.db'), 'left by an interrupted run')
+    writeFileSync(join(run, 'ui-1280-trading.png'), 'a screenshot, kept')
+    const seen: string[] = []
+    const report = silent()
+
+    await stepStop(context, report, {
+      stopPair: (target) => {
+        seen.push(target.name)
+        if (target.name === 'benchmark') return Promise.reject(new Error('the record could not be read'))
+        return Promise.resolve({ kind: 'not-started' })
+      },
+    })
+
+    expect(seen).toEqual(['benchmark', 'scratch'])
+    expect(lines(report)).toEqual([
+      'FAIL Benchmark: stopping failed',
+      'SKIPPED Scratch applications: none recorded',
+      'PASS Removed 1 UI check database folder(s) left by an interrupted step 05',
+      expect.stringMatching(/^(PASS|WARN) Development database/),
+      `INFO Kept: ${context.root}`,
+    ])
+    expect(report.lines[0]?.detail).toMatch(/the record could not be read/)
+    expect(existsSync(join(run, 'db-abc123'))).toBe(false)
+    expect(existsSync(join(run, 'ui-1280-trading.png'))).toBe(true)
+    expect(leftoverUiCheckDatabases(context.uiCheckDir)).toEqual([])
+    expect(leftoverUiCheckDatabases(join(dir, 'no-such-folder'))).toEqual([])
   }, TIMEOUT)
 
   it('prepares databases only outside the protected folder', async () => {

@@ -44,6 +44,7 @@ export function createInMemoryTradeRepository() {
 
 function matches(trade: Trade, filter: TradeFilter): boolean {
   return (filter.symbolContains === undefined || trade.symbol.includes(filter.symbolContains)) &&
+    (filter.symbolEquals === undefined || trade.symbol === filter.symbolEquals) &&
     (filter.side === undefined || trade.side === filter.side) &&
     (filter.executedFrom === undefined || trade.executedAt >= filter.executedFrom) &&
     (filter.executedTo === undefined || trade.executedAt <= filter.executedTo)
