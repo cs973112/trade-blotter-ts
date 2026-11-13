@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 import { DEFAULT_DATABASE_PATH } from '../src/config.ts'
-import { defaultRunDir, REPOSITORY_ROOT } from './lifecycle.ts'
+import { canonicalPathOn, defaultRunDir, REPOSITORY_ROOT } from './lifecycle.ts'
 import type { Protection } from './trade-data.ts'
 
 /**
@@ -36,6 +36,10 @@ export interface ReviewContext {
   readonly perfDir: string
   /** Throwaway databases for the booking checks, each removed after use. */
   readonly disposableDir: string
+  /** The UI checks' screenshots, and their throwaway database while they run. */
+  readonly uiCheckDir: string
+  /** Databases preserved by step 01 before it replaced them, each in a folder of its own with a backup.json. */
+  readonly backupsDir: string
   /** The development database's fingerprint, recorded by step 01 and compared by step 07. */
   readonly baselineFile: string
   readonly host: string
@@ -72,6 +76,8 @@ export function reviewContext(overrides: {
     logsDir: join(root, 'logs'),
     perfDir: join(root, 'perf'),
     disposableDir: join(root, 'disposable'),
+    uiCheckDir: join(root, 'ui-check'),
+    backupsDir: join(root, 'backups'),
     baselineFile: join(root, 'development-database.json'),
     host: 'localhost',
     pairs: [pair('benchmark', 'Benchmark', BENCHMARK_SEED, false), pair('scratch', 'Scratch', SCRATCH_SEED, true)],
@@ -174,11 +180,21 @@ export function readBaseline(context: ReviewContext): (FileFingerprint & { reado
   }
 }
 
-/** The files whose presence or content differs between two fingerprints of the same database. */
-export function fingerprintChanges(before: FileFingerprint, after: FileFingerprint): string[] {
-  const names = [...new Set([...Object.keys(before.files), ...Object.keys(after.files)])]
-  return names.filter((name) => before.files[name] !== after.files[name]).map((name) => {
-    const [was, is] = [before.files[name], after.files[name]]
-    return `${name}: ${was === undefined ? 'absent' : 'present'} -> ${is === undefined ? 'absent' : was === undefined ? 'present' : 'changed'}`
+/**
+ * The files whose presence or content differs between two fingerprints of the same database.
+ * Files are matched by canonicalPath, so two spellings of one file are one file: on Windows the
+ * fingerprint of C:\data\trades.db matches that of c:\data\trades.db (a shell can report either
+ * drive letter), while on Linux and macOS a path that differs in case is another file. Each file is
+ * named as the later fingerprint spells it.
+ */
+export function fingerprintChanges(before: FileFingerprint, after: FileFingerprint, platform: NodeJS.Platform = process.platform): string[] {
+  const byFile = (fingerprint: FileFingerprint): Map<string, { readonly name: string; readonly hash: string | undefined }> =>
+    new Map(Object.entries(fingerprint.files).map(([name, hash]) => [canonicalPathOn(name, platform), { name, hash }]))
+  const [was, is] = [byFile(before), byFile(after)]
+  return [...new Set([...was.keys(), ...is.keys()])].flatMap((file) => {
+    const [then, now] = [was.get(file)?.hash, is.get(file)?.hash]
+    if (then === now) return []
+    const name = is.get(file)?.name ?? was.get(file)?.name ?? file
+    return [`${name}: ${then === undefined ? 'absent' : 'present'} -> ${now === undefined ? 'absent' : then === undefined ? 'present' : 'changed'}`]
   })
 }

@@ -26,6 +26,7 @@
     "perf:api:sizes": "node --disable-warning=ExperimentalWarning server/scripts/perf-sizes.ts api",
     "perf:ui": "node --disable-warning=ExperimentalWarning server/scripts/perf-ui.ts",
     "perf:ui:sizes": "node --disable-warning=ExperimentalWarning server/scripts/perf-sizes.ts ui",
+    "check:ui": "node --disable-warning=ExperimentalWarning server/scripts/ui-check.ts",
     "review:01": "node --disable-warning=ExperimentalWarning server/scripts/review.ts 01",
     "review:02": "node --disable-warning=ExperimentalWarning server/scripts/review.ts 02",
     "review:03": "node --disable-warning=ExperimentalWarning server/scripts/review.ts 03",

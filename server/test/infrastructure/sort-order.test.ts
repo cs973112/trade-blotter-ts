@@ -81,6 +81,8 @@ const FILTERS: readonly (readonly [string, TradeFilter])[] = [
   ['no filter', {}],
   ['symbol A', { symbolContains: 'A' }],
   ['symbol MS', { symbolContains: 'MS' }],
+  ['exactly symbol MS', { symbolEquals: 'MS' }],
+  ['exactly symbol MSFT, side Buy', { symbolEquals: 'MSFT', side: 'Buy' }],
   [`symbol ${cp(0x1d400)}`, { symbolContains: cp(0x1d400) }],
   ['side Sell', { side: 'Sell' }],
   ['one execution time', { executedFrom: utc(TIMES[1] ?? ''), executedTo: utc(TIMES[1] ?? '') }],
@@ -94,6 +96,7 @@ const QUERIES: readonly (readonly [string, TradeQuery])[] = FILTERS.flatMap(([na
 
 const matches = (trade: Trade, filter: TradeFilter): boolean =>
   (filter.symbolContains === undefined || trade.symbol.includes(filter.symbolContains)) &&
+  (filter.symbolEquals === undefined || trade.symbol === filter.symbolEquals) &&
   (filter.side === undefined || trade.side === filter.side) &&
   (filter.executedFrom === undefined || trade.executedAt >= filter.executedFrom) &&
   (filter.executedTo === undefined || trade.executedAt <= filter.executedTo)

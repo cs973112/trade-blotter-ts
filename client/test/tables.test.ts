@@ -42,7 +42,7 @@ describe('trade blotter', () => {
     executedAt: '2026-01-02T14:30:00.123Z', createdAt: '2026-01-02T14:30:01.000Z',
   })
 
-  it('shows every column, in the order the API sends, with exact decimals and local times', async () => {
+  it('shows every column, in the order the API sends: exact quantities, money to 2 places with the exact value kept, local times', async () => {
     fakeApi({ 'GET /trades/page': pagedTrades([newest, older]) })
     const table = await show(TradeBlotter, 'loadTrades')
 
@@ -52,9 +52,9 @@ describe('trade blotter', () => {
       'Executed at↓, sort oldest first', 'Created at', 'Updated at',
     ])
     expect(rows(table)).toEqual([
-      ['MSFT', 'Sell', '123,456,789,012,345.1234567891', '0.0000000001', '12,345.67890123451234567891',
+      ['MSFT', 'Sell', '123,456,789,012,345.1234567891', '0.00, exactly 0.0000000001', '12,345.68, exactly 12,345.67890123451234567891',
         '2026-07-01 09:30:15.250 UTC−04:00', '2026-07-02 04:00:00.000 UTC−04:00', '2026-07-02 04:00:00.000 UTC−04:00'],
-      ['AAPL', 'Buy', '1,000', '187.5', '187,500',
+      ['AAPL', 'Buy', '1,000', '187.50', '187,500.00',
         '2026-01-02 09:30:00.123 UTC−05:00', '2026-01-02 09:30:01.000 UTC−05:00', '2026-01-02 09:30:01.000 UTC−05:00'],
     ])
   })
@@ -109,7 +109,7 @@ describe('trade blotter', () => {
     expect(table.text()).not.toContain('disk')
 
     server.set('GET /trades/page', pagedTrades([older]))
-    await table.find('button').trigger('click')
+    await table.find('button.refresh-trades').trigger('click')
     await flushPromises()
     expect(table.find('[role="alert"]').exists()).toBe(false)
     expect(rows(table)).toHaveLength(1)
@@ -120,7 +120,7 @@ describe('trade blotter', () => {
     const table = await show(TradeBlotter, 'loadTrades')
 
     server.set('GET /trades/page', new TypeError('Failed to fetch'))
-    await table.find('button').trigger('click')
+    await table.find('button.refresh-trades').trigger('click')
     await flushPromises()
 
     expect(table.find('[role="alert"]').text()).toContain('could not be reached')
@@ -132,7 +132,7 @@ describe('trade blotter', () => {
     const table = await show(TradeBlotter, 'loadTrades')
 
     server.set('GET /trades/page', { status: 502, body: '', contentType: 'text/plain' })
-    await table.find('button').trigger('click')
+    await table.find('button.refresh-trades').trigger('click')
     await flushPromises()
 
     expect(table.find('[role="alert"]').text()).toBe(
@@ -143,7 +143,7 @@ describe('trade blotter', () => {
 })
 
 describe('positions', () => {
-  it('shows long and short positions apart, with exact net quantity and average cost', async () => {
+  it('shows long and short positions apart, with the exact net quantity and the average cost to 2 places', async () => {
     fakeApi({
       'GET /positions': json('[{"symbol":"AAPL","netQuantity":-1500.25,"averageCost":187.5},' +
         '{"symbol":"MSFT","netQuantity":3,"averageCost":1.6666666666666666666666666666666666666666666666667}]'),
@@ -152,13 +152,15 @@ describe('positions', () => {
 
     expect(panel.findAll('thead th').map((cell) => cell.text())).toEqual(['Symbol', 'Direction', 'Net quantity', 'Average cost'])
     expect(rows(panel)).toEqual([
-      ['AAPL', 'Short', '-1,500.25', '187.5'],
-      ['MSFT', 'Long', '3', '1.6666666666666666666666666666666666666666666666667'],
+      ['AAPL', 'Short', '-1,500.25', '187.50'],
+      ['MSFT', 'Long', '3', '1.67, exactly 1.6666666666666666666666666666666666666666666666667'],
     ])
     expect(panel.findAll('tbody tr').map((row) => row.classes())).toEqual([['position-short'], ['position-long']])
-    // Narrow screens show each figure on its own line under these labels; the text is the header's.
-    expect(panel.findAll('tbody tr').map((row) => row.findAll('td[data-label]').map((cell) => cell.attributes('data-label'))))
-      .toEqual([['Net quantity', 'Average cost'], ['Net quantity', 'Average cost']])
+    // A column narrowed below its contents shows the start of a quantity; the whole figure is its title.
+    // A rounded average cost has the exact value as its title; one that lost no digits has none.
+    expect(panel.findAll('td.net-quantity').map((cell) => cell.attributes('title'))).toEqual(['-1,500.25', '3'])
+    expect(panel.findAll('td.average-cost .money').map((cell) => cell.attributes('title')))
+      .toEqual([undefined, 'Exactly 1.6666666666666666666666666666666666666666666666667'])
     expect(panel.findAll('.direction-badge').map((badge) => badge.classes())).toEqual([
       ['direction-badge', 'direction-short'],
       ['direction-badge', 'direction-long'],

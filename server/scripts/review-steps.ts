@@ -1,10 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
+import { lookUpBrowser, type BrowserLookup } from './browser.ts'
 import { canonicalPath, DatabaseInUseError, portAnswers, type AppState } from './lifecycle.ts'
 import { findManagedApi, formatResult, readSnapshot, runBenchmark, type BenchmarkResult, type ManagedApi } from './perf-api.ts'
-import { findChrome, findManagedApplication, formatUiResult, runUiBenchmark, type ManagedApplication, type UiBenchmarkResult } from './perf-ui.ts'
+import { findManagedApplication, formatUiResult, runUiBenchmark, type ManagedApplication, type UiBenchmarkResult } from './perf-ui.ts'
 import {
   buildStates, checkOwnership, runLogged, startPair, stopPair, storedTradeCount, tail, type OwnershipOptions,
 } from './review-apps.ts'
@@ -13,6 +14,8 @@ import {
   fingerprintChanges, fingerprintFiles, readBaseline, writeBaseline, type Report, type ReviewContext, type ReviewPair,
 } from './review-context.ts'
 import { inspectDataset, prepareDatabase, recoveryAdvice, seedPair, type DatasetState } from './review-data.ts'
+import { DATASET_VERSION } from './seed-data.ts'
+import { runUiChecks, type UiCheckRun } from './ui-check.ts'
 import { refuseProtectedDatabase } from './trade-data.ts'
 
 /**
@@ -24,11 +27,15 @@ import { refuseProtectedDatabase } from './trade-data.ts'
 
 export interface StepDependencies extends OwnershipOptions {
   readonly env?: NodeJS.ProcessEnv
-  /** The browser's path, or undefined when none is found. */
-  readonly findBrowser?: () => string | undefined
+  /** The browser, or why there is none (see browser.ts). */
+  readonly findBrowser?: () => BrowserLookup
   readonly runCommand?: (command: string, args: readonly string[], cwd: string, log: string) => Promise<number>
   readonly apiBenchmark?: (api: ManagedApi) => Promise<BenchmarkResult>
   readonly uiBenchmark?: (app: ManagedApplication, chrome: string) => Promise<UiBenchmarkResult>
+  /** The page's behaviour in a real browser (ui-check.ts), with screenshots in outDir. */
+  readonly uiChecks?: (chrome: string, outDir: string) => Promise<UiCheckRun>
+  /** Stops one pair's applications (review-apps.ts). */
+  readonly stopPair?: typeof stopPair
 }
 
 export const SUPPORTED_NODE = 'v22.23.1'
@@ -41,18 +48,16 @@ function describe(state: DatasetState): string {
     case 'missing': return 'missing'
     case 'empty': return 'a Trade Blotter database with no trades'
     case 'outdated': return `behind on migrations (${String(state.applied)} of ${String(state.expected)} applied)`
-    case 'seeded': return `its dataset of ${grouped(state.trades - state.bookings)} trades${state.bookings > 0 ? `, and ${grouped(state.bookings)} booked since` : ''}`
+    case 'seeded': return `its dataset (version ${String(DATASET_VERSION)}) of ${grouped(state.trades - state.bookings)} trades${state.bookings > 0 ? `, and ${grouped(state.bookings)} booked since` : ''}`
     case 'unexpected': return `unexpected: ${state.reason}`
   }
 }
 
-export function defaultBrowser(): string | undefined {
-  try {
-    return findChrome(undefined)
-  } catch {
-    return undefined
-  }
+export function defaultBrowser(): BrowserLookup {
+  return lookUpBrowser()
 }
+
+const NO_BROWSER = 'No Chrome, Edge or Chromium found (CHROME_PATH, then the usual places)'
 
 // ---------------------------------------------------------------------------------------------
 // 01 Setup
@@ -129,7 +134,15 @@ export async function stepSetup(context: ReviewContext, report: Report, deps: St
       const outcome = await prepareDatabase(context, pair)
       if (outcome.kind === 'created') report.pass(`${pair.label} database created and migrated`, pair.databasePath)
       else if (outcome.kind === 'migrated') report.pass(`${pair.label} database migrated from ${String(outcome.from)} to ${String(outcome.to)} migrations`, pair.databasePath)
-      else if (outcome.state.kind === 'unexpected') report.fail(`${pair.label} database is ${describe(outcome.state)}`, `${pair.databasePath}\n${recoveryAdvice(pair)}`)
+      else if (outcome.kind === 'replaced') {
+        const { backup } = outcome
+        report.warn(`${pair.label} database held ${outcome.reason}: preserved in a verified backup, then replaced by a new, empty database for step 02`, [
+          `Backup: ${backup.folder}`,
+          `Kept: ${grouped(backup.trades)} trades (fingerprint ${backup.fingerprint.slice(0, 16)}...), checked by opening a second copy: integrity, count and every row`,
+          ...backup.files.map((file) => `  ${file.name}  sha256 ${file.sha256}`),
+          'To restore it, see backup.json in that folder.',
+        ].join('\n'))
+      } else if (outcome.state.kind === 'unexpected') report.fail(`${pair.label} database is ${describe(outcome.state)}`, `${pair.databasePath}\n${recoveryAdvice(pair, outcome.state)}`)
       else report.pass(`${pair.label} database exists, kept as it is: ${describe(outcome.state)}`, pair.databasePath)
     } catch (error) {
       report.fail(`${pair.label} database`, `${message(error)}${error instanceof DatabaseInUseError ? '' : `\n${pair.databasePath}`}`)
@@ -144,10 +157,12 @@ export async function stepSetup(context: ReviewContext, report: Report, deps: St
   Object.entries(development.files).map(([file, hash]) => `${file}: ${hash === undefined ? 'absent' : `sha256 ${hash.slice(0, 16)}...`}`).join('\n'))
 
   const browser = (deps.findBrowser ?? defaultBrowser)()
-  if (browser === undefined) {
-    report.warn('No Chrome or Chromium found (CHROME_PATH, then the usual places)', 'Step 06 will skip the UI benchmark and report performance as INCOMPLETE.')
+  if (browser.kind === 'missing') {
+    report.warn(NO_BROWSER, `Step 05 will skip the UI checks and step 06 the UI benchmark, and both will report INCOMPLETE.\n${browser.diagnostics}`)
+  } else if (browser.kind === 'invalid-setting') {
+    report.fail('CHROME_PATH does not name a usable browser', `${browser.message}\nSteps 05 and 06 will fail their browser checks until it is corrected.`)
   } else {
-    report.pass(`Browser for the UI benchmark: ${browser}`)
+    report.pass(`Browser for the UI checks and benchmark: ${browser.path}`, `Found as ${browser.description}.`)
   }
 
   for (const pair of context.pairs) {
@@ -172,7 +187,7 @@ export async function stepSeed(context: ReviewContext, report: Report): Promise<
         continue
       }
       if (state.kind === 'unexpected') {
-        report.fail(`${pair.label} database is ${describe(state)}`, `${pair.databasePath}\n${recoveryAdvice(pair)}`)
+        report.fail(`${pair.label} database is ${describe(state)}`, `${pair.databasePath}\n${recoveryAdvice(pair, state)}`)
         continue
       }
       if (state.kind === 'outdated') {
@@ -341,6 +356,38 @@ export async function stepTests(context: ReviewContext, report: Report, deps: St
     report.pass(name, detail)
     if (counts !== undefined && /skipped/.test(counts)) report.warn(`${name}: some tests were skipped, not run`, counts)
   }
+  await uiChecks(context, report, deps)
+}
+
+/**
+ * The page in a real browser (npm run check:ui), on a throwaway database of its own with 40 open
+ * positions. Without a browser the checks are SKIPPED and the step INCOMPLETE, never passed.
+ */
+async function uiChecks(context: ReviewContext, report: Report, deps: StepDependencies): Promise<void> {
+  const browser = (deps.findBrowser ?? defaultBrowser)()
+  if (browser.kind === 'missing') {
+    report.skip('UI checks in a real browser', `${NO_BROWSER}. Nothing was installed.\n${browser.diagnostics}`)
+    report.incomplete('the UI checks were skipped (no browser), so the page itself is not verified')
+    return
+  }
+  if (browser.kind === 'invalid-setting') {
+    report.fail('UI checks not run: CHROME_PATH does not name a usable browser', browser.message)
+    return
+  }
+  const outDir = join(context.uiCheckDir, new Date().toISOString().replace(/[:.]/g, '-'))
+  console.log(`UI checks in headless ${browser.path} (${browser.description}); a database of their own with 40 open positions...`)
+  try {
+    const run = await (deps.uiChecks ?? ((chrome, out) => runUiChecks({ chrome, outDir: out })))(browser.path, outDir)
+    for (const result of run.results) {
+      if (result.problem === undefined) report.pass(`UI: ${result.name}`)
+      else report.fail(`UI: ${result.name}`, result.problem)
+    }
+    if (run.consoleErrors.length > 0) report.fail('UI: the page logged errors', run.consoleErrors.join('\n'))
+    else report.pass('UI: no console errors')
+    report.info(`UI checks ran in ${run.product}`, `Screenshots (1280, 768 and 390 px wide):\n${run.screenshots.join('\n')}`)
+  } catch (error) {
+    report.fail('UI checks', message(error))
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -378,12 +425,17 @@ export async function stepPerformance(context: ReviewContext, report: Report, de
     report.fail('API benchmark', message(error))
   }
 
-  const chrome = (deps.findBrowser ?? defaultBrowser)()
-  if (chrome === undefined) {
-    report.skip('UI benchmark', 'No Chrome or Chromium was found (CHROME_PATH, then the usual places). Nothing was installed.')
+  const browser = (deps.findBrowser ?? defaultBrowser)()
+  if (browser.kind === 'missing') {
+    report.skip('UI benchmark', `No Chrome, Edge or Chromium was found (CHROME_PATH, then the usual places). Nothing was installed.\n${browser.diagnostics}`)
     report.incomplete('the UI benchmark was skipped (no browser), so performance is only partly verified')
     return
   }
+  if (browser.kind === 'invalid-setting') {
+    report.fail('UI benchmark not run: CHROME_PATH does not name a usable browser', browser.message)
+    return
+  }
+  const chrome = browser.path
   try {
     const app = findManagedApplication({ databasePath: pair.databasePath, protection })
     console.log(`UI benchmark in headless ${chrome}; every action's page is checked against the database...`)
@@ -407,28 +459,61 @@ export async function stepPerformance(context: ReviewContext, report: Report, de
 // 07 Stop
 
 export async function stepStop(context: ReviewContext, report: Report, deps: StepDependencies = {}): Promise<void> {
+  // Each part runs whatever happened before it, in this step or an earlier one: a pair that cannot
+  // be stopped, or an error, is reported and the rest of the clean-up still runs.
+  const stop = deps.stopPair ?? stopPair
   for (const pair of context.pairs) {
-    const outcome = await stopPair(pair, deps)
-    if (outcome.kind === 'not-started') report.skip(`${pair.label} applications: none recorded`, 'Nothing to stop.')
-    else if (outcome.kind === 'already-stopped') report.pass(`${pair.label} applications were not running; their stale record was removed`)
-    else if (outcome.kind === 'stopped') {
-      report.pass(`${pair.label} applications stopped after their identity was confirmed; ports released`,
-        outcome.reports.map((r) => `${r.record.label.padEnd(8)} process ${String(r.record.pid)} ${r.outcome}, port ${String(r.record.port)} ${r.portReleased ? 'released' : 'STILL IN USE'}`).join('\n'))
-    } else {
-      report.fail(`${pair.label}: not stopped, left running`, `${outcome.problems.join('\n')}\nThe record ${join(pair.runDir, 'app.json')} is kept. Nothing else was touched.`)
+    try {
+      const outcome = await stop(pair, deps)
+      if (outcome.kind === 'not-started') report.skip(`${pair.label} applications: none recorded`, 'Nothing to stop.')
+      else if (outcome.kind === 'already-stopped') report.pass(`${pair.label} applications were not running; their stale record was removed`)
+      else if (outcome.kind === 'stopped') {
+        report.pass(`${pair.label} applications stopped after their identity was confirmed; ports released`,
+          outcome.reports.map((r) => `${r.record.label.padEnd(8)} process ${String(r.record.pid)} ${r.outcome}, port ${String(r.record.port)} ${r.portReleased ? 'released' : 'STILL IN USE'}`).join('\n'))
+      } else {
+        report.fail(`${pair.label}: not stopped, left running`, `${outcome.problems.join('\n')}\nThe record ${join(pair.runDir, 'app.json')} is kept. Nothing else was touched.`)
+      }
+    } catch (error) {
+      report.fail(`${pair.label}: stopping failed`, `${message(error)}\nThe record ${join(pair.runDir, 'app.json')} is kept; the rest of the clean-up continued.`)
     }
   }
 
-  const baseline = readBaseline(context)
-  const now = fingerprintFiles(context.protection.developmentDatabase)
-  if (baseline === undefined) {
-    report.warn('Development database: no fingerprint from step 01 to compare with', 'Run npm run review:01 at the start of a review.')
-  } else if (canonicalPath(baseline.path) !== canonicalPath(now.path)) {
-    report.warn('Development database: step 01 fingerprinted another path', `${baseline.path} then, ${now.path} now`)
-  } else {
-    const changes = fingerprintChanges(baseline, now)
-    if (changes.length === 0) report.pass(`Development database unchanged since step 01 (${baseline.recordedAt})`, now.exists ? 'Same SHA-256 for every file.' : 'Still absent.')
-    else report.warn('Development database differs from step 01\'s fingerprint', `${changes.join('\n')}\nThe reviewer workflow never opens it; your own application, if it ran meanwhile, would explain this.`)
+  try {
+    const leftovers = leftoverUiCheckDatabases(context.uiCheckDir)
+    if (leftovers.length > 0) {
+      for (const folder of leftovers) rmSync(folder, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+      report.pass(`Removed ${String(leftovers.length)} UI check database folder(s) left by an interrupted step 05`, leftovers.join('\n'))
+    }
+  } catch (error) {
+    report.fail('UI check databases left by step 05 could not be removed', message(error))
+  }
+
+  try {
+    const baseline = readBaseline(context)
+    const now = fingerprintFiles(context.protection.developmentDatabase)
+    if (baseline === undefined) {
+      report.warn('Development database: no fingerprint from step 01 to compare with', 'Run npm run review:01 at the start of a review.')
+    } else if (canonicalPath(baseline.path) !== canonicalPath(now.path)) {
+      report.warn('Development database: step 01 fingerprinted another path', `${baseline.path} then, ${now.path} now`)
+    } else {
+      const changes = fingerprintChanges(baseline, now)
+      if (changes.length === 0) report.pass(`Development database unchanged since step 01 (${baseline.recordedAt})`, now.exists ? 'Same SHA-256 for every file.' : 'Still absent.')
+      else report.warn('Development database differs from step 01\'s fingerprint', `${changes.join('\n')}\nThe reviewer workflow never opens it; your own application, if it ran meanwhile, would explain this.`)
+    }
+  } catch (error) {
+    report.fail('Development database could not be compared with step 01\'s fingerprint', message(error))
   }
   report.info(`Kept: ${context.root}`, 'Both databases, logs and results stay for the next review.')
+}
+
+/**
+ * The temporary databases (db-* folders) the UI checks make under each run's folder. The checks
+ * remove theirs when they finish; any still there were left by a run that was stopped part way.
+ */
+export function leftoverUiCheckDatabases(uiCheckDir: string): string[] {
+  if (!existsSync(uiCheckDir)) return []
+  return readdirSync(uiCheckDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).flatMap((run) => {
+    const folder = join(uiCheckDir, run.name)
+    return readdirSync(folder, { withFileTypes: true }).filter((entry) => entry.isDirectory() && entry.name.startsWith('db-')).map((entry) => join(folder, entry.name))
+  })
 }

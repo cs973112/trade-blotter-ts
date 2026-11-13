@@ -94,7 +94,7 @@ factories.
 | **API** (`api/`) | Fastify routes, TypeBox schemas, lossless JSON, mapping service results and errors to HTTP, OpenAPI. Holds no business rules. | Application, domain | Drizzle, SQLite, `infrastructure/` |
 | **Infrastructure** (`infrastructure/`) | Drizzle schema and migrations, the SQLite connection, the Drizzle `TradeRepository`, the system clock, the UUID generator. Converts between rows and domain types. | Application interfaces, domain, Drizzle, `node:sqlite` | Fastify, `api/` |
 | **Composition root** (`main.ts`) | Reads configuration, opens the database, applies migrations, builds every dependency and passes it in. | Everything | |
-| **Presentation** (`client/`) | Vue components, one Pinia store and a typed HTTP client. Collects trades and displays what the API returns; its checks exist for usability only, and it never calculates positions. | Vue, Pinia, its own modules; the HTTP contract | Server code, Node built-ins, server libraries |
+| **Presentation** (`client/`) | Vue components, two Pinia stores and a typed HTTP client. Collects trades and displays what the API returns; its checks exist for usability only, and it never calculates positions. | Vue, Pinia, its own modules; the HTTP contract | Server code, Node built-ins, server libraries |
 
 The rules for every server layer are enforced twice: by ESLint `no-restricted-imports` (one
 rule per folder in `eslint.config.js`), and by `server/test/architecture/layers.test.ts`, which
@@ -110,7 +110,8 @@ their dependencies as an object.
 server/
   drizzle.config.ts                drizzle-kit configuration (schema path, output folder)
   drizzle/                         generated migrations, committed and reviewed: create_trades, exact_decimal_sort_keys
-  scripts/                         tools run with npm: app:start/stop/status, db:seed/clear, perf:api/ui, review:01-07
+  scripts/                         tools run with npm: app:start/stop/status, db:seed/clear, perf:api/ui, check:ui, review:01-07
+                                   (browser.ts finds a browser; seed-data.ts makes dataset version 2; review-run.ts tracks runs)
   src/
     main.ts                        composition root
     migrate.ts                     the db:migrate command
@@ -164,27 +165,40 @@ client/                            Vue app (npm workspace)
   vite.config.ts                   dev and preview servers, API proxy, test settings
   public/                          favicon.svg, served as is
   src/
-    main.ts                        creates the app and the Pinia store
-    App.vue                        layout; loads trades and positions on open
+    main.ts                        creates the app and Pinia
+    App.vue                        the three tabs (ARIA tabs, arrow keys, Home, End); loads trades and positions once on open
     api/
-      contracts.ts                 request and response types from the OpenAPI contract
+      contracts.ts                 request and response types from the OpenAPI contract, symbolMatch included
       json.ts                      JSON parsing that keeps numbers as exact text
       client.ts                    createTrade, listTradePage, listTrades, listPositions; ApiError
-    stores/blotter.ts              the page of trades, positions, applied filters, sort, page and page size; loading, errors, refreshes
+    stores/
+      blotter.ts                   the trade list's page, filters, sort, page and page size; positions; booking and refreshes
+      details.ts                   the chosen position and one page of its trades (symbolMatch=exact), its sort, page and size
+      list-state.ts                loading, loaded and error state shared by both stores
     lib/
-      decimal-text.ts              checking typed decimals, formatting decimal text
+      decimal-text.ts              checking typed decimals; grouping digits; formatDecimalPlaces and formatMoney (2 places, half to even)
+      column-widths.ts             resizable columns: widths, least widths, keys and pointer, scroll-bar room
+      column-visibility.ts         shown and hidden columns, essential ones, defaults
+      tabs.ts                      the tabs and which key moves to which
       timestamps.ts                local date and time to RFC 3339; UTC to local display
       local-dates.ts               local calendar date to the UTC start and end of that day
-      trade-filters.ts             filter controls to query parameters; header sort rule; page sizes; booked-trade filter match
+      trade-filters.ts             filter controls to query parameters; header sort rule and labels; page sizes; booked-trade filter match
     components/
-      TradeForm.vue                trade entry and validation feedback
-      TradeBlotter.vue             trade table with sortable headers, its filters and both pagers
+      TradeForm.vue                trade entry and validation feedback (Trading)
+      PositionsPanel.vue           the Positions grid (Trading), and the master grid of Positions & Trade Details (selectable)
+      PositionDetails.vue          Positions & Trade Details: master beside details, stacked when narrow
+      TradeDetailsPanel.vue        the chosen position's summary and its trades, paged and sorted on the server
+      TradeBlotter.vue             Trade History: trade table with sortable headers, its filters and both pagers
       TradeFilters.vue             symbol, side and date range controls; Apply and Clear
-      TradePager.vue               Previous, Next, page position, range and page size
-      PositionsPanel.vue           positions table
+      TradePager.vue               Previous, Next, page position, range and page size, for either list
+      SortButton.vue               a sortable column header
+      ColumnResizer.vue            a column's resize handle
+      ColumnChooser.vue            the Columns control
+      ExactValuesToggle.vue        the Exact values checkbox
+      MoneyValue.vue               a price, notional or average cost to 2 places, with its exact value
       LocalTimestamp.vue           one timestamp in local time
     styles.css                     layout and theme
-  test/                            Vitest: lib, API client, components, app, boundaries
+  test/                            Vitest: lib, API client, components, tabs, grids, master-detail, exact values, app, boundaries
 docs/
 ```
 
@@ -773,7 +787,8 @@ parameter is refused, and the filters combine with AND. They are validated in th
 
 | Parameter | Values | Meaning |
 | --- | --- | --- |
-| `symbol` | text | Trades whose symbol contains it anywhere, ignoring case. Normalised like a symbol (trimmed, NFC, upper-cased); blank matches every trade. At most the maximum symbol length. |
+| `symbol` | text | Trades whose symbol contains it anywhere, ignoring case (or is it, with `symbolMatch=exact`). Normalised like a symbol (trimmed, NFC, upper-cased); blank matches every trade. At most the maximum symbol length. |
+| `symbolMatch` | `contains` (default), `exact` | How `symbol` matches, exactly as written: anywhere in the symbol, or the whole symbol, so `symbol=ms&symbolMatch=exact` lists MS but not MSFT or MSTR. Both ignore case, as symbols are normalised. Without `symbol` it changes nothing. Reported in the parameter order `symbol`, `symbolMatch`, `side`, … The Trade Details use it. |
 | `side` | `Buy` or `Sell`, any case | Trades on that side. Omitted: both sides. |
 | `executedFrom` | RFC 3339 date-time with `Z` or an offset | Trades executed at or after it (inclusive). |
 | `executedTo` | RFC 3339 date-time with `Z` or an offset | Trades executed at or before it (inclusive). Must not be earlier than `executedFrom`. |
@@ -945,22 +960,25 @@ compatibility; the page does not call it.)
 ```mermaid
 flowchart LR
     subgraph BROWSER["Browser · client/src"]
+        TABS["App.vue<br/>Trading · Positions & Trade Details · Trade History"]
         FORM["TradeForm.vue<br/>typed text, local time to RFC 3339"]
-        TABLES["TradeBlotter.vue, PositionsPanel.vue<br/>display; sortable headers"]
-        PAGER["TradePager.vue, twice<br/>Previous, Next, page size"]
-        FILTERS["TradeFilters.vue<br/>draft controls, local dates to UTC"]
+        GRIDS["PositionsPanel.vue (twice), TradeDetailsPanel.vue<br/>resizable columns, Columns, Exact values"]
+        LIST["TradeBlotter.vue, TradeFilters.vue, TradePager.vue<br/>the trade list"]
         STORE["Pinia store<br/>stores/blotter.ts"]
+        DETAILS["Pinia store<br/>stores/details.ts"]
         CLIENT["API client<br/>api/client.ts"]
     end
     VITE["Vite server<br/>dev :5173, preview :4173<br/>proxies /trades, /positions, /documentation"]
     API["Fastify API<br/>:5299"]
 
+    TABS --- FORM & GRIDS & LIST
     FORM -->|"createTrade(request)"| STORE
-    TABLES -->|"read trades, positions"| STORE
-    FILTERS -->|"applyFilters, clearFilters"| STORE
-    TABLES -->|"sortBy(field)"| STORE
-    PAGER -->|"goToPage, setPageSize"| STORE
+    GRIDS -->|"read positions"| STORE
+    GRIDS -->|"select(symbol), page, sort"| DETAILS
+    LIST -->|"applyFilters, sortBy, goToPage, setPageSize"| STORE
+    STORE -->|"after a booking in the chosen symbol: reload"| DETAILS
     STORE -->|"calls"| CLIENT
+    DETAILS -->|"listTradePage(symbol, symbolMatch=exact)"| CLIENT
     CLIENT -->|"fetch, relative URLs"| VITE
     VITE -->|"HTTP + JSON"| API
 ```
@@ -969,6 +987,11 @@ flowchart LR
   `/trades`, `/positions` and `/documentation` to the API (`API_TARGET`, default
   `http://localhost:5299`), so the API needs no CORS. A production deployment serves
   `client/dist/` and forwards the same paths to the API in the same way.
+- **Tabs.** Trading (the form and the Positions grid), Positions & Trade Details, and Trade
+  History are ARIA tabs: Left and Right arrows (wrapping), Home and End move between them, with a
+  roving tab stop. Every panel stays mounted while hidden (`v-show`), so typed entries, filters,
+  sort, pages, the chosen position, column widths and choices survive a change of tab, and a change
+  of tab sends no request. Trades and positions are loaded once, when the page opens.
 - **State.** One Pinia store holds the trades on the page shown and the positions, each with
   `loading`, `loaded` and `error`, and the trade list's applied filters, sort, page and page
   size, kept apart. It is shared because booking a trade (in the form) must refresh both tables:
@@ -1012,9 +1035,56 @@ flowchart LR
   strings (`"10.50"`), so the server receives exactly the digits typed. Responses are parsed with
   `parseJsonKeepingNumberText`, which quotes every number literal before `JSON.parse`, so an
   average cost with 50 significant digits arrives intact. This works in every browser and does
-  not depend on newer `JSON.parse` features. Display only adds thousands separators to the
-  integer part; no digit is rounded or dropped. A test replaces this with `Number()` conversion
-  and checks that the precision tests fail.
+  not depend on newer `JSON.parse` features. A test replaces this with `Number()` conversion and
+  checks that the precision tests fail.
+- **Money to two places, for display only.** Prices, notionals and average costs are shown by
+  `MoneyValue.vue` through `formatMoney`: `formatDecimalPlaces(text, 2)` rounds the decimal text
+  itself, half to even (the server's rounding mode), never through a JavaScript number, and groups
+  the digits; a value that rounds to zero has no minus sign. Where digits are hidden, the exact
+  grouped value is the tooltip and follows the rounded one for screen readers (", exactly
+  90.125"); a grid's **Exact values** checkbox (`ExactValuesToggle.vue`, unchecked at first) shows it
+  beside the rounded one instead (in Trade Details, the chosen position's average cost above the
+  grid too), and a column whose width was fixed by resizing is widened to fit
+  it. Quantities and net quantities are only grouped, never rounded. The store, the API and the
+  booking form keep every digit.
+- **Grids.** The Trading Positions grid, the master grid and the Trade Details are tables sized to
+  their contents (`width: max-content`), in a box that scrolls both ways under a sticky header and
+  shows 25 rows (10 for the master when stacked), leaving room for a horizontal scroll bar so the
+  last row is never covered. `useResizableGrid` (`lib/column-widths.ts`) gives each column a
+  resize handle (`role="separator"` with its width as value): drag it, or focus it and use the
+  arrow keys (Shift, Page Up and Down for larger steps), Home (narrowest), End (widest), Enter or a
+  double-click (fit the contents), Escape during a drag (undo). The first resize fixes every
+  column's width; widths stay within each column's least and greatest width, keep the header and
+  cells aligned, survive tab changes and refreshes, and Reset column widths returns to sizing by
+  contents. `useColumnVisibility` and `ColumnChooser.vue` show and hide optional columns: an
+  essential column (Symbol, Executed at) always stays; order is kept; a hidden column keeps its
+  width for when it returns, and one shown for the first time while widths are fixed is fitted to
+  its contents. The list says how many columns are shown ("4 of 10 columns shown"). Show all columns
+  shows every column, those hidden by default included, in the grid's order and with the widths
+  they had; the list stays open and focus stays on the button, which is `aria-disabled` (not
+  `disabled`, so focus is not lost) and does nothing once every column is shown. Restore default
+  columns, a separate action, puts back the grid's default choice; it is `aria-disabled` in the
+  same way at the defaults, so focus stays on it after restoring and Escape still closes the list. The Trade History table keeps its own
+  simpler layout (no resizing or Columns).
+- **Positions total.** Both Positions grids are `PositionsPanel.vue`, so both show the same
+  "Total: N positions" above the table, worked out from the one list of positions in the blotter
+  store (`positions.items.length`): every open position `GET /positions` last returned, not the
+  rows in view, with no request of its own. It changes when that list is loaded again, after a
+  booking or Refresh; flat positions are not in the list, so they are not counted.
+- **Positions & Trade Details.** The master grid is `PositionsPanel.vue` with `selectable`: an
+  ARIA grid whose rows carry `aria-selected`, one tab stop on the active row's symbol, Up, Down,
+  Page Up, Page Down, Home and End to move, Enter or Space (or a click) to choose; the chosen row is
+  coloured and marked with a bar. Choosing calls `details.select(symbol)` (`stores/details.ts`),
+  which asks `GET /trades/page?symbol=<symbol>&symbolMatch=exact&page=1&pageSize=25` (the sort is
+  added when it is not the default). Another position starts again at page 1, keeping the sort and
+  page size, and clears the trades shown so one position's trades never appear under another's
+  name; the position already chosen asks nothing. Only the newest request's answer is applied, and
+  an answer holding another symbol's trades is refused as a server error. Paging, page size and
+  sorting (Executed at, Quantity, Price, Symbol) are the API's. Loading, empty and error states are
+  shown, with Try again; a position that closes keeps its trades listed with a note. Booking a trade
+  in the chosen symbol reloads the details. From 1,100 px wide the master and details sit side by
+  side (the master as wide as it needs, up to about half), below that they stack, and a button
+  moves focus to the trades.
 - **Client checks are for usability.** Before sending, the form requires a symbol, a side, and a
   quantity and price that are plain positive numbers. The input range, decimal places and every
   other rule are the server's: its field errors are shown next to the matching fields.
@@ -1030,8 +1100,11 @@ flowchart LR
   confirmations `role="status"`; each newly shown page is announced in a hidden `role="status"`
   ("Showing 51–100 of 25,000 trades, page 2 of 500."); the two pagers are navigation landmarks
   named "above the table" and "below the table"; tables have captions and header scopes; side and
-  direction are written in words as well as colour. The layout stacks on narrow screens, pagers
-  wrap, and the trade table scrolls sideways in its own box.
+  direction are written in words as well as colour. Tabs, resize handles, the master grid's rows,
+  Columns and Exact values work from the keyboard with a visible focus outline. The layout stacks
+  on narrow screens, pagers and tabs wrap, and every table scrolls sideways in its own box; text
+  kept for screen readers is positioned inside that box, so a cell scrolled out of view never
+  widens the page.
 
 ### Execution time input
 
@@ -1159,7 +1232,8 @@ What these settings guarantee:
   A weighted average divides, and a recurring result such as 5/3 cannot be stored exactly in any
   decimal form. It is computed at 50 significant digits, rounding half to even, and that value is
   kept in the fold and reported as computed. There is no display rounding on the server; the
-  frontend formats for display only. Each increase adds at most a few parts in 10^49 of relative
+  frontend rounds prices, notionals and average costs to 2 places for display only, keeping the
+  exact value available (see [Frontend](#frontend)). Each increase adds at most a few parts in 10^49 of relative
   error. Domain tests compare terminating averages exactly and recurring averages to the exact
   fraction with a relative tolerance of 10^-45.
 - **Overflow is rejected before persistence.** Out-of-range inputs, including exponents beyond
@@ -1219,8 +1293,9 @@ Each layer is tested at its own boundary, with real collaborators below it where
 | Infrastructure | Real SQLite files in temporary folders, migrated as at startup: exact decimal and timestamp round-trips, booking sequences (never reused), same-time and out-of-order ordering, several symbols, every CHECK and UNIQUE constraint, rollback leaving rows and counts unchanged, position-limit refusals including trades executed in the past, close and reopen, a second connection, migrations on an empty database, reapplying, all-or-nothing failure, upgrading a populated database made by the first migration (rows, decimals, sequence, indexes, integrity kept), the `db:migrate` command, schema drift, the system clock and UUID generator; the SQL order and every page slice against `compareTrades` for 64 query combinations on deliberately hard data, exact sort keys for every pair of edge decimals, every read plan exercised, paging edge cases (empty table, past the last page, the highest page number, the read transaction) | `server/test/infrastructure/` |
 | API | `createServer` (production wiring) over a temporary database, driven by `app.inject()` with a fixed clock: every trade-request and HTTP scenario (with booking sequences proving rejected requests store nothing), exact response bodies, server-owned fields, offsets, ordering, positions, the position-limit `400`, a real database failure as a bare `500`, the OpenAPI document and Swagger UI, startup migration success and failure, restart, graceful shutdown with a request in progress, configuration; `GET /trades/page` (envelope, defaults, every page boundary, every sort against `GET /trades`, filters before paging, exact decimals, invalid and repeated parameters, `405`, `GET /trades` unchanged and positions unaffected) | `server/test/api/` |
 | Compiled server | The production build as a real process on a temporary database: migrates at startup, books and lists a trade over HTTP, keeps it across a restart, refuses to start on a failed migration, invalid configuration or a missing runtime feature (extends S4) | `server/test/platform/` |
-| Frontend | Vitest, Vue Test Utils and jsdom, with the real store and API client and only `fetch` replaced by a scripted fake API; tests run in `America/New_York` so daylight-saving cases are real: form validation, side choice, exact decimal text sent and shown, optional and ambiguous or skipped execution times, field errors from the server, network and server failures, list order, loading, empty and error states, refresh after booking, long and short positions, accessibility attributes and focus, and the client's import boundary; the page contract and its validation, both pagers, Previous and Next with focus, page sizes, first, middle, last and empty pages, header sorting both ways, applied versus draft filters, reset rules, requests answered out of order, the three booking messages | `client/test/` |
-| Tools | `server/scripts`: the background process manager with a stand-in application (tokens, reused ids, ports in use, process groups), seeding and clearing, both benchmarks' scenarios and response checks (`perf:api` on a real API), the process probe (a real other process, an exited id, Linux thread ids), and the reviewer workflow on a temporary folder: setup and safe reruns, recognising datasets, scratch bookings kept, unexpected data refused unchanged, dependencies, a missing browser (SKIPPED, exit 3), occupied ports, ownership refused for reused ids, other databases, other listeners and applications that do not answer as the Trade Blotter, stopping only confirmed applications, functional checks failing against other data, and the development database never changed | `server/test/scripts/` |
+| Frontend | Vitest, Vue Test Utils and jsdom, with the real stores and API client and only `fetch` replaced by a scripted fake API; tests run in `America/New_York` so daylight-saving cases are real: form validation, side choice, exact decimal text sent and shown, optional and ambiguous or skipped execution times, field errors from the server, network and server failures, list order, loading, empty and error states, refresh after booking, long and short positions, accessibility attributes and focus, and the client's import boundary; the page contract and its validation, both pagers, Previous and Next with focus, page sizes, first, middle, last and empty pages, header sorting both ways, applied versus draft filters, reset rules, requests answered out of order, the three booking messages; the tabs (keys, ARIA, state kept, one load); column widths (keys, drag, least widths, reset, fit) and visibility (defaults, essential columns, order, restore, widths kept); the master-detail (the exact-symbol query, selection by pointer and keyboard, paging, sorting, late answers dropped, other-symbol answers refused, states, booking reloads); two-place money against an independent BigInt reference, and Exact values | `client/test/` |
+| Real browser | `npm run check:ui`: the built frontend and the API in this process on throwaway databases, driven in headless Chrome, Edge or Chromium over the DevTools protocol with real mouse, wheel and key input; 49 checks in three parts: a 40-position fixture (tabs, the 25-row grid, sticky header, resizing, layouts at 1280, 768 and 390 px, booking with exact decimals), a master-detail fixture with MS, MSFT, MSTR and AMS (exact matching, server paging and sorting, Columns, Exact values, a held-back answer dropped), and the benchmark's 25,000 trades (167 positions: first, middle and last by keyboard and wheel, scrolling both ways, the positions total in both grids at three widths, Show all columns and Restore default columns by keyboard in all three grids, choosing after scrolling); no console errors | `server/scripts/ui-check.ts` |
+| Tools | `server/scripts`: the background process manager with a stand-in application (tokens, reused ids, ports in use, process groups), seeding and clearing, dataset version 2 (exactly 25,000 trades, a pinned fingerprint, 167 open positions recalculated trade by trade, long and short, trade counts per symbol), both benchmarks' scenarios and response checks (`perf:api` on a real API), the process probe (a real other process, an exited id, Linux thread ids), the browser search on described Windows, Linux, WSL, macOS and sandbox machines, the UI checks' datasets and test server, and the reviewer workflow on a temporary folder: setup and safe reruns, recognising datasets by fingerprint and naming an earlier version, preserving and replacing a database in a verified backup (restorable, never while in use, never a file that is not a Trade Blotter database), scratch bookings kept, dependencies, a missing or invalid browser, occupied ports, ownership refused for reused ids, other databases, other listeners and applications that do not answer as the Trade Blotter, stopping only confirmed applications, clean-up after an earlier failure, run ids and the log history (a previous run's FAIL never in a new run, NOT RUN and INTERRUPTED steps, order, attempts, data untouched), functional checks failing against other data, and the development database never changed | `server/test/scripts/` |
 
 Every test database lives in its own temporary folder and is removed afterwards.
 

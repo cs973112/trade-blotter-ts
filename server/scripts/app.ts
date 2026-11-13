@@ -6,6 +6,7 @@ import { parseArgs } from 'node:util'
 import { DEFAULT_DATABASE_PATH, loadConfig } from '../src/config.ts'
 import {
   appStatus,
+  canonicalPathOn,
   defaultRunDir,
   isDevelopmentDatabase,
   portAnswers,
@@ -185,6 +186,19 @@ const STOP_WORDS: Record<StopOutcome, string> = {
   'still-running': 'NOT stopped: it was still running after the timeout; the record is kept',
 }
 
+/**
+ * Whether the running applications use the settings asked for: the same ports, and the same database
+ * file by the platform's path rules (on Windows C:\x.db and c:\X.db are one file; on Linux they are not).
+ */
+export function sameSettings(
+  state: { readonly databasePath: string; readonly apps: readonly { readonly port: number }[] },
+  settings: Pick<Settings, 'databasePath' | 'apiPort' | 'webPort'>,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return canonicalPathOn(state.databasePath, platform) === canonicalPathOn(settings.databasePath, platform) &&
+    state.apps.map((app) => app.port).join() === [settings.apiPort, settings.webPort].join()
+}
+
 async function start(argv: readonly string[]): Promise<number> {
   const settings = resolveSettings(argv, process.env, process.env['INIT_CWD'] ?? process.cwd())
   const missing = [join(SERVER_ROOT, 'dist', 'main.js'), join(CLIENT_ROOT, 'dist', 'index.html')].filter((path) => !existsSync(path))
@@ -201,8 +215,7 @@ async function start(argv: readonly string[]): Promise<number> {
   })
   if (result.kind === 'already-running') {
     const { state } = result
-    const same = state.databasePath === settings.databasePath &&
-      state.apps.map((app) => app.port).join() === [settings.apiPort, settings.webPort].join()
+    const same = sameSettings(state, settings)
     const complete = result.statuses.every((status) => status === 'running')
     console.log(!complete ? 'Only partly running (see below); nothing was started. Run npm run app:stop, then npm run app:start.'
       : same ? 'Already running; nothing was started.'

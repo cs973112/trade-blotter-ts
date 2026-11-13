@@ -1,36 +1,13 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
-import { api, ApiError } from '../api/client.ts'
+import { api } from '../api/client.ts'
 import type { CreateTradeRequest, Position, SortField, Trade, TradePageQuery, TradeQuery } from '../api/contracts.ts'
 import { DEFAULT_PAGE_SIZE, DEFAULT_TRADE_SORT, nextSort, type TradeFilterQuery, type TradeSort } from '../lib/trade-filters.ts'
+import { useDetailsStore } from './details.ts'
+import { emptyList, messageFor, type ListState, type ShownPage } from './list-state.ts'
 
-/** The state of one list loaded from the API. */
-export interface ListState<T> {
-  items: T[]
-  /** A request is in flight. */
-  loading: boolean
-  /** At least one load has succeeded, so `items` is real data (possibly empty). */
-  loaded: boolean
-  /** The last load failed; safe to show. */
-  error: string | undefined
-}
-
-/** Where the trades shown sit among every matching trade, as the API counted them. */
-export interface ShownPage {
-  readonly page: number
-  readonly pageSize: number
-  readonly totalCount: number
-  readonly totalPages: number
-}
-
-function emptyList<T>(): ListState<T> {
-  return { items: [], loading: false, loaded: false, error: undefined }
-}
-
-function messageFor(error: unknown): string {
-  return error instanceof ApiError ? error.message : 'Something went wrong. Try reloading the page.'
-}
+export { emptyList, messageFor, type ListState, type ShownPage } from './list-state.ts'
 
 /**
  * The trades and positions shown on the page, shared by the form (which books trades), the trade
@@ -166,13 +143,16 @@ export const useBlotterStore = defineStore('blotter', () => {
 
   /**
    * Books a trade, then refreshes both lists: the trades on the same page, with the same filters
-   * and sort. Throws ApiError if the trade is not booked.
+   * and sort; and the Trade Details, when they show the trade's position. Throws ApiError if the
+   * trade is not booked.
    */
   async function createTrade(request: CreateTradeRequest): Promise<Trade> {
     const number = ++requestsStarted
     const trade = await api.createTrade(request)
     answered(number)
-    await refresh()
+    // The details are loaded again only when they show this trade's position.
+    const details = useDetailsStore()
+    await Promise.all([refresh(), details.symbol === trade.symbol ? details.reload() : undefined])
     return trade
   }
 

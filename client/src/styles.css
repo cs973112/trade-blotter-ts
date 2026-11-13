@@ -15,6 +15,9 @@
   --error-bg: #fbe7e5;
   --success: #146c43;
   --success-bg: #e3f4ea;
+  --row-hover: #f0f3f7;
+  --selected-bg: #e4edfb;
+  --selected-text: #133f80;
   --radius: 6px;
   --font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
@@ -39,6 +42,9 @@
     --error-bg: #3a1d1a;
     --success: #6fd39b;
     --success-bg: #183326;
+    --row-hover: #20262e;
+    --selected-bg: #1d3150;
+    --selected-text: #cfe0fa;
     color-scheme: dark;
   }
 }
@@ -61,6 +67,39 @@ h2 { font-size: 1.05rem; font-weight: 600; }
   background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
+
+/* Tabs */
+
+.app-tabs {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+.tab-list {
+  display: flex;
+  gap: 4px;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0 24px;
+  flex-wrap: wrap;
+}
+.tab {
+  flex: none;
+  padding: 10px 14px 8px;
+  color: var(--muted);
+  font-weight: 500;
+  white-space: nowrap;
+  background: transparent;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  border-radius: 0;
+}
+.tab:hover { color: var(--text); }
+.tab[aria-selected='true'] { color: var(--text); font-weight: 600; border-bottom-color: var(--accent); }
+.tab:focus-visible { outline-offset: -3px; }
+.tab-panel { min-width: 0; }
+.tab-panel:focus-visible { outline-offset: 4px; }
+
+.panel-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 
 .app-main {
   display: grid;
@@ -140,7 +179,7 @@ input[aria-invalid='true'], fieldset[aria-invalid='true'] .side-option { border-
 .field-error { color: var(--error); font-size: 0.875rem; margin: 4px 0 0; }
 
 button { font: inherit; border-radius: var(--radius); cursor: pointer; }
-button:disabled { cursor: default; opacity: 0.65; }
+button:disabled, button[aria-disabled="true"] { cursor: default; opacity: 0.65; }
 .button-primary {
   width: 100%;
   padding: 9px 14px;
@@ -178,6 +217,7 @@ button:disabled { cursor: default; opacity: 0.65; }
 
 .pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; margin: 10px 0; }
 .pager-range { margin: 0; color: var(--muted); font-variant-numeric: tabular-nums; }
+.positions-total { margin: 0 0 8px; }
 .pager-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
 .pager-position { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .pager-size { display: flex; align-items: center; gap: 6px; }
@@ -214,7 +254,11 @@ th:not([aria-sort]) .sort-indicator { opacity: 0.55; }
 
 /* Tables */
 
-.table-scroll { overflow-x: auto; }
+/*
+ * Positioned, so text kept for screen readers only (absolutely positioned, see .visually-hidden)
+ * is placed and clipped within the box; otherwise a cell scrolled out of view widens the page.
+ */
+.table-scroll { position: relative; overflow-x: auto; }
 
 .data-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
 .data-table th, .data-table td {
@@ -227,8 +271,6 @@ th:not([aria-sort]) .sort-indicator { opacity: 0.55; }
 .data-table thead th { color: var(--muted); font-weight: 500; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; }
 .data-table tbody th { font-weight: 600; }
 .data-table .numeric { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
-/* Average costs can carry up to 50 significant digits: wrap rather than hide any. */
-.data-table .average-cost { white-space: normal; overflow-wrap: anywhere; min-width: 12ch; }
 
 .side-badge, .direction-badge {
   display: inline-block;
@@ -262,60 +304,135 @@ th:not([aria-sort]) .sort-indicator { opacity: 0.55; }
   .app-entry { grid-template-columns: 1fr; }
 }
 
-/* Positions: the layout follows the panel's width, which depends on the page layout, not the screen alone. */
-.positions-panel { container: positions / inline-size; }
-
-/* In the table, a long symbol or net quantity wraps within its column instead of widening the table. */
-.positions-table .symbol { white-space: normal; overflow-wrap: anywhere; min-width: 8ch; }
-.positions-table .net-quantity { white-space: normal; overflow-wrap: anywhere; min-width: 12ch; }
-
 /*
- * In a narrow panel the four columns do not fit, and the figures would be off to the side. Each
- * position becomes a block instead: symbol and direction on the first line, then each figure on its
- * own labelled line, wrapping where it must, so every digit stays in view. The table and its header
- * cells remain in the markup, so assistive technology still reads a table. The visible labels are
- * decoration (empty alternative text), because the column headers already name the cells.
+ * Resizable grids: Positions (Trading), Open positions and Trade Details. Columns are as wide as
+ * their contents (or as resized), not stretched across the panel. Every row is the same height, so
+ * the box shows exactly --visible-rows rows under a header that stays in view, with room for a
+ * horizontal scroll bar where the system draws one.
  */
-@container positions (max-width: 560px) {
-  .positions-table, .positions-table tbody { display: block; }
-  .positions-table thead {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-  }
-  .positions-table tbody tr {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: baseline;
-    gap: 4px 12px;
-    padding: 10px 0;
-    border-bottom: 1px solid var(--border);
-  }
-  .positions-table tbody th, .positions-table tbody td { padding: 0; border: 0; }
-  .positions-table .symbol { min-width: 0; }
-  .positions-table .net-quantity, .positions-table .average-cost {
-    grid-column: 1 / -1;
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    gap: 12px;
-    min-width: 0;
-    white-space: normal;
-    overflow-wrap: anywhere;
-  }
-  .positions-table .net-quantity::before, .positions-table .average-cost::before {
-    content: attr(data-label);
-    content: attr(data-label) / '';
-    color: var(--muted);
-    font-family: var(--font);
-    font-size: 0.8rem;
-    text-align: left;
-  }
+.grid-scroll {
+  --grid-row: 34px;
+  --grid-head: 34px;
+  max-height: calc(var(--grid-head) + var(--visible-rows, 25) * var(--grid-row) + var(--scrollbar-room, 0px));
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.grid-scroll:focus-visible { outline-offset: 2px; }
+/* As wide as its columns (their least widths included), never squeezed to fit: the box scrolls instead. */
+.grid-table { width: max-content; border-collapse: separate; border-spacing: 0; }
+.grid-table tr { height: var(--grid-row); }
+.grid-table thead tr { height: var(--grid-head); }
+.grid-table th, .grid-table td {
+  padding: 0 10px;
+  vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.grid-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding-right: 14px;
+  background: var(--surface);
+  box-shadow: inset 0 -1px 0 var(--border), inset 0 1px 0 var(--border);
+  border-bottom: 0;
+}
+.grid-table thead th.sortable { padding: 0; }
+.grid-table thead th.sortable .sort-button { padding: 0 14px 0 10px; height: var(--grid-head); }
+.grid-table .column-label { display: block; overflow: hidden; text-overflow: ellipsis; }
+/* A long symbol is cut short (whole in its tooltip) while columns size themselves; resized, it takes the width given. */
+.grid-table .cell-text { display: block; overflow: hidden; text-overflow: ellipsis; }
+.grid-table:not(.is-fixed) .cell-text { max-width: 12rem; }
+.grid-table tbody th, .grid-table tbody td { scroll-margin-top: var(--grid-head); }
+.column-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 9px;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+}
+.column-resizer::after {
+  content: '';
+  position: absolute;
+  top: 7px;
+  bottom: 7px;
+  right: 4px;
+  width: 1px;
+  background: var(--border);
+}
+.column-resizer:hover::after, .column-resizer.active::after, .column-resizer:focus-visible::after { width: 3px; right: 3px; background: var(--accent); }
+.column-resizer:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.grid-table.is-resizing, .grid-table.is-resizing * { cursor: col-resize; user-select: none; }
+
+/* The master grid: rows to choose, the chosen one marked by colour, a bar and its weight. */
+.grid-table.is-selectable tbody tr { cursor: pointer; }
+.grid-table.is-selectable tbody tr:hover > * { background: var(--row-hover); }
+.grid-table.is-selectable tbody tr.is-selected > * { background: var(--selected-bg); }
+.grid-table.is-selectable tbody tr.is-selected > th { box-shadow: inset 4px 0 0 var(--accent); color: var(--selected-text); }
+.grid-table.is-selectable tbody th[tabindex]:focus-visible { outline-offset: -3px; }
+
+/* Columns chooser: a button and the list of columns it opens, over the content below it. */
+.column-chooser { position: relative; }
+.column-chooser-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 3;
+  width: max-content;
+  max-width: min(18rem, calc(100vw - 32px));
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.14);
+}
+.column-chooser-panel fieldset { margin: 0 0 6px; padding: 0; border: 0; }
+.column-chooser-panel legend { margin-bottom: 6px; font-weight: 600; }
+.column-option { display: flex; align-items: center; gap: 8px; margin: 2px 0; font-weight: 400; }
+.column-option input { margin: 0; }
+.column-count { margin: 0 0 8px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.column-chooser-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* Positions & Trade Details: master and details side by side, stacked when narrower. */
+/* The master as wide as its grid needs, up to about half the page; the details take the rest. */
+.master-detail { display: grid; gap: 20px; grid-template-columns: fit-content(52%) minmax(0, 1fr); align-items: start; }
+.master { display: grid; gap: 10px; min-width: 0; }
+/*
+ * The master is as wide as its grid needs: its help text wraps to that width rather than set it
+ * (one line of it would otherwise take the whole half of the page, squeezing the details).
+ */
+.master .hint { contain: inline-size; }
+.to-details { display: none; justify-self: start; }
+.position-summary { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 0 0 12px; }
+.position-summary > div { min-width: 0; }
+.position-summary dt { color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; }
+.position-summary dd { margin: 0; font-weight: 600; }
+.position-summary dd.numeric { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.position-summary .exact-inline { font-weight: 400; overflow-wrap: anywhere; }
+.details-symbol { font-family: var(--mono); }
+#details-heading:focus-visible { outline-offset: 3px; }
+.alert .retry-details { margin-left: 8px; padding: 2px 10px; }
+
+@media (max-width: 1099px) {
+  .master-detail { grid-template-columns: minmax(0, 1fr); }
+  .to-details { display: inline-block; }
+  /* Fewer positions in view, so the trades below are near. */
+  .master .grid-scroll { max-height: calc(var(--grid-head) + 10 * var(--grid-row) + var(--scrollbar-room, 0px)); }
 }
 
 @media (max-width: 480px) {
   .app-header { padding: 12px 16px; }
+  .tab-list { padding: 0 12px; }
   .app-main { padding: 16px 16px 32px; gap: 16px; }
   .field-row { grid-template-columns: 1fr; }
 }
+
+/* Exact values shown beside the two-place value, quieter than it. */
+.exact-inline { color: var(--muted); }
+/* The Exact values checkbox, beside the panel's buttons and as tall as them. */
+.exact-values-option { display: inline-flex; align-items: center; gap: 6px; margin: 0; padding: 5px 2px; font-weight: 400; cursor: pointer; }
+.exact-values-option input { margin: 0; }

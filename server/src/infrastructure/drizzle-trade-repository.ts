@@ -132,7 +132,11 @@ export interface PageReadPlan {
  * 36 ms (symbol MS, by quantity), 156 against 52 ms (side Buy, by quantity).
  */
 function scatteredIndexWalk(field: TradeSortField, filter: TradeFilter): boolean {
-  return field !== 'executedAt' && (filter.symbolContains !== undefined || filter.side !== undefined)
+  if (field === 'executedAt') return false
+  // One symbol's trades are one range of the symbol index, already in trade order: walking it for
+  // a symbol sort visits only the matches.
+  if (field === 'symbol' && filter.symbolEquals !== undefined) return false
+  return filter.symbolContains !== undefined || filter.symbolEquals !== undefined || filter.side !== undefined
 }
 
 /**
@@ -165,11 +169,14 @@ export function planPageRead(
  * The WHERE condition for a filter, or undefined for an empty one. Every value is a bound
  * parameter. Symbols and the search are both normalised, upper case included, so the symbol match
  * is an exact substring test: instr, not LIKE, whose % and _ would be wildcards and whose case
- * folding covers ASCII only. Timestamps are canonical UTC text, so text comparison is time order.
+ * folding covers ASCII only; and the exact match is plain equality, which the symbol index
+ * (trades_symbol_trade_order) serves, in trade order. Timestamps are canonical UTC text, so text
+ * comparison is time order.
  */
 function matching(filter: TradeFilter): SQL | undefined {
   return and(
     filter.symbolContains === undefined ? undefined : sql`instr(${trades.symbol}, ${filter.symbolContains}) > 0`,
+    filter.symbolEquals === undefined ? undefined : eq(trades.symbol, filter.symbolEquals),
     filter.side === undefined ? undefined : eq(trades.side, filter.side),
     filter.executedFrom === undefined ? undefined : gte(trades.executedAt, filter.executedFrom),
     filter.executedTo === undefined ? undefined : lte(trades.executedAt, filter.executedTo),

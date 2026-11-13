@@ -176,6 +176,29 @@ describe('domain: trade query validation', () => {
     expect(Object.keys(errors)).toEqual(['symbol', 'side', 'executedFrom', 'executedTo', 'sortBy', 'sortDirection'])
   })
 
+  it('matches the symbol anywhere by default or with contains, and the whole symbol with exact, normalised alike', () => {
+    expect(validated({ symbol: ' ms ' }).filter).toEqual({ symbolContains: 'MS' })
+    expect(validated({ symbol: ' ms ', symbolMatch: 'contains' }).filter).toEqual({ symbolContains: 'MS' })
+    expect(validated({ symbol: ' ms ', symbolMatch: 'exact' }).filter).toEqual({ symbolEquals: 'MS' })
+    expect(validated({ symbol: 'mstr', symbolMatch: 'exact', side: 'buy' }).filter).toEqual({ symbolEquals: 'MSTR', side: 'Buy' })
+    expect(validated({ symbol: 'ms', symbolMatch: '' })).toEqual(validated({ symbol: 'ms' }))
+  })
+
+  it('leaves the filter empty when symbolMatch comes without a symbol', () => {
+    expect(validated({ symbolMatch: 'exact' })).toEqual(validated({}))
+    expect(validated({ symbol: '   ', symbolMatch: 'exact' })).toEqual(validated({}))
+  })
+
+  it.each([['EXACT'], ['Exact'], ['equals'], ['prefix'], [' exact'], ['exact ']])('refuses symbolMatch %j, exactly as written', (symbolMatch) => {
+    expect(errorsOf({ symbol: 'MS', symbolMatch })).toEqual({ symbolMatch: ['symbolMatch must be one of contains, exact.'] })
+  })
+
+  it('refuses a repeated symbolMatch, and reports it after symbol, before side', () => {
+    expect(errorsOf({ symbol: 'MS', symbolMatch: ['exact', 'exact'] })).toEqual({ symbolMatch: ['symbolMatch must be given at most once.'] })
+    expect(Object.keys(errorsOf({ side: 'hold', symbolMatch: 'x', symbol: String.fromCharCode(0) }))).toEqual(['symbol', 'symbolMatch', 'side'])
+    expect(Object.keys(errorsOf({ symbol: 'MS', symbolMatch: 'x' }, RULES))).toEqual(['symbolMatch'])
+  })
+
   it('combines every filter and the sort', () => {
     expect(validated({
       symbol: 'ms', side: 'sell', executedFrom: '2026-01-01T00:00:00+01:00', executedTo: '2026-01-31T23:59:59.999-05:00',
@@ -337,6 +360,13 @@ describe('domain: trade page query validation', () => {
   it('reports an invalid page even when every filter is valid, and an invalid filter when the page is valid', () => {
     expect(pageErrorsOf({ symbol: 'MS', page: '0' })).toEqual({ page: [PAGE_MESSAGE] })
     expect(pageErrorsOf({ side: 'hold', page: '2' })).toEqual({ side: ['side must be Buy or Sell.'] })
+  })
+
+  it('reads symbolMatch on pages as on the list, reporting it before the page parameters', () => {
+    expect(validatedPage({ symbol: 'ms', symbolMatch: 'exact', page: '2', pageSize: '3' }))
+      .toEqual({ query: { filter: { symbolEquals: 'MS' }, sort: DEFAULT_TRADE_SORT }, page: { page: 2, pageSize: 3 } })
+    const result = validateTradePageQuery({ symbol: 'MS', symbolMatch: 'nope', page: '0' }, RULES)
+    expect(result.ok ? [] : Object.keys(result.errors)).toEqual(['symbolMatch', 'page'])
   })
 
   it('leaves validateTradeQuery ignoring page and pageSize, as GET /trades does', () => {

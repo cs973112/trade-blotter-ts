@@ -126,3 +126,22 @@ export function tradeMatchesFilters(trade: Trade, query: TradeQuery): boolean {
     (query.executedFrom === undefined || trade.executedAt >= query.executedFrom) &&
     (query.executedTo === undefined || trade.executedAt <= query.executedTo)
 }
+
+const ARIA_SORT: Readonly<Record<SortDirection, 'ascending' | 'descending'>> = { asc: 'ascending', desc: 'descending' }
+
+/** A sortable column header's aria-sort, for the order shown: only the sorted column has one. */
+export function ariaSortFor(shown: TradeSort, field: SortField | undefined): 'ascending' | 'descending' | undefined {
+  return field !== undefined && field === shown.sortBy ? ARIA_SORT[shown.sortDirection] : undefined
+}
+
+/** The arrow by a header: up or down for the sorted column, both ways for the others. */
+export function sortIndicator(shown: TradeSort, field: SortField): string {
+  if (field !== shown.sortBy) return '↕'
+  return shown.sortDirection === 'asc' ? '↑' : '↓'
+}
+
+/** What choosing a header does, for screen readers: "sort ascending", "sort newest first". */
+export function sortAction(current: TradeSort, field: SortField): string {
+  const next = nextSort(current, field)
+  return `sort ${directionLabel(field, next.sortDirection).toLowerCase()}`
+}

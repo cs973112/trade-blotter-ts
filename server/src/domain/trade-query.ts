@@ -11,6 +11,13 @@ export const SORT_DIRECTIONS = ['asc', 'desc'] as const
 
 export type SortDirection = (typeof SORT_DIRECTIONS)[number]
 
+/** How the symbol parameter matches: anywhere in the symbol (the default), or the whole symbol. */
+export const SYMBOL_MATCHES = ['contains', 'exact'] as const
+
+export type SymbolMatch = (typeof SYMBOL_MATCHES)[number]
+
+export const DEFAULT_SYMBOL_MATCH: SymbolMatch = 'contains'
+
 /**
  * Which trades to list. Every member is optional and they combine with AND; an empty filter
  * matches every trade.
@@ -18,6 +25,8 @@ export type SortDirection = (typeof SORT_DIRECTIONS)[number]
 export interface TradeFilter {
   /** Normalised like a symbol (see normaliseSymbol): a trade matches if its symbol contains it. */
   readonly symbolContains?: string
+  /** Normalised like a symbol: a trade matches if its symbol is exactly it. Never set with symbolContains. */
+  readonly symbolEquals?: string
   readonly side?: TradeSide
   /** Inclusive lower bound on executedAt. */
   readonly executedFrom?: UtcTimestamp
@@ -44,6 +53,7 @@ export interface TradeQuery {
  */
 export interface TradeQueryRequest {
   readonly symbol?: unknown
+  readonly symbolMatch?: unknown
   readonly side?: unknown
   readonly executedFrom?: unknown
   readonly executedTo?: unknown
@@ -52,7 +62,7 @@ export interface TradeQueryRequest {
 }
 
 /** Query parameters in the order errors are reported. */
-export const TRADE_QUERY_PARAMETERS = ['symbol', 'side', 'executedFrom', 'executedTo', 'sortBy', 'sortDirection'] as const
+export const TRADE_QUERY_PARAMETERS = ['symbol', 'symbolMatch', 'side', 'executedFrom', 'executedTo', 'sortBy', 'sortDirection'] as const
 
 export type TradeQueryParameter = (typeof TRADE_QUERY_PARAMETERS)[number]
 
@@ -183,6 +193,7 @@ function errorsOf(results: ParameterResults): QueryErrors {
 /** Checks every filter and sort parameter: the query when all are valid, and each one's result. */
 function readTradeQuery(request: TradeQueryRequest, rules: TradeQueryRules): { readonly value?: TradeQuery; readonly results: ParameterResults } {
   const symbol = checkSymbol(request.symbol, rules.symbolMaxLength)
+  const symbolMatch = checkChoice(request.symbolMatch, 'symbolMatch', SYMBOL_MATCHES, DEFAULT_SYMBOL_MATCH)
   const side = checkSide(request.side)
   const executedFrom = checkTimestamp(request.executedFrom, 'executedFrom')
   let executedTo = checkTimestamp(request.executedTo, 'executedTo')
@@ -194,11 +205,14 @@ function readTradeQuery(request: TradeQueryRequest, rules: TradeQueryRules): { r
     executedTo = invalid('executedTo must not be earlier than executedFrom.')
   }
 
-  const results = { symbol, side, executedFrom, executedTo, sortBy, sortDirection }
-  if (!(symbol.ok && side.ok && executedFrom.ok && executedTo.ok && sortBy.ok && sortDirection.ok)) return { results }
+  const results = { symbol, symbolMatch, side, executedFrom, executedTo, sortBy, sortDirection }
+  if (!(symbol.ok && symbolMatch.ok && side.ok && executedFrom.ok && executedTo.ok && sortBy.ok && sortDirection.ok)) return { results }
 
   const filter: { -readonly [K in keyof TradeFilter]: TradeFilter[K] } = {}
-  if (symbol.value !== undefined) filter.symbolContains = symbol.value
+  if (symbol.value !== undefined) {
+    if (symbolMatch.value === 'exact') filter.symbolEquals = symbol.value
+    else filter.symbolContains = symbol.value
+  }
   if (side.value !== undefined) filter.side = side.value
   if (executedFrom.value !== undefined) filter.executedFrom = executedFrom.value
   if (executedTo.value !== undefined) filter.executedTo = executedTo.value
@@ -212,6 +226,9 @@ function readTradeQuery(request: TradeQueryRequest, rules: TradeQueryRules): { r
  *
  * - `symbol`: a case-insensitive search anywhere in the symbol, normalised like a symbol. Blank
  *   matches every trade.
+ * - `symbolMatch`: `contains` (the default: anywhere in the symbol) or `exact` (the whole symbol,
+ *   so MS matches MS but not MSFT or MSTR), exactly as written. The symbol is normalised the same
+ *   way for both, so the exact match ignores case too. Without a symbol it changes nothing.
  * - `side`: Buy or Sell, ignoring case and surrounding whitespace. Omitted: both sides.
  * - `executedFrom`, `executedTo`: inclusive bounds, RFC 3339 with an offset (see parseTimestamp).
  *   A date without a time, or a time without an offset, is refused, never assumed to be UTC. The
