@@ -6,6 +6,7 @@ import type { Position } from '../api/contracts.ts'
 import { useColumnVisibility, type ChoosableColumn } from '../lib/column-visibility.ts'
 import { useResizableGrid, type ResizableColumn } from '../lib/column-widths.ts'
 import { formatDecimal } from '../lib/decimal-text.ts'
+import { positionDirection } from '../lib/positions.ts'
 import { useBlotterStore } from '../stores/blotter.ts'
 import ColumnChooser from './ColumnChooser.vue'
 import ColumnResizer from './ColumnResizer.vue'
@@ -21,6 +22,12 @@ import MoneyValue from './MoneyValue.vue'
  * Up and Down, Home and End move between rows; Enter or Space chooses one), and the chosen row is
  * marked for the eye and for screen readers (aria-selected in a grid). Choosing emits `select`;
  * the parent decides what it shows.
+ *
+ * The actual position is the Executed net, from Executed trades only, with the average cost from the
+ * same trades. The API also sends a Pending net and a Projected net; the page shows neither, and no
+ * column, Columns choice or default offers them (Pending exposure is deferred: M6 Phase 2). Column
+ * choices live only as long as the page and are never saved, and a choice naming a column the grid
+ * does not have is ignored (column-visibility.ts).
  *
  * Both grids show the total above the table, "Total: 167 positions": every open position GET
  * /positions last returned, however many rows are in view. Both read the one list in the store, so
@@ -40,7 +47,7 @@ const emit = defineEmits<{ select: [symbol: string] }>()
 const store = useBlotterStore()
 const { positions } = storeToRefs(store)
 
-const isShort = (netQuantity: string): boolean => netQuantity.startsWith('-')
+const direction = positionDirection
 
 /** The grid shows this many positions at a time; the rest scroll, under a header that stays in view. */
 const VISIBLE_POSITIONS = 25
@@ -50,7 +57,7 @@ type PositionColumn = ResizableColumn & ChoosableColumn & { readonly numeric?: b
 const COLUMNS: readonly PositionColumn[] = [
   { key: 'symbol', label: 'Symbol', minWidth: 88, maxWidth: 480, essential: true },
   { key: 'direction', label: 'Direction', minWidth: 112, maxWidth: 320 },
-  { key: 'netQuantity', label: 'Net quantity', minWidth: 136, maxWidth: 800, numeric: true },
+  { key: 'netQuantity', label: 'Executed net', minWidth: 136, maxWidth: 800, numeric: true },
   { key: 'averageCost', label: 'Average cost', minWidth: 136, maxWidth: 800, numeric: true },
 ]
 
@@ -141,7 +148,7 @@ const total = computed(() => {
 
 const caption = computed(() => {
   const count = positions.value.items.length
-  const base = `Open positions by symbol, ${String(count)} in all. Flat positions are not shown. Average costs are rounded to 2 decimal places.`
+  const base = `Positions by symbol, ${String(count)} in all. Executed net is the actual position, from Executed trades only; a symbol with only Pending trades is Flat. Average costs, from Executed trades only, are rounded to 2 decimal places.`
   return props.selectable ? `${base} Choose a position to see its trades.` : base
 })
 </script>
@@ -205,7 +212,7 @@ const caption = computed(() => {
             <tr
               v-for="(position, index) in positions.items"
               :key="position.symbol"
-              :class="[isShort(position.netQuantity) ? 'position-short' : 'position-long', { 'is-selected': selectable && position.symbol === selected }]"
+              :class="[`position-${direction(position).toLowerCase()}`, { 'is-selected': selectable && position.symbol === selected }]"
               :aria-selected="selectable ? position.symbol === selected : undefined"
               @click="onRowClick(position)"
             >
@@ -222,14 +229,14 @@ const caption = computed(() => {
                   <span class="cell-text">{{ position.symbol }}</span>
                 </th>
                 <td v-else-if="column.key === 'direction'" class="direction">
-                  <span class="direction-badge" :class="isShort(position.netQuantity) ? 'direction-short' : 'direction-long'">
-                    {{ isShort(position.netQuantity) ? 'Short' : 'Long' }}
+                  <span class="direction-badge" :class="`direction-${direction(position).toLowerCase()}`">
+                    {{ direction(position) }}
                   </span>
                 </td>
-                <td v-else-if="column.key === 'netQuantity'" class="numeric net-quantity" :title="formatDecimal(position.netQuantity)">
-                  {{ formatDecimal(position.netQuantity) }}
+                <td v-else-if="column.key === 'netQuantity'" class="numeric net-quantity" :title="formatDecimal(position.executedNetQuantity)">
+                  {{ formatDecimal(position.executedNetQuantity) }}
                 </td>
-                <td v-else class="numeric average-cost"><MoneyValue :value="position.averageCost" :show-exact="showExact" /></td>
+                <td v-else-if="column.key === 'averageCost'" class="numeric average-cost"><MoneyValue :value="position.averageCost" :show-exact="showExact" /></td>
               </template>
             </tr>
           </tbody>
@@ -242,7 +249,8 @@ const caption = computed(() => {
         <template v-if="positions.items.length > VISIBLE_POSITIONS">
           Showing {{ VISIBLE_POSITIONS }} positions at a time; scroll the table for the rest.
         </template>
-        Average costs are shown to 2 decimal places; point at one, or turn on Exact values, for its exact value.
+        Executed net is the actual position: Executed trades only. Pending and cancelled trades do not count in it.
+        Average costs come from Executed trades only, shown to 2 decimal places; point at one, or turn on Exact values, for its exact value.
         To resize a column, drag the edge of its header, or focus the edge and press the Left or Right arrow key
         (with Shift for larger steps, Home for the narrowest, Enter to fit the contents).
       </p>

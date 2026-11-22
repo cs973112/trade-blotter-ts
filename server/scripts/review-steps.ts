@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
+import { SUPPORTED_NODE_VERSIONS } from '../src/platform.ts'
 import { lookUpBrowser, type BrowserLookup } from './browser.ts'
 import { canonicalPath, DatabaseInUseError, portAnswers, type AppState } from './lifecycle.ts'
 import { findManagedApi, formatResult, readSnapshot, runBenchmark, type BenchmarkResult, type ManagedApi } from './perf-api.ts'
@@ -36,9 +37,39 @@ export interface StepDependencies extends OwnershipOptions {
   readonly uiChecks?: (chrome: string, outDir: string) => Promise<UiCheckRun>
   /** Stops one pair's applications (review-apps.ts). */
   readonly stopPair?: typeof stopPair
+  /** The Node.js version to judge; process.version when omitted. */
+  readonly nodeVersion?: string
+  /**
+   * Step 05 also saves each vitest run's results as JSON here (server-tests.json and
+   * client-tests.json), beside its usual output; check:all sets it. Omitted: the commands are as
+   * review:05 always runs them.
+   */
+  readonly testResultsDir?: string
 }
 
-export const SUPPORTED_NODE = 'v22.23.1'
+/** Where step 05 saves a workspace's vitest results, given StepDependencies.testResultsDir. */
+export const testResultsFile = (dir: string, workspace: 'server' | 'client'): string => join(dir, `${workspace}-tests.json`)
+
+/** The Node.js versions the whole workflow is verified on: the one supported version. */
+export const VERIFIED_NODE_VERSIONS = ['v22.21.0'] as const
+
+export interface NodeVersionVerdict {
+  readonly status: 'PASS' | 'FAIL'
+  readonly detail?: string
+}
+
+/**
+ * The runtime policy review:01 applies: PASS on exactly SUPPORTED_NODE_VERSIONS (22.21.0), the
+ * one supported and verified version; FAIL on every other version, newer or older, of any major,
+ * and on a version that is not a plain release (such as a nightly).
+ */
+export function nodeVersionVerdict(version: string): NodeVersionVerdict {
+  if (!/^\d+\.\d+\.\d+$/.test(SUPPORTED_NODE_VERSIONS)) throw new Error(`SUPPORTED_NODE_VERSIONS is not one exact version: ${SUPPORTED_NODE_VERSIONS}`)
+  const use = `Use Node.js ${SUPPORTED_NODE_VERSIONS} exactly (npm 10.9.4, SQLite 3.50.4; see .nvmrc).`
+  if (version === `v${SUPPORTED_NODE_VERSIONS}` && (VERIFIED_NODE_VERSIONS as readonly string[]).includes(version)) return { status: 'PASS' }
+  if (!/^v\d+\.\d+\.\d+$/.test(version)) return { status: 'FAIL', detail: `Not a Node.js release version. ${use}` }
+  return { status: 'FAIL', detail: `Only Node.js ${SUPPORTED_NODE_VERSIONS} is supported. ${use}` }
+}
 
 const grouped = (value: number): string => value.toLocaleString('en-US')
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error)
@@ -97,9 +128,10 @@ export function dependencyProblems(repositoryRoot: string): { readonly checked: 
 
 export async function stepSetup(context: ReviewContext, report: Report, deps: StepDependencies = {}): Promise<void> {
   const env = deps.env ?? process.env
-  if (process.version === SUPPORTED_NODE) report.pass(`Node.js ${process.version}`)
-  else if (process.version.startsWith('v22.')) report.warn(`Node.js ${process.version}`, `Supported is ${SUPPORTED_NODE} only; this Node 22 differs, so results are not guaranteed to match.`)
-  else report.fail(`Node.js ${process.version}`, `Use Node.js ${SUPPORTED_NODE} (see .nvmrc).`)
+  const nodeVersion = deps.nodeVersion ?? process.version
+  const verdict = nodeVersionVerdict(nodeVersion)
+  if (verdict.status === 'PASS') report.pass(`Node.js ${nodeVersion} (verified)`)
+  else report.fail(`Node.js ${nodeVersion}`, verdict.detail)
 
   const npm = /npm\/(\S+)/.exec(env['npm_config_user_agent'] ?? '')?.[1]
   if (npm === undefined) report.warn('npm', 'Not run through npm, so its version was not checked. Use npm run review:01.')
@@ -341,10 +373,14 @@ export async function stepTests(context: ReviewContext, report: Report, deps: St
     ['Client tests (vitest)', ['run', 'test', '-w', 'client']],
     ['Schema check (migrations match the schema)', ['run', 'db:check', '-w', 'server']],
   ] as const
+  const resultsDir = deps.testResultsDir
+  if (resultsDir !== undefined) mkdirSync(resultsDir, { recursive: true })
   for (const [index, [name, args]] of commands.entries()) {
     const log = join(context.logsDir, `05-${String(index + 1)}-${args.slice(1).join('-').replace(/[^a-z0-9-]/gi, '')}.log`)
+    const workspace = args[1] === 'test' ? args[3] : undefined
+    const json = resultsDir === undefined || workspace === undefined ? [] : ['--', '--reporter=default', '--reporter=json', `--outputFile=${testResultsFile(resultsDir, workspace)}`]
     const started = Date.now()
-    const code = await run('npm', args, context.repositoryRoot, log)
+    const code = await run('npm', [...args, ...json], context.repositoryRoot, log)
     const seconds = ((Date.now() - started) / 1000).toFixed(0)
     const counts = existsSync(log) ? testCounts(readFileSync(log, 'utf8')) : undefined
     const detail = [counts, `${seconds} s; log ${log}`].filter(Boolean).join('\n')

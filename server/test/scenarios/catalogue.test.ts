@@ -17,7 +17,7 @@ import {
 } from '../support/rational.ts'
 import { HTTP_SCENARIOS } from './http.ts'
 import { POSITION_SCENARIOS, type Fill } from './positions.ts'
-import { TRADE_REQUEST_SCENARIOS } from './trade-requests.ts'
+import { EXECUTED_AT_CASES, TRADE_REQUEST_SCENARIOS } from './trade-requests.ts'
 
 /**
  * Checks the scenario catalogue itself, so later phases test against expectations that are
@@ -97,20 +97,24 @@ describe('scenario catalogue: trade requests', () => {
   const acceptedScenarios = TRADE_REQUEST_SCENARIOS.flatMap((scenario) =>
     scenario.expected.status === 201 ? [[scenario.name, scenario.expected] as const] : [])
 
-  it.each(acceptedScenarios)('%s: canonical decimals, exact notional, canonical execution time', (_name, expected) => {
+  it.each(acceptedScenarios)('%s: canonical decimals, exact notional', (_name, expected) => {
     for (const text of [expected.quantity, expected.price]) {
       expect(canonicalText(rational(text))).toBe(text)
       expect(isWithinInputLimits(text)).toBe(true)
     }
     expect(expected.notional).toBe(canonicalText(mul(rational(expected.quantity), rational(expected.price))))
-    if (expected.executedAt !== 'server clock') {
-      expect(expected.executedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
-      expect(new Date(expected.executedAt).toISOString()).toBe(expected.executedAt)
+  })
+
+  it('lists canonical UTC results for the execution-time formats', () => {
+    for (const [name, , utc] of EXECUTED_AT_CASES) {
+      if (utc === undefined) continue
+      expect(utc, name).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
+      expect(new Date(utc).toISOString(), name).toBe(utc)
     }
   })
 
   it('names each rejected field once, in request order', () => {
-    const order = ['symbol', 'side', 'quantity', 'price', 'executedAt']
+    const order = ['symbol', 'side', 'quantity', 'price', 'executedAt', 'status']
     for (const scenario of TRADE_REQUEST_SCENARIOS) {
       if (scenario.expected.status !== 400) continue
       const positions = scenario.expected.fields.map((field) => order.indexOf(field))

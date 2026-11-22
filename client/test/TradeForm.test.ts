@@ -10,9 +10,10 @@ import { fakeApi, json, pageJson, problem, tradeJson, type FakeResponse } from '
 const RELOAD = 'GET /trades/page?page=1&pageSize=50'
 const EMPTY_PAGE = pageJson([], { page: 1, pageSize: 50, totalCount: 0 })
 
+/** A booking as the API answers it: Pending, with no execution time. */
 const CREATED = tradeJson({
   id: 't1', bookingSequence: 1, symbol: 'MSFT', side: 'Buy', quantity: '10.50', price: '301.25', notional: '3163.125',
-  executedAt: '2026-01-02T14:30:00.000Z',
+  executedAt: '2026-01-02T14:30:00.000Z', status: 'Pending',
 })
 
 let wrapper: VueWrapper | undefined
@@ -34,12 +35,11 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-async function fill(form: VueWrapper, values: { symbol?: string; side?: 'Buy' | 'Sell'; quantity?: string; price?: string; executedAt?: string }) {
+async function fill(form: VueWrapper, values: { symbol?: string; side?: 'Buy' | 'Sell'; quantity?: string; price?: string }) {
   if (values.symbol !== undefined) await form.find('#trade-symbol').setValue(values.symbol)
   if (values.side !== undefined) await form.find(values.side === 'Buy' ? '#trade-side-buy' : '#trade-side-sell').setValue(true)
   if (values.quantity !== undefined) await form.find('#trade-quantity').setValue(values.quantity)
   if (values.price !== undefined) await form.find('#trade-price').setValue(values.price)
-  if (values.executedAt !== undefined) await form.find('#trade-executed-at').setValue(values.executedAt)
 }
 
 async function submit(form: VueWrapper): Promise<void> {
@@ -63,8 +63,7 @@ describe('trade form: accessibility', () => {
   it('labels every control and groups the side choice', () => {
     const form = mountForm()
 
-    for (const [id, label] of [['trade-symbol', 'Symbol'], ['trade-quantity', 'Quantity'], ['trade-price', 'Price'],
-      ['trade-executed-at', 'Execution time (optional)']] as const) {
+    for (const [id, label] of [['trade-symbol', 'Symbol'], ['trade-quantity', 'Quantity'], ['trade-price', 'Price']] as const) {
       expect(form.find(`label[for="${id}"]`).text()).toBe(label)
       expect(form.find(`#${id}`).exists()).toBe(true)
     }
@@ -72,9 +71,18 @@ describe('trade form: accessibility', () => {
     expect(side.find('legend').text()).toBe('Side')
     expect(side.findAll('input[type="radio"][name="side"]').map((radio) => radio.attributes('value'))).toEqual(['Buy', 'Sell'])
     expect(side.findAll('label').map((label) => label.text())).toEqual(['Buy', 'Sell'])
-    expect(form.find('#trade-executed-at').attributes('aria-describedby')).toBe('trade-executed-at-hint')
-    expect(form.find('#trade-executed-at-hint').text()).toContain('America/New_York')
+    expect(form.find('#trade-booking-hint').text()).toContain('Every trade is booked as Pending, with no execution time.')
     expect(form.find('button[type="submit"]').text()).toBe('Book trade')
+  })
+
+  it('offers no status choice and no execution time: every booking is Pending', () => {
+    const form = mountForm()
+
+    expect(form.find('fieldset.status').exists()).toBe(false)
+    expect(form.find('input[name="status"]').exists()).toBe(false)
+    expect(form.find('#trade-executed-at').exists()).toBe(false)
+    expect(form.find('input[type="datetime-local"]').exists()).toBe(false)
+    expect(form.findAll('input').map((input) => input.attributes('name'))).toEqual(['symbol', 'side', 'side', 'quantity', 'price'])
   })
 
   it('marks invalid fields, links each to its message, and moves focus to the first', async () => {
@@ -160,71 +168,14 @@ describe('trade form: what it sends', () => {
     expect(body).toBe('{"symbol":"msft","side":"Buy","quantity":"123456789012345.1234567891","price":"10.50"}')
   })
 
-  it('sends no execution time when the field is blank, so the server assigns it', async () => {
+  it('sends no status and no execution time: the API books it Pending', async () => {
     const form = mountForm()
 
     await fill(form, { symbol: 'A', side: 'Buy', quantity: '1', price: '1' })
     await submit(form)
 
     expect(posted()).toEqual([{ symbol: 'A', side: 'Buy', quantity: '1', price: '1' }])
-  })
-
-  it('sends a chosen execution time as RFC 3339 with the local offset', async () => {
-    const form = mountForm()
-
-    await fill(form, { symbol: 'A', side: 'Buy', quantity: '1', price: '1', executedAt: '2026-07-01T09:30:15' })
-    await submit(form)
-
-    expect(posted()).toEqual([{ symbol: 'A', side: 'Buy', quantity: '1', price: '1', executedAt: '2026-07-01T09:30:15-04:00' }])
-  })
-
-  it('never sends server-managed fields', async () => {
-    const form = mountForm()
-
-    await fill(form, { symbol: 'A', side: 'Buy', quantity: '1', price: '1', executedAt: '2026-01-02T09:30' })
-    await submit(form)
-
-    expect(Object.keys(posted()[0] as object)).toEqual(['symbol', 'side', 'quantity', 'price', 'executedAt'])
-  })
-})
-
-describe('trade form: daylight-saving changes', () => {
-  it('refuses a local time the clocks skip', async () => {
-    const form = mountForm()
-
-    await fill(form, { symbol: 'A', side: 'Buy', quantity: '1', price: '1', executedAt: '2026-03-08T02:30' })
-    await submit(form)
-
-    expect(errorText(form, 'trade-executed-at')).toContain('does not exist in your time zone')
-    expect(posted()).toEqual([])
-  })
-
-  it('asks which occurrence of a repeated local time was meant, and sends that one', async () => {
-    const form = mountForm()
-    await fill(form, { symbol: 'A', side: 'Buy', quantity: '1', price: '1', executedAt: '2026-11-01T01:30' })
-
-    const choice = form.find('fieldset.occurrence')
-    expect(choice.find('legend').text()).toBe('This time happens twice. Which one?')
-    expect(choice.findAll('label').map((label) => label.text())).toEqual(['First, UTC−04:00', 'Second, UTC−05:00'])
-
-    await submit(form)
-    expect(errorText(form, 'trade-executed-at')).toContain('happens twice')
-    expect(posted()).toEqual([])
-
-    await choice.findAll('input[type="radio"]')[1]?.setValue(true)
-    await submit(form)
-    expect(posted()).toEqual([{ symbol: 'A', side: 'Buy', quantity: '1', price: '1', executedAt: '2026-11-01T01:30:00-05:00' }])
-  })
-
-  it('forgets the chosen occurrence when the time changes', async () => {
-    const form = mountForm()
-    await fill(form, { symbol: 'A', side: 'Buy', quantity: '1', price: '1', executedAt: '2026-11-01T01:30' })
-    await form.find('fieldset.occurrence').findAll('input[type="radio"]')[0]?.setValue(true)
-
-    await fill(form, { executedAt: '2026-11-01T01:45' })
-    await submit(form)
-
-    expect(errorText(form, 'trade-executed-at')).toContain('happens twice')
+    expect(Object.keys(posted()[0] as object)).toEqual(['symbol', 'side', 'quantity', 'price'])
   })
 })
 
@@ -236,7 +187,8 @@ describe('trade form: after sending', () => {
     await fill(form, { symbol: 'MSFT', side: 'Buy', quantity: '10.50', price: '301.25' })
     await submit(form)
 
-    expect(form.find('[role="status"]').text()).toBe('Booked: Buy 10.50 MSFT at 301.25. It is on this page of the trade list.')
+    expect(form.find('[role="status"]').text()).toBe('Booked as Pending: Buy 10.50 MSFT at 301.25. Execute it from Trade History or Trade Details; ' +
+      'it counts in the Executed net and average cost once executed. It is on this page of the trade list.')
     expect((form.find('#trade-symbol').element as HTMLInputElement).value).toBe('')
     expect((form.find('#trade-quantity').element as HTMLInputElement).value).toBe('')
     expect((form.find('#trade-side-buy').element as HTMLInputElement).checked).toBe(false)
@@ -281,6 +233,9 @@ describe('trade form: after sending', () => {
     ['the position limit would be breached', problem(400, {
       type: 'urn:trade-blotter:problem:position-limit', detail: 'The net quantity of BIG reached the position limit of 1e30.',
     }), 'The trade was not booked. The net quantity of BIG reached the position limit of 1e30.'],
+    ['the API answers with field errors for fields the form does not have', problem(400, {
+      type: 'urn:trade-blotter:problem:invalid-trade', errors: { status: ['A trade cannot be booked as Executed.'] },
+    }), 'Some fields need attention. A trade cannot be booked as Executed.'],
   ])('keeps what was typed and explains when %s', async (_name, response, message) => {
     fakeApi({ 'POST /trades': response })
     const form = mountForm()

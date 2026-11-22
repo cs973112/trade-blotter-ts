@@ -1,14 +1,22 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
+import CancelTradeDialog from './components/CancelTradeDialog.vue'
+import ExecuteTradeDialog from './components/ExecuteTradeDialog.vue'
 import PositionDetails from './components/PositionDetails.vue'
 import PositionsPanel from './components/PositionsPanel.vue'
 import TradeBlotter from './components/TradeBlotter.vue'
 import TradeForm from './components/TradeForm.vue'
 import { tabAfterKey, TABS, type TabId } from './lib/tabs.ts'
 import { useBlotterStore } from './stores/blotter.ts'
+import { useCancellationStore } from './stores/cancellation.ts'
+import { useExecutionStore } from './stores/execution.ts'
 
 const store = useBlotterStore()
+/** While the cancellation or execution dialog is open, the page behind it is inert: not focusable, not clickable, not read out. */
+const cancellation = useCancellationStore()
+const execution = useExecutionStore()
+const modal = computed(() => cancellation.open || execution.open)
 
 /**
  * Three tabs. Every panel stays in the page while another is shown (v-show), so what was typed in
@@ -35,10 +43,10 @@ onMounted(() => {
 </script>
 
 <template>
-  <header class="app-header">
+  <header class="app-header" :inert="modal || undefined">
     <h1>Trade Blotter</h1>
   </header>
-  <div class="app-tabs">
+  <div class="app-tabs" :inert="modal || undefined">
     <div class="tab-list" role="tablist" aria-label="Trade Blotter sections">
       <button
         v-for="tab in TABS"
@@ -57,7 +65,7 @@ onMounted(() => {
       </button>
     </div>
   </div>
-  <main class="app-main">
+  <main class="app-main" :inert="modal || undefined">
     <div v-show="selected === 'trading'" id="panel-trading" class="tab-panel" role="tabpanel" aria-labelledby="tab-trading" tabindex="0">
       <div class="app-entry">
         <TradeForm />
@@ -71,4 +79,6 @@ onMounted(() => {
       <TradeBlotter />
     </div>
   </main>
+  <CancelTradeDialog />
+  <ExecuteTradeDialog />
 </template>

@@ -167,3 +167,71 @@ function singleProcessMemory(pid: number): ProcessMemory | undefined {
   return result.status !== 0 || !Number.isFinite(kib) || kib <= 0 ? undefined
     : { residentBytes: kib * 1024, peakResidentBytes: undefined, source: 'resident set size (ps)' }
 }
+
+/** A running process whose command line mentions one of the texts looked for. */
+export interface MentioningProcess {
+  readonly pid: number
+  readonly name: string
+  readonly commandLine: string
+  /** The text it mentions. */
+  readonly mentions: string
+}
+
+/**
+ * Every process whose command line mentions one of these texts (a run's folder, say), compared
+ * without regard to case on Windows, where paths are not case-sensitive; this process is left out.
+ * undefined when the operating system could not be asked. Read-only: it lists, and never signals.
+ */
+export function processesMentioning(texts: readonly string[]): MentioningProcess[] | undefined {
+  const wanted = texts.filter((text) => text !== '')
+  if (wanted.length === 0) return []
+  const windows = process.platform === 'win32'
+  const fold = (text: string): string => (windows ? text.toLowerCase() : text)
+  const match = (pid: number, name: string, commandLine: string): MentioningProcess | undefined => {
+    if (pid === process.pid || commandLine === '') return undefined
+    const mentions = wanted.find((text) => fold(commandLine).includes(fold(text)))
+    return mentions === undefined ? undefined : { pid, name, commandLine, mentions }
+  }
+  const found: MentioningProcess[] = []
+  if (windows) {
+    // Every process is listed and compared here, so the query's own command line mentions none of the texts.
+    const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+      'Get-CimInstance Win32_Process | ForEach-Object { [string]$_.ProcessId + [char]9 + $_.Name + [char]9 + ([string]$_.CommandLine -replace "[\r\n]", " ") }'],
+    { encoding: 'utf8', windowsHide: true, timeout: 60_000, maxBuffer: 64 * 1024 * 1024 })
+    if (result.status !== 0) return undefined
+    for (const line of result.stdout.split(/\r?\n/)) {
+      const [pid = '', name = '', ...rest] = line.split('\t')
+      const entry = match(Number(pid), name.trim(), rest.join('\t').trim())
+      if (entry !== undefined) found.push(entry)
+    }
+    return found
+  }
+  if (process.platform === 'linux') {
+    let ids: string[]
+    try {
+      ids = readdirSync('/proc').filter((entry) => /^\d+$/.test(entry))
+    } catch {
+      return undefined
+    }
+    for (const id of ids) {
+      try {
+        const commandLine = readFileSync(`/proc/${id}/cmdline`, 'utf8').replaceAll('\0', ' ').trim()
+        const name = readFileSync(`/proc/${id}/comm`, 'utf8').trim()
+        const entry = match(Number(id), name, commandLine)
+        if (entry !== undefined) found.push(entry)
+      } catch {
+        // It ended while being read, or is another user's.
+      }
+    }
+    return found
+  }
+  const result = spawnSync('ps', ['-axww', '-o', 'pid=', '-o', 'comm=', '-o', 'command='], { encoding: 'utf8', timeout: 30_000, maxBuffer: 64 * 1024 * 1024 })
+  if (result.status !== 0) return undefined
+  for (const line of result.stdout.split('\n')) {
+    const parts = /^\s*(\d+)\s+(\S+)\s+(.*)$/.exec(line)
+    if (parts === null) continue
+    const entry = match(Number(parts[1]), parts[2] ?? '', (parts[3] ?? '').trim())
+    if (entry !== undefined) found.push(entry)
+  }
+  return found
+}

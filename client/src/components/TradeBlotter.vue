@@ -2,24 +2,45 @@
 import { storeToRefs } from 'pinia'
 import { computed, ref } from 'vue'
 
-import type { SortField } from '../api/contracts.ts'
+import type { SortField, Trade } from '../api/contracts.ts'
+import { describeTrade, isCancellable, isExecutable } from '../lib/cancellation.ts'
 import { formatDecimal } from '../lib/decimal-text.ts'
 import { ariaSortFor, DEFAULT_TRADE_SORT, directionLabel, narrowsList, SORT_FIELDS, type TradeSort } from '../lib/trade-filters.ts'
 import { useBlotterStore } from '../stores/blotter.ts'
+import { useCancellationStore } from '../stores/cancellation.ts'
+import { useExecutionStore } from '../stores/execution.ts'
 import ExactValuesToggle from './ExactValuesToggle.vue'
 import LocalTimestamp from './LocalTimestamp.vue'
 import MoneyValue from './MoneyValue.vue'
 import SortButton from './SortButton.vue'
+import StatusBadge from './StatusBadge.vue'
 import TradeFilters from './TradeFilters.vue'
 import TradePager from './TradePager.vue'
 
 const store = useBlotterStore()
 const { trades, sort, page, pageSize, shownTradeQuery, shownPage } = storeToRefs(store)
+const cancellation = useCancellationStore()
+const { outcome } = storeToRefs(cancellation)
+const execution = useExecutionStore()
+const { outcome: executed } = storeToRefs(execution)
+
+/** Opens the cancellation dialog for a Pending trade, with focus to come back to this button. */
+function startCancel(trade: Trade, event: Event): void {
+  cancellation.openFor(trade, 'history', event.currentTarget instanceof HTMLElement ? event.currentTarget : null)
+}
+
+/** Opens the execution dialog for a Pending trade, with focus to come back to this button. */
+function startExecute(trade: Trade, event: Event): void {
+  execution.openFor(trade, 'history', event.currentTarget instanceof HTMLElement ? event.currentTarget : null)
+}
 
 /** The columns, in order. Four sort the list when their header is chosen; the API does the sorting. */
 const COLUMNS: readonly { readonly label: string; readonly field?: SortField; readonly numeric?: boolean }[] = [
   { label: 'Symbol', field: 'symbol' },
   { label: 'Side' },
+  { label: 'Status' },
+  // Beside the status, so a Pending trade's Execute and Cancel are in view without scrolling sideways.
+  { label: 'Actions' },
   { label: 'Quantity', field: 'quantity', numeric: true },
   { label: 'Price', field: 'price', numeric: true },
   { label: 'Notional', numeric: true },
@@ -44,7 +65,7 @@ const caption = computed(() => {
     ? 'newest execution first'
     : `sorted by ${fieldLabel.toLowerCase()}, ${directionLabel(field, direction).toLowerCase()}`
   const subject = filtered.value ? 'Trades matching the filters' : 'Every trade'
-  return `${subject}, ${order}. Times are in your time zone, with the UTC offset shown. Prices and notionals are rounded to 2 decimal places.`
+  return `${subject}, ${order}. Each trade is listed once, with its status. Times are in your time zone, with the UTC offset shown; a Pending trade has no execution time. Prices and notionals are rounded to 2 decimal places.`
 })
 
 /** Exact values on: rounded prices and notionals show their exact values too. */
@@ -73,7 +94,7 @@ const summary = computed(() => {
 <template>
   <section class="panel" aria-labelledby="blotter-heading">
     <div class="panel-heading">
-      <h2 id="blotter-heading">Trades</h2>
+      <h2 id="blotter-heading" tabindex="-1">Trades</h2>
       <div class="panel-actions">
         <ExactValuesToggle v-model="showExact" grid-label="trade list" />
         <button type="button" class="button-secondary refresh-trades" :disabled="trades.loading" @click="store.loadTrades()">
@@ -83,6 +104,25 @@ const summary = computed(() => {
     </div>
 
     <TradeFilters />
+
+    <p
+      v-if="outcome?.context === 'history'"
+      id="history-cancellation-outcome"
+      class="alert alert-success cancellation-outcome"
+      role="status"
+      tabindex="-1"
+    >
+      {{ outcome.message }}
+    </p>
+    <p
+      v-if="executed?.context === 'history'"
+      id="history-execution-outcome"
+      class="alert alert-success execution-outcome"
+      role="status"
+      tabindex="-1"
+    >
+      {{ executed.message }}
+    </p>
 
     <p v-if="trades.error" class="alert alert-error" role="alert">
       Trades could not be loaded. {{ trades.error }}
@@ -127,13 +167,34 @@ const summary = computed(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="trade in trades.items" :key="trade.id">
+            <tr v-for="trade in trades.items" :key="trade.id" :data-trade-id="trade.id">
               <th scope="row" class="symbol">{{ trade.symbol }}</th>
               <td><span class="side-badge" :class="trade.side === 'Buy' ? 'side-badge-buy' : 'side-badge-sell'">{{ trade.side }}</span></td>
+              <td class="status"><StatusBadge :status="trade.status" :reason="trade.cancellationReason" /></td>
+              <td class="actions">
+                <button
+                  v-if="isExecutable(trade)"
+                  type="button"
+                  class="button-secondary button-small execute-trade"
+                  :aria-label="`Execute the Pending trade: ${describeTrade(trade)}`"
+                  @click="startExecute(trade, $event)"
+                >
+                  Execute…
+                </button>
+                <button
+                  v-if="isCancellable(trade)"
+                  type="button"
+                  class="button-secondary button-small cancel-trade"
+                  :aria-label="`Cancel the Pending trade: ${describeTrade(trade)}`"
+                  @click="startCancel(trade, $event)"
+                >
+                  Cancel…
+                </button>
+              </td>
               <td class="numeric">{{ formatDecimal(trade.quantity) }}</td>
               <td class="numeric price"><MoneyValue :value="trade.price" :show-exact="showExact" /></td>
               <td class="numeric notional"><MoneyValue :value="trade.notional" :show-exact="showExact" /></td>
-              <td class="executed"><LocalTimestamp :utc="trade.executedAt" /></td>
+              <td class="executed"><LocalTimestamp :utc="trade.executedAt" none="Not executed" /></td>
               <td class="recorded"><LocalTimestamp :utc="trade.createdAt" /></td>
               <td class="recorded"><LocalTimestamp :utc="trade.updatedAt" /></td>
             </tr>
@@ -142,7 +203,9 @@ const summary = computed(() => {
       </div>
       <TradePager placement="bottom" v-bind="pager" />
       <p class="hint">
-        Executed at is when the trade happened; created and updated at are when it was recorded.
+        Executed at is when the trade happened (a Pending trade has none); created and updated at are when it was recorded.
+        Each trade is listed once: a cancelled trade shows as Cancelled, with its reason as a tooltip. Every trade is booked Pending; only a
+        Pending trade can be executed or cancelled, and Executed and Cancelled trades offer neither.
         Times are in your time zone. Choose Symbol, Quantity, Price or Executed at to sort by that column.
         Prices and notionals are shown to 2 decimal places; point at one, or turn on Exact values, for its exact value.
       </p>

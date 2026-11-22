@@ -1,13 +1,16 @@
 /**
  * POST /trades request scenarios: what the API accepts, how it normalises what it accepts, and
  * which fields it names when it rejects. Every value is synthetic. The rules are defined in
- * docs/architecture.md ("Validation", "Numeric policy", "Timestamps").
+ * docs/architecture.md ("Validation", "Numeric policy", "Timestamps"). Every accepted booking is
+ * Pending, with no execution time (M7): a status other than Pending, and any execution time, are
+ * refused. EXECUTED_AT_CASES, the execution-time formats, are checked where execution times are
+ * still read: the historical Executed trades the datasets write (validateExecutedTradeRequest).
  *
  * Bodies are raw JSON text so decimals reach the API exactly as written, never via a JS number.
  */
 import type { Side } from './positions.ts'
 
-export type TradeField = 'symbol' | 'side' | 'quantity' | 'price' | 'executedAt'
+export type TradeField = 'symbol' | 'side' | 'quantity' | 'price' | 'executedAt' | 'status'
 
 export interface Accepted {
   readonly status: 201
@@ -16,12 +19,13 @@ export interface Accepted {
   readonly quantity: string
   readonly price: string
   readonly notional: string
-  /**
-   * Canonical UTC execution time, or 'server clock' when the request omits it. `createdAt` and
-   * `updatedAt` are not listed: they are always the server clock, whatever the request contains.
-   */
-  readonly executedAt: string
 }
+
+/**
+ * What every accepted booking also is, whatever the request contains: Pending, with no execution
+ * time; `createdAt` and `updatedAt` are always the server clock.
+ */
+export const BOOKED = { status: 'Pending', executedAt: null } as const
 
 export interface Rejected {
   readonly status: 400
@@ -57,15 +61,16 @@ interface Members {
   readonly quantity?: string
   readonly price?: string
   readonly executedAt?: string
+  readonly status?: string
 }
 
-/** A valid trade body (ABC, Buy, 1 at 1, T0) with some members replaced by raw JSON text. */
+/** A valid booking body (ABC, Buy, 1 at 1) with some members added or replaced by raw JSON text. */
 function body(overrides: Members = {}): string {
-  return rawBody({ symbol: str('ABC'), side: str('Buy'), quantity: '1', price: '1', executedAt: str(T0), ...overrides })
+  return rawBody({ symbol: str('ABC'), side: str('Buy'), quantity: '1', price: '1', ...overrides })
 }
 
 function accepted(fields: Partial<Omit<Accepted, 'status'>> = {}): Accepted {
-  return { status: 201, symbol: 'ABC', side: 'Buy', quantity: '1', price: '1', notional: '1', executedAt: T0_UTC, ...fields }
+  return { status: 201, symbol: 'ABC', side: 'Buy', quantity: '1', price: '1', notional: '1', ...fields }
 }
 
 const rejected = (...fields: TradeField[]): Rejected => ({ status: 400, fields })
@@ -74,19 +79,20 @@ const scenario = (name: string, requestBody: string, expected: Accepted | Reject
   ({ name, body: requestBody, expected })
 
 const BODY_SHAPE: readonly TradeRequestScenario[] = [
-  scenario('a valid trade', body(), accepted()),
-  scenario('no executedAt uses the server clock', rawBody({ symbol: str('ABC'), side: str('Buy'), quantity: '1', price: '1' }),
-    accepted({ executedAt: 'server clock' })),
-  scenario('null executedAt uses the server clock', body({ executedAt: 'null' }), accepted({ executedAt: 'server clock' })),
+  scenario('a valid trade, booked Pending with no execution time', body(), accepted()),
+  scenario('null executedAt is no execution time', body({ executedAt: 'null' }), accepted()),
+  scenario('an execution time is refused: the server sets it on execution', body({ executedAt: str(T0) }), rejected('executedAt')),
   scenario('client createdAt and updatedAt are ignored',
     body().replace('{', '{"createdAt":"2000-01-01T00:00:00Z","updatedAt":"2000-01-01T00:00:00Z",'), accepted()),
   scenario('invalid client createdAt and updatedAt are ignored', body().replace('{', '{"createdAt":123,"updatedAt":"x",'), accepted()),
   scenario('client createdAt does not stand in for executedAt',
-    rawBody({ symbol: str('ABC'), side: str('Buy'), quantity: '1', price: '1', createdAt: str('2000-01-01T00:00:00Z') }),
-    accepted({ executedAt: 'server clock' })),
+    rawBody({ symbol: str('ABC'), side: str('Buy'), quantity: '1', price: '1', createdAt: str('2000-01-01T00:00:00Z') }), accepted()),
+  scenario('client updatedBy, createdBy and bookingSequence are ignored',
+    body().replace('{', '{"createdBy":"Admin","updatedBy":"Admin","bookingSequence":1,"id":"mine",'), accepted()),
   scenario('empty object names every required field', '{}', rejected('symbol', 'side', 'quantity', 'price')),
-  scenario('every field invalid at once', body({ symbol: str(''), side: str('x'), quantity: '0', price: '0', executedAt: str('x') }),
-    rejected('symbol', 'side', 'quantity', 'price', 'executedAt')),
+  scenario('every field invalid at once',
+    body({ symbol: str(''), side: str('x'), quantity: '0', price: '0', executedAt: str('x'), status: str('Executed') }),
+    rejected('symbol', 'side', 'quantity', 'price', 'executedAt', 'status')),
   scenario('missing side', rawBody({ symbol: str('ABC'), quantity: '1', price: '1' }), rejected('side')),
   scenario('missing quantity', rawBody({ symbol: str('ABC'), side: str('Buy'), price: '1' }), rejected('quantity')),
   scenario('missing price', rawBody({ symbol: str('ABC'), side: str('Buy'), quantity: '1' }), rejected('price')),
@@ -110,6 +116,18 @@ const BODY_SHAPE: readonly TradeRequestScenario[] = [
   scenario('malformed JSON', '{ not json', rejected()),
   scenario('trailing comma', body().replace('}', ',}'), rejected()),
   scenario('JSON comment', body().replace('{', '{ /* comment */ '), rejected()),
+]
+
+const STATUSES: readonly TradeRequestScenario[] = [
+  scenario('status Pending', body({ status: str('Pending') }), accepted()),
+  scenario('status pending, padded and lower-case', body({ status: str(' pending ') }), accepted()),
+  scenario('status null is Pending', body({ status: 'null' }), accepted()),
+  scenario('status Executed is refused: a trade is executed separately', body({ status: str('Executed') }), rejected('status')),
+  scenario('status executed in another case is refused', body({ status: str('EXECUTED') }), rejected('status')),
+  scenario('status Executed with an execution time: both refused', body({ executedAt: str(T0), status: str('Executed') }), rejected('executedAt', 'status')),
+  scenario('status Cancelled is refused', body({ status: str('Cancelled') }), rejected('status')),
+  scenario('status that is not one', body({ status: str('Filled') }), rejected('status')),
+  scenario('status number', body({ status: '1' }), rejected('status')),
 ]
 
 const SYMBOLS: readonly TradeRequestScenario[] = [
@@ -186,8 +204,11 @@ const DECIMALS: readonly TradeRequestScenario[] = [
   scenario('numeric string empty', body({ quantity: str('') }), rejected('quantity')),
 ]
 
-/** [name, executedAt text, canonical UTC result or undefined when rejected]. */
-const EXECUTED_AT_CASES: readonly (readonly [string, string, string | undefined])[] = [
+/**
+ * [name, executedAt text, canonical UTC result or undefined when rejected]: how an execution time is
+ * read, for the historical Executed trades the datasets write. A booking refuses every one of them.
+ */
+export const EXECUTED_AT_CASES: readonly (readonly [string, string, string | undefined])[] = [
   ['zero offset', '2026-01-01T09:00:00+00:00', T0_UTC],
   ['Z suffix', '2026-01-01T09:00:00Z', T0_UTC],
   ['positive offset', '2026-01-01T09:00:00+05:30', '2026-01-01T03:30:00.000Z'],
@@ -216,11 +237,12 @@ const EXECUTED_AT_CASES: readonly (readonly [string, string, string | undefined]
   ['empty string', '', undefined],
 ]
 
-const EXECUTED_AT: readonly TradeRequestScenario[] = EXECUTED_AT_CASES.map(([name, text, utc]) =>
-  scenario(`executedAt: ${name}`, body({ executedAt: str(text) }), utc === undefined ? rejected('executedAt') : accepted({ executedAt: utc })))
+const EXECUTED_AT: readonly TradeRequestScenario[] = EXECUTED_AT_CASES.map(([name, text]) =>
+  scenario(`executedAt refused in a booking: ${name}`, body({ executedAt: str(text) }), rejected('executedAt')))
 
 export const TRADE_REQUEST_SCENARIOS: readonly TradeRequestScenario[] = [
   ...BODY_SHAPE,
+  ...STATUSES,
   ...SYMBOLS,
   ...SIDES,
   ...DECIMALS,

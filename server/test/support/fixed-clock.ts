@@ -12,6 +12,10 @@ export function createFixedClock(start: string) {
     set(time: string): void {
       current = new Date(time)
     },
+    /** What it reads now, without counting a read. */
+    peek(): string {
+      return current.toISOString()
+    },
     get reads(): number {
       return reads
     },

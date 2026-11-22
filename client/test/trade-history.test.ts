@@ -3,7 +3,7 @@ import { createPinia } from 'pinia'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import App from '../src/App.vue'
-import { fakeApi, json, pagedTrades, pageJson, problem, tradeJson, type FakeResponse } from './support/fake-api.ts'
+import { asPending, fakeApi, json, pagedTrades, pageJson, problem, tradeJson, type FakeResponse } from './support/fake-api.ts'
 
 /**
  * The trade list on the whole page, against a scripted API: search and filters, sorting by column
@@ -29,7 +29,7 @@ const trade = (id: string, sequence: number, symbol: string, side: 'Buy' | 'Sell
 const AAPL = trade('a', 1, 'AAPL', 'Buy', '10', '100')
 const MSFT = trade('m', 2, 'MSFT', 'Sell', '9', '301.25')
 const XMSX = trade('x', 3, 'XMSX', 'Buy', '100', '2')
-const POSITIONS = '[{"symbol":"AAPL","netQuantity":10,"averageCost":100},{"symbol":"MSFT","netQuantity":-9,"averageCost":301.25}]'
+const POSITIONS = '[{"symbol":"AAPL","netQuantity":10,"averageCost":100,"executedNetQuantity":10,"pendingNetQuantity":0,"projectedNetQuantity":10},{"symbol":"MSFT","netQuantity":-9,"averageCost":301.25,"executedNetQuantity":-9,"pendingNetQuantity":0,"projectedNetQuantity":-9}]'
 
 /** `count` trades named S001, S002, ..., newest first, as the API lists them by default. */
 const many = (count: number): string[] => Array.from({ length: count }, (_, index) => tradeJson({
@@ -165,7 +165,7 @@ describe('trade list: accessibility', () => {
     expect(form.attributes('role')).toBe('search')
     expect(form.attributes('aria-label')).toBe('Search and filter trades')
     const labels = form.findAll('label').map((label) => [label.attributes('for'), label.text()])
-    expect(labels).toEqual([['filter-symbol', 'Symbol'], ['filter-side', 'Side'], ['filter-from-date', 'From'], ['filter-to-date', 'To']])
+    expect(labels).toEqual([['filter-symbol', 'Symbol'], ['filter-side', 'Side'], ['filter-status', 'Status'], ['filter-from-date', 'From'], ['filter-to-date', 'To']])
     for (const [id] of labels) expect(form.find(`#${id ?? ''}`).exists()).toBe(true)
     expect(page.find('#filter-sort-by').exists()).toBe(false)
     expect(page.find('#filter-sort-direction').exists()).toBe(false)
@@ -180,13 +180,14 @@ describe('trade list: accessibility', () => {
     const { page } = await openPage()
     const headers = blotter(page).findAll('thead th')
 
-    expect(headers.map((cell) => cell.find('button').exists())).toEqual([true, false, true, true, false, true, false, false])
+    // Status and Actions do not sort; the Actions cells hold buttons, not the header.
+    expect(headers.map((cell) => cell.find('button').exists())).toEqual([true, false, false, false, true, true, false, true, false, false])
     expect(headers.filter((cell) => cell.find('button').exists()).map((cell) => cell.find('button').attributes('type')))
       .toEqual(['button', 'button', 'button', 'button'])
     expect(headers.map((cell) => cell.find('.visually-hidden').exists() ? cell.find('.visually-hidden').text() : ''))
-      .toEqual([', sort ascending', '', ', sort ascending', ', sort ascending', '', ', sort oldest first', '', ''])
+      .toEqual([', sort ascending', '', '', '', ', sort ascending', ', sort ascending', '', ', sort oldest first', '', ''])
     expect(headers.map((cell) => cell.find('.sort-indicator').exists() ? cell.find('.sort-indicator').attributes('aria-hidden') : null))
-      .toEqual(['true', null, 'true', 'true', null, 'true', null, null])
+      .toEqual(['true', null, null, null, 'true', 'true', null, 'true', null, null])
   })
 
   it('marks only the sorted column with aria-sort, as the order on screen', async () => {
@@ -783,7 +784,7 @@ describe('trade list: requests that finish out of order', () => {
 })
 
 describe('trade list: booking a trade', () => {
-  const BOOKED = trade('n', 4, 'AAPL', 'Buy', '5', '110')
+  const BOOKED = asPending(trade('n', 4, 'AAPL', 'Buy', '5', '110'))
 
   async function book(page: VueWrapper): Promise<void> {
     await page.find('#trade-symbol').setValue('AAPL')
@@ -826,7 +827,7 @@ describe('trade list: booking a trade', () => {
     await book(page)
 
     expect(lastQuery(server)).toEqual(paged([['symbol', 'aa']]))
-    expect(confirmation(page)).toBe('Booked: Buy 5 AAPL at 110. It is on this page of the trade list.')
+    expect(confirmation(page)).toBe('Booked as Pending: Buy 5 AAPL at 110. Execute it from Trade History or Trade Details; it counts in the Executed net and average cost once executed. It is on this page of the trade list.')
     expect(listedSymbols(page)).toEqual(['AAPL', 'AAPL'])
     expect(pagerState(page)[0]).toMatchObject({ range: '1–2 of 2 matching trades' })
   })
@@ -840,7 +841,7 @@ describe('trade list: booking a trade', () => {
 
     await book(page)
 
-    expect(confirmation(page)).toBe('Booked: Buy 5 AAPL at 110. It matches the filters but is on another page of the trade list.')
+    expect(confirmation(page)).toBe('Booked as Pending: Buy 5 AAPL at 110. Execute it from Trade History or Trade Details; it counts in the Executed net and average cost once executed. It matches the filters but is on another page of the trade list.')
     expect(pagerState(page)[0]).toMatchObject({ range: '1–50 of 121 matching trades', position: 'Page 1 of 3' })
   })
 
@@ -850,7 +851,7 @@ describe('trade list: booking a trade', () => {
 
     await book(page)
 
-    expect(confirmation(page)).toBe('Booked: Buy 5 AAPL at 110. It is on another page of the trade list.')
+    expect(confirmation(page)).toBe('Booked as Pending: Buy 5 AAPL at 110. Execute it from Trade History or Trade Details; it counts in the Executed net and average cost once executed. It is on another page of the trade list.')
   })
 
   it('says the trade is not in the list when it does not match the applied filters', async () => {
@@ -861,20 +862,20 @@ describe('trade list: booking a trade', () => {
 
     await book(page)
 
-    expect(confirmation(page)).toBe('Booked: Buy 5 AAPL at 110. It is not in the trade list because it does not match the current filters.')
+    expect(confirmation(page)).toBe('Booked as Pending: Buy 5 AAPL at 110. Execute it from Trade History or Trade Details; it counts in the Executed net and average cost once executed. It is not in the trade list because it does not match the current filters.')
     expect(listedSymbols(page)).toEqual(['MSFT'])
   })
 
-  it('judges the filters by the API\'s rules: the search is matched in any case, and dates include both ends', async () => {
+  it('judges the filters by the API\'s rules: the search is matched in any case, and a booked trade, Pending, never matches a date range', async () => {
     const { server, page } = await openPage({ 'POST /trades': json(BOOKED, 201) })
-    // BOOKED executed at 2026-01-04 15:00 UTC: 10:00 in New York that day.
-    await setFilters(page, { symbol: 'apl', fromDate: '2026-01-04', toDate: '2026-01-04' })
+    await setFilters(page, { symbol: 'apl' })
     await apply(page)
     server.set('GET /trades/page', pagedTrades(many(60)))
     await book(page)
     expect(confirmation(page)).toContain('It matches the filters but is on another page')
 
-    await setFilters(page, { fromDate: '2026-01-05', toDate: '2026-01-05' })
+    // BOOKED has no execution time: the API lists no Pending trade in a date range, and neither does this judgement.
+    await setFilters(page, { fromDate: '2026-01-04', toDate: '2026-01-04' })
     await apply(page)
     await book(page)
     expect(confirmation(page)).toContain('does not match the current filters')
@@ -898,7 +899,7 @@ describe('trade list: booking a trade', () => {
     slow.waiting[0]?.release(pagedTrades([MSFT])(undefined, slow.waiting[0].url))
     await flushPromises()
 
-    expect(confirmation(page)).toBe('Booked: Buy 5 AAPL at 110.')
+    expect(confirmation(page)).toBe('Booked as Pending: Buy 5 AAPL at 110. Execute it from Trade History or Trade Details; it counts in the Executed net and average cost once executed.')
 
     slow.waiting[1]?.release(pagedTrades([BOOKED, XMSX, AAPL])(undefined, slow.waiting[1].url))
     await flushPromises()
@@ -911,7 +912,7 @@ describe('trade list: booking a trade', () => {
 
     await book(page)
 
-    expect(confirmation(page)).toBe('Booked: Buy 5 AAPL at 110.')
+    expect(confirmation(page)).toBe('Booked as Pending: Buy 5 AAPL at 110. Execute it from Trade History or Trade Details; it counts in the Executed net and average cost once executed.')
     expect(blotter(page).find('[role="alert"]').exists()).toBe(true)
   })
 })

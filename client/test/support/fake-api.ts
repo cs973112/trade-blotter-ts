@@ -13,7 +13,7 @@ export type Route =
   | Error
   | ((body: string | undefined, url: string) => FakeResponse | Error | Promise<FakeResponse | Error>)
 
-export type RouteKey = 'GET /trades' | 'GET /trades/page' | 'GET /positions' | 'POST /trades'
+export type RouteKey = 'GET /trades' | 'GET /trades/page' | 'GET /positions' | 'POST /trades' | 'POST /trades/:id/execution' | 'POST /trades/:id/cancellation' | 'GET /trades/:id/audit'
 
 export interface RecordedCall {
   readonly method: string
@@ -23,9 +23,10 @@ export interface RecordedCall {
 }
 
 /**
- * Replaces the global fetch with a scripted API. A route is chosen by method and path; the query
- * string is passed to a route function in the full URL. Unknown routes answer 404. Every call is
- * recorded, so tests can check what the client sent and in what order.
+ * Replaces the global fetch with a scripted API. A route is chosen by method and path, where :id
+ * stands for one path segment (a trade id); the query string is passed to a route function in the
+ * full URL. Unknown routes answer 404. Every call is recorded, so tests can check what the client
+ * sent and in what order.
  */
 export function fakeApi(initial: Partial<Record<RouteKey, Route>> = {}) {
   const routes = new Map<string, Route>(Object.entries(initial))
@@ -35,7 +36,8 @@ export function fakeApi(initial: Partial<Record<RouteKey, Route>> = {}) {
     const method = init?.method ?? 'GET'
     const body = typeof init?.body === 'string' ? init.body : undefined
     calls.push({ method, url: input, headers: { ...(init?.headers as Record<string, string> | undefined) }, body })
-    const route = routes.get(`${method} ${input.split('?')[0] ?? input}`)
+    const path = input.split('?')[0] ?? input
+    const route = routes.get(`${method} ${path}`) ?? routes.get(`${method} ${path.replace(/^\/trades\/[^/]+\/(execution|cancellation|audit)$/, '/trades/:id/$1')}`)
     if (route === undefined) {
       return new Response('{"type":"about:blank","title":"Not Found","status":404}', { status: 404 })
     }
@@ -60,7 +62,7 @@ export function fakeApi(initial: Partial<Record<RouteKey, Route>> = {}) {
   }
 }
 
-/** A trade as the API writes it, with exact numbers in the JSON text. */
+/** A trade as the API writes it, with exact numbers in the JSON text. Executed by User unless told otherwise. */
 export function tradeJson(fields: {
   id: string
   bookingSequence: number
@@ -72,11 +74,31 @@ export function tradeJson(fields: {
   executedAt: string
   createdAt?: string
   updatedAt?: string
+  status?: 'Pending' | 'Executed' | 'Cancelled'
+  /** For a Cancelled trade: its reason and its cancellation record's id. */
+  cancellationReason?: string
+  cancellationTradeId?: string
+  /** For a cancellation record: the original's id. */
+  originalTradeId?: string
 }): string {
   const createdAt = fields.createdAt ?? '2026-03-01T12:00:00.000Z'
+  const status = fields.status ?? 'Executed'
+  const cancelled = status === 'Cancelled'
+  const text = (value: string | undefined): string => value === undefined ? 'null' : JSON.stringify(value)
+  // Pending, and a trade cancelled while Pending, have no execution time.
+  const executedAt = status === 'Executed' ? `"${fields.executedAt}"` : 'null'
   return `{"id":"${fields.id}","bookingSequence":${String(fields.bookingSequence)},"symbol":"${fields.symbol}",` +
-    `"side":"${fields.side}","quantity":${fields.quantity},"price":${fields.price},"notional":${fields.notional},` +
-    `"executedAt":"${fields.executedAt}","createdAt":"${createdAt}","updatedAt":"${fields.updatedAt ?? createdAt}"}`
+    `"side":"${fields.side}","quantity":${fields.quantity},"price":${fields.price},"notional":${fields.notional},"status":"${status}",` +
+    `"executedAt":${executedAt},"createdAt":"${createdAt}","updatedAt":"${fields.updatedAt ?? createdAt}",` +
+    `"createdBy":"${fields.originalTradeId === undefined ? 'User' : 'Admin'}","updatedBy":"${cancelled ? 'Admin' : 'User'}",` +
+    `"originalTradeId":${text(fields.originalTradeId)},"cancellationReason":${text(fields.cancellationReason)},"cancellationTradeId":${text(fields.cancellationTradeId)}}`
+}
+
+/** A position as the API writes it: the Executed net (twice, as netQuantity too), the Pending and Projected net, exact. */
+export function positionJson(symbol: string, executed: string, averageCost: string, pending = '0'): string {
+  const projected = String(Number(executed) + Number(pending))
+  return `{"symbol":"${symbol}","netQuantity":${executed},"averageCost":${averageCost},"executedNetQuantity":${executed},` +
+    `"pendingNetQuantity":${pending},"projectedNetQuantity":${projected}}`
 }
 
 export const json = (body: string, status = 200): FakeResponse => ({ status, body })
@@ -107,3 +129,11 @@ export const problem = (status: number, members: Record<string, unknown>): FakeR
   body: JSON.stringify({ type: 'about:blank', title: 'Error', status, ...members }),
   contentType: 'application/problem+json; charset=utf-8',
 })
+
+/**
+ * A trade's JSON as a booking answers it: Pending, with no execution time. Rewritten as text, so
+ * exact decimals keep every digit.
+ */
+export function asPending(trade: string): string {
+  return trade.replace(/"status":"[A-Za-z]+"/, '"status":"Pending"').replace(/"executedAt":(?:"[^"]*"|null)/, '"executedAt":null')
+}

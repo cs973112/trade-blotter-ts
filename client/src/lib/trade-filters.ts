@@ -1,4 +1,4 @@
-import type { Side, SortDirection, SortField, Trade, TradeQuery } from '../api/contracts.ts'
+import type { Side, SortDirection, SortField, Trade, TradeQuery, TradeStatus } from '../api/contracts.ts'
 import { localDayEnd, localDayStart } from './local-dates.ts'
 import { browserOffsetAt, type OffsetAt } from './timestamps.ts'
 
@@ -11,16 +11,21 @@ export interface TradeFilters {
   symbol: string
   /** Empty: both sides. */
   side: Side | ''
+  /** Empty: every status. */
+  status: TradeStatus | ''
   /** Local calendar dates from <input type="date">, such as "2026-03-08"; empty for no bound. */
   fromDate: string
   toDate: string
 }
 
 /** No filter: every trade. */
-export const DEFAULT_TRADE_FILTERS: Readonly<TradeFilters> = Object.freeze({ symbol: '', side: '', fromDate: '', toDate: '' })
+export const DEFAULT_TRADE_FILTERS: Readonly<TradeFilters> = Object.freeze({ symbol: '', side: '', status: '', fromDate: '', toDate: '' })
+
+/** The statuses the list can be filtered by, in lifecycle order. */
+export const TRADE_STATUSES: readonly TradeStatus[] = ['Pending', 'Executed', 'Cancelled']
 
 /** The filter members of a query: what narrows the list. */
-export type TradeFilterQuery = Pick<TradeQuery, 'symbol' | 'side' | 'executedFrom' | 'executedTo'>
+export type TradeFilterQuery = Pick<TradeQuery, 'symbol' | 'side' | 'status' | 'executedFrom' | 'executedTo'>
 
 export interface TradeSort {
   readonly sortBy: SortField
@@ -102,6 +107,7 @@ export function toTradeQuery(filters: TradeFilters, offsetAt: OffsetAt = browser
     query: {
       ...(symbol === '' ? {} : { symbol }),
       ...(filters.side === '' ? {} : { side: filters.side }),
+      ...(filters.status === '' ? {} : { status: filters.status }),
       ...(executedFrom === undefined ? {} : { executedFrom }),
       ...(executedTo === undefined ? {} : { executedTo }),
     },
@@ -110,7 +116,8 @@ export function toTradeQuery(filters: TradeFilters, offsetAt: OffsetAt = browser
 
 /** Whether a query leaves out any trades, as opposed to only reordering them. */
 export function narrowsList(query: TradeQuery): boolean {
-  return query.symbol !== undefined || query.side !== undefined || query.executedFrom !== undefined || query.executedTo !== undefined
+  return query.symbol !== undefined || query.side !== undefined || query.status !== undefined || query.executedFrom !== undefined ||
+    query.executedTo !== undefined
 }
 
 /**
@@ -123,8 +130,10 @@ export function tradeMatchesFilters(trade: Trade, query: TradeQuery): boolean {
   const search = query.symbol?.trim().normalize('NFC').toUpperCase()
   return (search === undefined || search === '' || trade.symbol.includes(search)) &&
     (query.side === undefined || trade.side === query.side) &&
-    (query.executedFrom === undefined || trade.executedAt >= query.executedFrom) &&
-    (query.executedTo === undefined || trade.executedAt <= query.executedTo)
+    (query.status === undefined || trade.status === query.status) &&
+    // A trade without an execution time (Pending) never matches a date range, as on the server.
+    (query.executedFrom === undefined || (trade.executedAt !== null && trade.executedAt >= query.executedFrom)) &&
+    (query.executedTo === undefined || (trade.executedAt !== null && trade.executedAt <= query.executedTo))
 }
 
 const ARIA_SORT: Readonly<Record<SortDirection, 'ascending' | 'descending'>> = { asc: 'ascending', desc: 'descending' }

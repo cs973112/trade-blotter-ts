@@ -2,22 +2,27 @@
 import { computed, nextTick, reactive, ref, useTemplateRef, watch } from 'vue'
 
 import { ApiError } from '../api/client.ts'
-import type { CreateTradeRequest, FieldErrors, Side, Trade, TradeField } from '../api/contracts.ts'
+import type { CreateTradeRequest, FieldErrors, Side, Trade } from '../api/contracts.ts'
 import { checkDecimalInput, formatDecimal, type DecimalInputProblem } from '../lib/decimal-text.ts'
-import { browserTimeZone, resolveLocalDateTime } from '../lib/timestamps.ts'
 import { narrowsList, tradeMatchesFilters } from '../lib/trade-filters.ts'
 import { useBlotterStore } from '../stores/blotter.ts'
 
+/**
+ * Booking a trade: symbol, side, quantity and price. Every trade is booked Pending, with no
+ * execution time; it is executed afterwards, separately, from Trade History or Trade Details,
+ * when the server sets its execution time. Nothing about status or time is typed or sent.
+ */
 const store = useBlotterStore()
+
+/** The form's fields, in the order errors are focused. */
+const FIELDS = ['symbol', 'side', 'quantity', 'price'] as const
+type FormField = (typeof FIELDS)[number]
 
 const form = reactive({
   symbol: '',
   side: '' as Side | '',
   quantity: '',
   price: '',
-  executedAt: '',
-  /** Which occurrence of a repeated local time the user meant, as an RFC 3339 value. */
-  occurrence: '',
 })
 
 const submitted = ref(false)
@@ -25,7 +30,6 @@ const submitting = ref(false)
 const serverErrors = ref<FieldErrors>({})
 const formError = ref<string>()
 const success = ref<string>()
-const timeZone = browserTimeZone()
 
 /**
  * When booking failed because the API could not be reached, the newest request started by then.
@@ -41,20 +45,12 @@ watch(() => store.latestAnswered, (latest) => {
   }
 })
 
-const fieldIds: Record<TradeField, string> = {
+const fieldIds: Record<FormField, string> = {
   symbol: 'trade-symbol',
   side: 'trade-side-buy',
   quantity: 'trade-quantity',
   price: 'trade-price',
-  executedAt: 'trade-executed-at',
 }
-
-const resolution = computed(() => resolveLocalDateTime(form.executedAt))
-
-// A different date or time needs its own answer about which occurrence was meant.
-watch(() => form.executedAt, () => {
-  form.occurrence = ''
-})
 
 const decimalMessages = (label: string): Record<DecimalInputProblem, string> => ({
   required: `Enter a ${label.toLowerCase()}.`,
@@ -64,32 +60,24 @@ const decimalMessages = (label: string): Record<DecimalInputProblem, string> => 
 
 /** Checks made before sending, so obvious mistakes are caught at once. The server checks everything else. */
 const clientErrors = computed<FieldErrors>(() => {
-  const errors: Partial<Record<TradeField, readonly string[]>> = {}
+  const errors: Partial<Record<FormField, readonly string[]>> = {}
   if (form.symbol.trim() === '') errors.symbol = ['Enter a symbol.']
   if (form.side === '') errors.side = ['Choose Buy or Sell.']
   const quantity = checkDecimalInput(form.quantity)
   if (!quantity.ok) errors.quantity = [decimalMessages('Quantity')[quantity.problem]]
   const price = checkDecimalInput(form.price)
   if (!price.ok) errors.price = [decimalMessages('Price')[price.problem]]
-  const time = resolution.value
-  if (time.kind === 'invalid') errors.executedAt = ['Enter a complete date and time, or clear the field.']
-  if (time.kind === 'nonexistent') {
-    errors.executedAt = ['This time does not exist in your time zone, because the clocks go forward then. Choose another time.']
-  }
-  if (time.kind === 'ambiguous' && form.occurrence === '') {
-    errors.executedAt = ['This time happens twice in your time zone, because the clocks go back then. Choose which one you mean.']
-  }
   return errors
 })
 
 /** Client errors after the first attempt to submit; server errors until the field changes. */
 const shownErrors = computed<FieldErrors>(() => ({ ...serverErrors.value, ...(submitted.value ? clientErrors.value : {}) }))
 
-function errorFor(field: TradeField): string | undefined {
+function errorFor(field: FormField): string | undefined {
   return shownErrors.value[field]?.[0]
 }
 
-function clearServerError(field: TradeField): void {
+function clearServerError(field: FormField): void {
   if (serverErrors.value[field] === undefined) return
   serverErrors.value = Object.fromEntries(Object.entries(serverErrors.value).filter(([name]) => name !== field))
 }
@@ -98,32 +86,21 @@ watch(() => form.symbol, () => { clearServerError('symbol') })
 watch(() => form.side, () => { clearServerError('side') })
 watch(() => form.quantity, () => { clearServerError('quantity') })
 watch(() => form.price, () => { clearServerError('price') })
-watch(() => [form.executedAt, form.occurrence], () => { clearServerError('executedAt') })
 
 const formElement = useTemplateRef<HTMLFormElement>('formElement')
 
 async function focusFirstError(): Promise<void> {
   await nextTick()
-  const field = (['symbol', 'side', 'quantity', 'price', 'executedAt'] as const).find((name) => errorFor(name) !== undefined)
+  const field = FIELDS.find((name) => errorFor(name) !== undefined)
   if (field !== undefined) formElement.value?.querySelector<HTMLElement>(`#${fieldIds[field]}`)?.focus()
 }
 
 function buildRequest(): CreateTradeRequest | undefined {
   const quantity = checkDecimalInput(form.quantity)
   const price = checkDecimalInput(form.price)
-  const time = resolution.value
   if (form.side === '' || !quantity.ok || !price.ok) return undefined
-  const executedAt =
-    time.kind === 'exact' ? time.time.value
-    : time.kind === 'ambiguous' ? (form.occurrence === '' ? undefined : form.occurrence)
-    : undefined
-  return {
-    symbol: form.symbol.trim(),
-    side: form.side,
-    quantity: quantity.text,
-    price: price.text,
-    ...(executedAt === undefined ? {} : { executedAt }),
-  }
+  // No status and no execution time: the API books every trade Pending.
+  return { symbol: form.symbol.trim(), side: form.side, quantity: quantity.text, price: price.text }
 }
 
 /**
@@ -155,9 +132,10 @@ async function submit(): Promise<void> {
   submitting.value = true
   try {
     const trade = await store.createTrade(request)
-    success.value = `Booked: ${trade.side} ${formatDecimal(trade.quantity)} ${trade.symbol} at ${formatDecimal(trade.price)}.` +
-      whereListed(trade)
-    Object.assign(form, { symbol: '', side: '', quantity: '', price: '', executedAt: '', occurrence: '' })
+    const what = `${trade.side} ${formatDecimal(trade.quantity)} ${trade.symbol} at ${formatDecimal(trade.price)}`
+    success.value = `Booked as Pending: ${what}. Execute it from Trade History or Trade Details; it counts in the Executed net and ` +
+      `average cost once executed.${whereListed(trade)}`
+    Object.assign(form, { symbol: '', side: '', quantity: '', price: '' })
     submitted.value = false
     serverErrors.value = {}
     await nextTick()
@@ -165,8 +143,12 @@ async function submit(): Promise<void> {
   } catch (error) {
     if (error instanceof ApiError && error.kind === 'invalid-trade') {
       serverErrors.value = error.fieldErrors
-      formError.value = error.message
+      // Errors for anything the form does not have (it never sends status or executedAt) are shown with the form's message.
+      const others = Object.entries(error.fieldErrors).filter(([field]) => !(FIELDS as readonly string[]).includes(field)).flatMap(([, messages]) => messages ?? [])
+      formError.value = [error.message, ...others].join(' ')
       await focusFirstError()
+    } else if (error instanceof ApiError && error.problem === 'position-limit') {
+      formError.value = `${error.message} A booking is checked against the Executed and Pending trades together, with this one.`
     } else {
       formError.value = error instanceof ApiError ? error.message : 'Something went wrong. Try again.'
       if (error instanceof ApiError && (error.kind === 'network' || error.kind === 'unavailable')) {
@@ -178,7 +160,7 @@ async function submit(): Promise<void> {
   }
 }
 
-const describedBy = (field: TradeField, hint?: string): string | undefined =>
+const describedBy = (field: FormField, hint?: string): string | undefined =>
   [hint, errorFor(field) === undefined ? undefined : `${fieldIds[field]}-error`].filter(Boolean).join(' ') || undefined
 </script>
 
@@ -261,36 +243,10 @@ const describedBy = (field: TradeField, hint?: string): string | undefined =>
         </div>
       </div>
 
-      <div class="field">
-        <label :for="fieldIds.executedAt">Execution time <span class="optional">(optional)</span></label>
-        <div class="input-with-action">
-          <input
-            :id="fieldIds.executedAt"
-            v-model="form.executedAt"
-            type="datetime-local"
-            name="executedAt"
-            step="1"
-            min="0001-01-01T00:00"
-            max="9999-12-31T23:59:59"
-            :aria-invalid="errorFor('executedAt') !== undefined"
-            :aria-describedby="describedBy('executedAt', 'trade-executed-at-hint')"
-          >
-          <button v-if="form.executedAt !== ''" type="button" class="button-secondary" @click="form.executedAt = ''">
-            Clear
-          </button>
-        </div>
-        <p id="trade-executed-at-hint" class="hint">
-          Your local time ({{ timeZone }}). Leave blank to use the time the server receives the trade.
-        </p>
-        <fieldset v-if="resolution.kind === 'ambiguous'" class="occurrence">
-          <legend>This time happens twice. Which one?</legend>
-          <label v-for="(time, index) in resolution.times" :key="time.value" class="occurrence-option">
-            <input v-model="form.occurrence" type="radio" name="occurrence" :value="time.value">
-            {{ index === 0 ? 'First' : 'Second' }}, {{ time.offsetLabel }}
-          </label>
-        </fieldset>
-        <p v-if="errorFor('executedAt')" :id="`${fieldIds.executedAt}-error`" class="field-error">{{ errorFor('executedAt') }}</p>
-      </div>
+      <p id="trade-booking-hint" class="hint">
+        Every trade is booked as Pending, with no execution time. Execute it from Trade History or Trade Details: the server then
+        records when it was executed.
+      </p>
 
       <button type="submit" class="button-primary" :disabled="submitting" :aria-busy="submitting">
         {{ submitting ? 'Booking…' : 'Book trade' }}

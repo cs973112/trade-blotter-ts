@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from '../src/App.vue'
 import { DEFAULT_TRADE_SORT } from '../src/lib/trade-filters.ts'
 import { DETAIL_PAGE_SIZE, detailQuery } from '../src/stores/details.ts'
-import { fakeApi, json, pageJson, problem, tradeJson, type FakeResponse } from './support/fake-api.ts'
+import { asPending, fakeApi, json, pageJson, problem, tradeJson, type FakeResponse } from './support/fake-api.ts'
 
 /**
  * Positions & Trade Details: choosing a position in the master grid (pointer and keyboard), and its
@@ -23,9 +23,9 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-const POSITIONS = '[{"symbol":"MS","netQuantity":60,"averageCost":90.125},' +
-  '{"symbol":"MSFT","netQuantity":-3,"averageCost":1.6666666666666666666666666666666666666666666666667},' +
-  '{"symbol":"MSTR","netQuantity":2,"averageCost":5}]'
+const POSITIONS = '[{"symbol":"MS","netQuantity":60,"averageCost":90.125,"executedNetQuantity":60,"pendingNetQuantity":0,"projectedNetQuantity":60},' +
+  '{"symbol":"MSFT","netQuantity":-3,"averageCost":1.6666666666666666666666666666666666666666666666667,"executedNetQuantity":-3,"pendingNetQuantity":0,"projectedNetQuantity":-3},' +
+  '{"symbol":"MSTR","netQuantity":2,"averageCost":5,"executedNetQuantity":2,"pendingNetQuantity":0,"projectedNetQuantity":2}]'
 
 /** `count` trades in a symbol, newest first, with exact prices; the first one's price is a half to round to even. */
 function tradesIn(symbol: string, count: number): string[] {
@@ -229,11 +229,11 @@ describe('Positions & Trade Details: the trades', () => {
     await choose(page, 'MS')
 
     expect(details(page).findAll('thead th').map((cell) => cell.find('.column-label, .sort-button').text().split(/[↑↓↕]/)[0])).toEqual([
-      'Executed at', 'Side', 'Quantity', 'Price', 'Notional',
+      'Executed at', 'Side', 'Status', 'Actions', 'Quantity', 'Price', 'Notional',
     ])
     const [first, second] = detailRows(page)
-    expect(first?.slice(1)).toEqual(['Buy', '0.0000000001', '90.12, exactly 90.125', '0.00, exactly 0.0000000090125'])
-    expect(second?.slice(1)).toEqual(['Sell', '1', '90.14, exactly 90.135', '90.14, exactly 90.135'])
+    expect(first?.slice(1)).toEqual(['Buy', 'Executed', 'History', '0.0000000001', '90.12, exactly 90.125', '0.00, exactly 0.0000000090125'])
+    expect(second?.slice(1)).toEqual(['Sell', 'Executed', 'History', '1', '90.14, exactly 90.135', '90.14, exactly 90.135'])
     expect(details(page).find('td.price .money').attributes('title')).toBe('Exactly 90.125')
     const cost = () => details(page).find('.position-summary dd.average-cost')
     // What a sighted user reads: the text without what only screen readers get.
@@ -356,7 +356,7 @@ describe('Positions & Trade Details: the trades', () => {
   it('loads the details again after booking a trade in the chosen symbol, and only then', async () => {
     const { server, page } = await openDetails()
     await choose(page, 'MS')
-    server.set('POST /trades', json(tradesIn('MSTR', 1)[0] ?? '', 201))
+    server.set('POST /trades', json(asPending(tradesIn('MSTR', 1)[0] ?? ''), 201))
     await page.find('#tab-trading').trigger('click')
     const book = async (symbol: string): Promise<void> => {
       await page.find('#trade-symbol').setValue(symbol)
@@ -370,7 +370,7 @@ describe('Positions & Trade Details: the trades', () => {
     await book('MSTR')
     expect(detailRequests(server)).toHaveLength(1)
 
-    server.set('POST /trades', json(tradesIn('MS', 1)[0] ?? '', 201))
+    server.set('POST /trades', json(asPending(tradesIn('MS', 1)[0] ?? ''), 201))
     await book('MS')
     expect(detailRequests(server)).toEqual([
       '/trades/page?symbol=MS&symbolMatch=exact&page=1&pageSize=25',
@@ -381,7 +381,7 @@ describe('Positions & Trade Details: the trades', () => {
   it('says when the chosen position is no longer open, and still lists its trades', async () => {
     const { server, page } = await openDetails()
     await choose(page, 'MSFT')
-    server.set('GET /positions', json('[{"symbol":"MS","netQuantity":60,"averageCost":90.125}]'))
+    server.set('GET /positions', json('[{"symbol":"MS","netQuantity":60,"averageCost":90.125,"executedNetQuantity":60,"pendingNetQuantity":0,"projectedNetQuantity":60}]'))
 
     await master(page).find('button.refresh-positions').trigger('click')
     await flushPromises()

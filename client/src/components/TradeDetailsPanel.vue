@@ -3,18 +3,24 @@ import { storeToRefs } from 'pinia'
 import { computed, nextTick, ref, watch } from 'vue'
 
 import type { SortField, Trade } from '../api/contracts.ts'
+import { describeTrade, isCancellable, isExecutable } from '../lib/cancellation.ts'
 import { useColumnVisibility, type ChoosableColumn } from '../lib/column-visibility.ts'
 import { useResizableGrid, type ResizableColumn } from '../lib/column-widths.ts'
 import { formatDecimal } from '../lib/decimal-text.ts'
+import { positionDirection } from '../lib/positions.ts'
 import { ariaSortFor, DEFAULT_TRADE_SORT, directionLabel, SORT_FIELDS } from '../lib/trade-filters.ts'
 import { useBlotterStore } from '../stores/blotter.ts'
+import { useCancellationStore } from '../stores/cancellation.ts'
+import { useExecutionStore } from '../stores/execution.ts'
 import { useDetailsStore } from '../stores/details.ts'
+import AuditHistory from './AuditHistory.vue'
 import ColumnChooser from './ColumnChooser.vue'
 import ColumnResizer from './ColumnResizer.vue'
 import ExactValuesToggle from './ExactValuesToggle.vue'
 import LocalTimestamp from './LocalTimestamp.vue'
 import MoneyValue from './MoneyValue.vue'
 import SortButton from './SortButton.vue'
+import StatusBadge from './StatusBadge.vue'
 import TradePager from './TradePager.vue'
 
 /**
@@ -26,7 +32,35 @@ import TradePager from './TradePager.vue'
 const blotter = useBlotterStore()
 const details = useDetailsStore()
 const { positions } = storeToRefs(blotter)
-const { symbol, trades, sort, page, pageSize, shownSymbol, shownSort, shownPage, showsChosen } = storeToRefs(details)
+const { symbol, trades, sort, page, pageSize, shownSymbol, shownSort, shownPage, showsChosen, auditTradeId } = storeToRefs(details)
+const cancellation = useCancellationStore()
+const { outcome } = storeToRefs(cancellation)
+const execution = useExecutionStore()
+const { outcome: executed } = storeToRefs(execution)
+
+const opener = (event: Event): HTMLElement | null => event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+
+/** A row's Execute button: that one Pending trade. */
+function startExecute(trade: Trade, event: Event): void {
+  execution.openFor(trade, 'details', opener(event))
+}
+
+/** A row's Cancel button: that one Pending trade. */
+function startCancel(trade: Trade, event: Event): void {
+  cancellation.openFor(trade, 'details', opener(event))
+}
+
+/** The summary's button: the chosen symbol's Pending trades, to choose one from. */
+function startCancelForSymbol(event: Event): void {
+  if (symbol.value !== undefined) void cancellation.openForSymbol(symbol.value, 'details', opener(event))
+}
+
+/** A row's History button: the trade's audit history below the grid, which takes focus once shown. */
+async function showHistory(trade: Trade): Promise<void> {
+  await details.showAudit(trade.id)
+  await nextTick()
+  document.getElementById('audit-heading')?.focus()
+}
 
 const VISIBLE_TRADES = 25
 
@@ -36,6 +70,9 @@ type TradeColumn = ResizableColumn & ChoosableColumn & { readonly field?: SortFi
 const COLUMNS: readonly TradeColumn[] = [
   { key: 'executedAt', label: 'Executed at', field: 'executedAt', essential: true, minWidth: 150, maxWidth: 480 },
   { key: 'side', label: 'Side', minWidth: 76, maxWidth: 240 },
+  { key: 'status', label: 'Status', minWidth: 112, maxWidth: 240 },
+  // Beside the status, so Execute, Cancel and History are in view without scrolling sideways.
+  { key: 'actions', label: 'Actions', essential: true, minWidth: 264, maxWidth: 400 },
   { key: 'quantity', label: 'Quantity', field: 'quantity', numeric: true, minWidth: 120, maxWidth: 800 },
   { key: 'price', label: 'Price', field: 'price', numeric: true, minWidth: 100, maxWidth: 800 },
   { key: 'notional', label: 'Notional', numeric: true, minWidth: 116, maxWidth: 800 },
@@ -86,7 +123,7 @@ const caption = computed(() => {
   const order = field === DEFAULT_TRADE_SORT.sortBy && direction === DEFAULT_TRADE_SORT.sortDirection
     ? 'newest execution first'
     : `sorted by ${fieldLabel.toLowerCase()}, ${directionLabel(field, direction).toLowerCase()}`
-  return `Trades in ${shownSymbol.value ?? ''}, ${order}. Times are in your time zone. Prices and notionals are rounded to 2 decimal places.`
+  return `Trades in ${shownSymbol.value ?? ''}, ${order}. Each trade is shown with its status. Times are in your time zone; a Pending trade has no execution time. Prices and notionals are rounded to 2 decimal places.`
 })
 
 const pager = computed(() => ({
@@ -143,12 +180,12 @@ const cellText = (trade: Trade, key: string): string => {
           <div>
             <dt>Direction</dt>
             <dd>
-              <span class="direction-badge" :class="position.netQuantity.startsWith('-') ? 'direction-short' : 'direction-long'">
-                {{ position.netQuantity.startsWith('-') ? 'Short' : 'Long' }}
+              <span class="direction-badge" :class="`direction-${positionDirection(position).toLowerCase()}`">
+                {{ positionDirection(position) }}
               </span>
             </dd>
           </div>
-          <div><dt>Net quantity</dt><dd class="numeric">{{ formatDecimal(position.netQuantity) }}</dd></div>
+          <div><dt>Executed net</dt><dd class="numeric executed-net">{{ formatDecimal(position.executedNetQuantity) }}</dd></div>
           <div>
             <dt>Average cost</dt>
             <dd class="numeric average-cost"><MoneyValue :value="position.averageCost" :show-exact="showExact" /></dd>
@@ -156,6 +193,29 @@ const cellText = (trade: Trade, key: string): string => {
         </template>
         <div v-if="total"><dt>Trades</dt><dd class="numeric trade-count">{{ total }}</dd></div>
       </dl>
+      <div class="details-actions">
+        <button type="button" class="button-secondary cancel-pending" @click="startCancelForSymbol($event)">
+          Cancel a Pending trade in {{ symbol }}…
+        </button>
+      </div>
+      <p
+        v-if="outcome?.context === 'details'"
+        id="details-cancellation-outcome"
+        class="alert alert-success cancellation-outcome"
+        role="status"
+        tabindex="-1"
+      >
+        {{ outcome.message }}
+      </p>
+      <p
+        v-if="executed?.context === 'details'"
+        id="details-execution-outcome"
+        class="alert alert-success execution-outcome"
+        role="status"
+        tabindex="-1"
+      >
+        {{ executed.message }}
+      </p>
       <p v-if="positions.loaded && position === undefined" class="state">{{ symbol }} is no longer an open position; its trades are still listed.</p>
 
       <p v-if="trades.error" class="alert alert-error" role="alert">
@@ -207,11 +267,41 @@ const cellText = (trade: Trade, key: string): string => {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="trade in trades.items" :key="trade.id">
+              <tr v-for="trade in trades.items" :key="trade.id" :data-trade-id="trade.id">
                 <template v-for="column in visibleColumns" :key="column.key">
-                  <th v-if="column.key === 'executedAt'" scope="row" class="executed"><LocalTimestamp :utc="trade.executedAt" /></th>
+                  <th v-if="column.key === 'executedAt'" scope="row" class="executed"><LocalTimestamp :utc="trade.executedAt" none="Not executed" /></th>
                   <td v-else-if="column.key === 'side'">
                     <span class="side-badge" :class="trade.side === 'Buy' ? 'side-badge-buy' : 'side-badge-sell'">{{ trade.side }}</span>
+                  </td>
+                  <td v-else-if="column.key === 'status'" class="status"><StatusBadge :status="trade.status" :reason="trade.cancellationReason" /></td>
+                  <td v-else-if="column.key === 'actions'" class="actions">
+                    <button
+                      v-if="isExecutable(trade)"
+                      type="button"
+                      class="button-secondary button-small execute-trade"
+                      :aria-label="`Execute the Pending trade: ${describeTrade(trade)}`"
+                      @click="startExecute(trade, $event)"
+                    >
+                      Execute…
+                    </button>
+                    <button
+                      v-if="isCancellable(trade)"
+                      type="button"
+                      class="button-secondary button-small cancel-trade"
+                      :aria-label="`Cancel the Pending trade: ${describeTrade(trade)}`"
+                      @click="startCancel(trade, $event)"
+                    >
+                      Cancel…
+                    </button>
+                    <button
+                      type="button"
+                      class="button-secondary button-small show-history"
+                      :aria-label="`Audit history of the trade: ${describeTrade(trade)}`"
+                      :aria-pressed="auditTradeId === trade.id"
+                      @click="showHistory(trade)"
+                    >
+                      History
+                    </button>
                   </td>
                   <td v-else-if="column.key === 'price'" class="numeric price"><MoneyValue :value="trade.price" :show-exact="showExact" /></td>
                   <td v-else-if="column.key === 'notional'" class="numeric notional"><MoneyValue :value="trade.notional" :show-exact="showExact" /></td>
@@ -225,8 +315,9 @@ const cellText = (trade: Trade, key: string): string => {
         </div>
         <TradePager placement="bottom" v-bind="pager" />
       </template>
+      <AuditHistory />
       <p id="details-help" class="hint">
-        Only trades in exactly {{ symbol }} are listed. Prices and notionals are shown to 2 decimal places; point at one,
+        Only trades in exactly {{ symbol }} are listed, each once with its status; History shows a trade's audit history below. Prices and notionals are shown to 2 decimal places; point at one,
         or turn on Exact values, for its exact value. Choose Executed at, Quantity or Price to sort. To resize a column, drag the edge of its header,
         or focus the edge and press the Left or Right arrow key.
       </p>

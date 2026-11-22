@@ -1,0 +1,627 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "id": "232c954b-83de-4db1-b6a7-44d4d2bada11",
+  "prevIds": [
+    "e3dc58b2-d3b5-49a5-842b-91a82b0426e8"
+  ],
+  "ddl": [
+    {
+      "name": "trade_audit",
+      "entityType": "tables"
+    },
+    {
+      "name": "trades",
+      "entityType": "tables"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": true,
+      "default": null,
+      "generated": null,
+      "name": "audit_id",
+      "entityType": "columns",
+      "table": "trade_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "audit_action",
+      "entityType": "columns",
+      "table": "trade_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "audit_on",
+      "entityType": "columns",
+      "table": "trade_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "audit_by",
+      "entityType": "columns",
+      "table": "trade_audit"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "booking_sequence",
+      "entityType": "columns",
+      "table": "trade_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
+      "table": "trade_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "symbol",
+      "entityType": "columns",
+      "table": "trade_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "side",
+      "entityType": "columns",
+      "table": "trade_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "quantity",
+      "entityType": "columns",
+      "table": "trade_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "price",
+      "entityType": "columns",
+      "table": "trade_audit"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "executed_at",
+      "entityType": "columns",
+      "table": "trade_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "table": "trade_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "table": "trade_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "quantity_key",
+      "entityType": "columns",
+      "table": "trade_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "price_key",
+      "entityType": "columns",
+      "table": "trade_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "status",
+      "entityType": "columns",
+      "table": "trade_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "created_by",
+      "entityType": "columns",
+      "table": "trade_audit"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "updated_by",
+      "entityType": "columns",
+      "table": "trade_audit"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "original_trade_id",
+      "entityType": "columns",
+      "table": "trade_audit"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "cancellation_reason",
+      "entityType": "columns",
+      "table": "trade_audit"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": true,
+      "default": null,
+      "generated": null,
+      "name": "booking_sequence",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "symbol",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "side",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "quantity",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "price",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "executed_at",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": {
+        "as": "(printf('%010d', case when instr(\"quantity\", '.') = 0 then length(\"quantity\") else instr(\"quantity\", '.') - 1 end) || \"quantity\")",
+        "type": "virtual"
+      },
+      "name": "quantity_key",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": {
+        "as": "(printf('%010d', case when instr(\"price\", '.') = 0 then length(\"price\") else instr(\"price\", '.') - 1 end) || \"price\")",
+        "type": "virtual"
+      },
+      "name": "price_key",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "status",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "created_by",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "updated_by",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "original_trade_id",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "cancellation_reason",
+      "entityType": "columns",
+      "table": "trades"
+    },
+    {
+      "columns": [
+        "original_trade_id"
+      ],
+      "tableTo": "trades",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "nameExplicit": false,
+      "name": "fk_trades_original_trade_id_trades_id_fk",
+      "entityType": "fks",
+      "table": "trades"
+    },
+    {
+      "columns": [
+        "audit_id"
+      ],
+      "nameExplicit": false,
+      "name": "trade_audit_pk",
+      "table": "trade_audit",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "booking_sequence"
+      ],
+      "nameExplicit": false,
+      "name": "trades_pk",
+      "table": "trades",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        {
+          "value": "id",
+          "isExpression": false
+        },
+        {
+          "value": "audit_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "trade_audit_trade",
+      "entityType": "indexes",
+      "table": "trade_audit"
+    },
+    {
+      "columns": [
+        {
+          "value": "executed_at",
+          "isExpression": false
+        },
+        {
+          "value": "booking_sequence",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "trades_trade_order",
+      "entityType": "indexes",
+      "table": "trades"
+    },
+    {
+      "columns": [
+        {
+          "value": "symbol",
+          "isExpression": false
+        },
+        {
+          "value": "executed_at",
+          "isExpression": false
+        },
+        {
+          "value": "booking_sequence",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "trades_symbol_trade_order",
+      "entityType": "indexes",
+      "table": "trades"
+    },
+    {
+      "columns": [
+        {
+          "value": "quantity_key",
+          "isExpression": false
+        },
+        {
+          "value": "executed_at",
+          "isExpression": false
+        },
+        {
+          "value": "booking_sequence",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "trades_quantity_order",
+      "entityType": "indexes",
+      "table": "trades"
+    },
+    {
+      "columns": [
+        {
+          "value": "price_key",
+          "isExpression": false
+        },
+        {
+          "value": "executed_at",
+          "isExpression": false
+        },
+        {
+          "value": "booking_sequence",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "trades_price_order",
+      "entityType": "indexes",
+      "table": "trades"
+    },
+    {
+      "columns": [
+        {
+          "value": "original_trade_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "trades_original_trade_id",
+      "entityType": "indexes",
+      "table": "trades"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "trades_id_unique",
+      "entityType": "uniques",
+      "table": "trades"
+    },
+    {
+      "value": "\"audit_action\" in ('Inserted', 'Updated', 'Deleted')",
+      "name": "trade_audit_action",
+      "entityType": "checks",
+      "table": "trade_audit"
+    },
+    {
+      "value": "typeof(\"audit_on\") = 'text'\n    and \"audit_on\" glob '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'",
+      "name": "trade_audit_on",
+      "entityType": "checks",
+      "table": "trade_audit"
+    },
+    {
+      "value": "\"audit_by\" = 'System'",
+      "name": "trade_audit_by",
+      "entityType": "checks",
+      "table": "trade_audit"
+    },
+    {
+      "value": "typeof(\"id\") = 'text' and length(\"id\") > 0",
+      "name": "trades_id",
+      "entityType": "checks",
+      "table": "trades"
+    },
+    {
+      "value": "typeof(\"symbol\") = 'text'\n      and length(\"symbol\") between 1 and 255\n      and \"symbol\" = trim(\"symbol\")",
+      "name": "trades_symbol",
+      "entityType": "checks",
+      "table": "trades"
+    },
+    {
+      "value": "\"side\" in ('Buy', 'Sell')",
+      "name": "trades_side",
+      "entityType": "checks",
+      "table": "trades"
+    },
+    {
+      "value": "typeof(\"quantity\") = 'text'\n    and (\"quantity\" glob '[0-9]' or \"quantity\" glob '[0-9]*[0-9]')\n    and \"quantity\" not glob '*[^0-9.]*'\n    and \"quantity\" not glob '*.*.*'\n    and \"quantity\" not glob '0[0-9]*'\n    and not (\"quantity\" glob '*.*' and \"quantity\" glob '*0')\n    and \"quantity\" <> '0'",
+      "name": "trades_quantity",
+      "entityType": "checks",
+      "table": "trades"
+    },
+    {
+      "value": "typeof(\"price\") = 'text'\n    and (\"price\" glob '[0-9]' or \"price\" glob '[0-9]*[0-9]')\n    and \"price\" not glob '*[^0-9.]*'\n    and \"price\" not glob '*.*.*'\n    and \"price\" not glob '0[0-9]*'\n    and not (\"price\" glob '*.*' and \"price\" glob '*0')\n    and \"price\" <> '0'",
+      "name": "trades_price",
+      "entityType": "checks",
+      "table": "trades"
+    },
+    {
+      "value": "(\"status\" = 'Executed' and typeof(\"executed_at\") = 'text'\n    and \"executed_at\" glob '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z')\n      or (\"status\" <> 'Executed' and \"executed_at\" is null)",
+      "name": "trades_executed_at",
+      "entityType": "checks",
+      "table": "trades"
+    },
+    {
+      "value": "typeof(\"status\") = 'text' and \"status\" in ('Pending', 'Executed', 'Cancelled')",
+      "name": "trades_status",
+      "entityType": "checks",
+      "table": "trades"
+    },
+    {
+      "value": "\"created_by\" in ('User', 'Admin') and \"updated_by\" in ('User', 'Admin')",
+      "name": "trades_actors",
+      "entityType": "checks",
+      "table": "trades"
+    },
+    {
+      "value": "(\"original_trade_id\" is null and \"cancellation_reason\" is null and \"created_by\" = 'User')\n      or (typeof(\"original_trade_id\") = 'text' and \"original_trade_id\" <> \"id\" and \"status\" = 'Cancelled'\n        and typeof(\"cancellation_reason\") = 'text' and length(trim(\"cancellation_reason\")) > 0\n        and length(\"cancellation_reason\") <= 500\n        and \"created_by\" = 'Admin' and \"updated_by\" = 'Admin' and \"created_at\" = \"updated_at\")",
+      "name": "trades_cancellation",
+      "entityType": "checks",
+      "table": "trades"
+    },
+    {
+      "value": "typeof(\"created_at\") = 'text'\n    and \"created_at\" glob '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z'",
+      "name": "trades_created_at",
+      "entityType": "checks",
+      "table": "trades"
+    },
+    {
+      "value": "typeof(\"updated_at\") = 'text'\n    and \"updated_at\" glob '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z' and \"updated_at\" >= \"created_at\"",
+      "name": "trades_updated_at",
+      "entityType": "checks",
+      "table": "trades"
+    }
+  ],
+  "renames": []
+}

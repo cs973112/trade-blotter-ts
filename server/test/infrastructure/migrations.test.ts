@@ -41,12 +41,28 @@ describe('infrastructure: migrations', () => {
     applyMigrations(db)
 
     expect(names(schemaObjects(db))).toEqual([
+      'trade_audit_trade',
+      'trades_executed_price_order',
+      'trades_executed_quantity_order',
+      'trades_executed_symbol_trade_order',
+      'trades_executed_trade_order',
+      'trades_logical_price_order',
+      'trades_logical_quantity_order',
+      'trades_logical_symbol_trade_order',
+      'trades_logical_trade_order',
+      'trades_original_trade_id',
       'trades_price_order',
       'trades_quantity_order',
       'trades_symbol_trade_order',
       'trades_trade_order',
       '__drizzle_migrations',
+      'trade_audit',
       'trades',
+      'trade_audit_no_delete',
+      'trade_audit_no_update',
+      'trades_audit_delete',
+      'trades_audit_insert',
+      'trades_audit_update',
     ])
     expect(rawRows(db, '__drizzle_migrations')).toHaveLength(readdirSync(MIGRATIONS_FOLDER).length)
   })
@@ -106,6 +122,14 @@ describe('infrastructure: migrations', () => {
 describe('infrastructure: upgrading a populated database to the exact decimal sort keys', () => {
   const V2_COLUMNS = 'booking_sequence, id, symbol, side, quantity, price, executed_at, created_at, updated_at'
 
+  /** The first `count` migrations alone, in a folder of their own, as an earlier release shipped them. */
+  function firstMigrations(count: number): string {
+    const folder = join(createTempDir(), 'drizzle')
+    tempDirs.push(join(folder, '..'))
+    for (const name of readdirSync(MIGRATIONS_FOLDER).sort().slice(0, count)) cpSync(join(MIGRATIONS_FOLDER, name), join(folder, name), { recursive: true })
+    return folder
+  }
+
   /** A database as the first release left it: only the first migration, applied by the same migrator. */
   function firstReleaseDatabase() {
     const [first] = readdirSync(MIGRATIONS_FOLDER).sort()
@@ -139,7 +163,8 @@ describe('infrastructure: upgrading a populated database to the exact decimal so
     const before = snapshot(db)
     expect(names(before.objects)).toEqual(['trades_symbol_trade_order', 'trades_trade_order', 'trades'])
 
-    applyMigrations(db)
+    // Up to the release that added the keys; the lifecycle migration after it has its own tests.
+    applyMigrations(db, firstMigrations(2))
 
     const after = snapshot(db)
     expect(after.rows).toEqual(before.rows)
@@ -149,7 +174,7 @@ describe('infrastructure: upgrading a populated database to the exact decimal so
     // The existing indexes are exactly as they were.
     for (const object of before.objects.filter((item) => (item as { type: string }).type === 'index')) expect(after.objects).toContainEqual(object)
     expect(db.$client.prepare('pragma integrity_check').all()).toEqual([{ integrity_check: 'ok' }])
-    expect(rawRows(db, '__drizzle_migrations')).toHaveLength(readdirSync(MIGRATIONS_FOLDER).length)
+    expect(rawRows(db, '__drizzle_migrations')).toHaveLength(2)
   })
 
   it('computes the keys for the rows already stored, and lists and books through the upgraded table', async () => {

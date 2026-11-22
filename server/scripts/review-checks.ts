@@ -1,5 +1,6 @@
 import { mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 
 import { loadConfig } from '../src/config.ts'
 import { compareTrades, DEFAULT_TRADE_SORT, type TradeSort } from '../src/domain/trade-query.ts'
@@ -45,6 +46,23 @@ interface Answer {
 async function request(url: string, init: RequestInit = {}): Promise<Answer> {
   const response = await fetch(url, { ...init, signal: AbortSignal.timeout(120_000) })
   return { status: response.status, type: response.headers.get('content-type') ?? '', body: await response.text() }
+}
+
+/**
+ * Every row of the trades table and every audit entry, summarised (counts, the highest booking
+ * sequence, each row's status), read only: a refusal that wrote anything, a Pending row included,
+ * changes it. The dataset fingerprint covers Executed trades only.
+ */
+function everyWrite(path: string): string {
+  const client = new DatabaseSync(path, { readOnly: true })
+  try {
+    return JSON.stringify([
+      client.prepare('select count(*) as n, max(booking_sequence) as last, group_concat(status) as statuses from trades').get(),
+      client.prepare('select count(*) as n from trade_audit').get(),
+    ])
+  } finally {
+    client.close()
+  }
 }
 
 /** Runs one check: a problem (string) fails it, and so does an error, with its message. */
@@ -200,18 +218,63 @@ export async function bookingChecks(report: Report, disposable: Disposable): Pro
     const post = (body: string) => request(`${api}/trades`, { method: 'POST', headers: { 'content-type': 'application/json' }, body })
     report.info(`Bookings: a throwaway copy of the scratch dataset (${String(disposable.count)} trades) with an API of its own`, path)
 
+    /** Positions as the API lists them, without the trade booked here, whose symbol only it has. */
+    const positionsWithout = async (symbol: string): Promise<{ others: string; own: unknown }> => {
+      const rows = JSON.parse((await request(`${api}/positions`)).body) as { symbol: string }[]
+      return { others: JSON.stringify(rows.filter((row) => row.symbol !== symbol)), own: rows.find((row) => row.symbol === symbol) }
+    }
+    const positionsBefore = await positionsWithout('ZZREVIEW')
     let booked: string | undefined
-    await check(report, 'Booking: a valid trade is normalised, stored and returned with its booking sequence and exact decimals', async () => {
-      const answer = await post('{"symbol":" zzreview ","side":"buy","quantity":"0.0000000001","price":"999999999999999.9999999999","executedAt":"2026-03-08T07:30:00-05:00"}')
+    let bookedAnswer: Record<string, unknown> | undefined
+    await check(report, 'Booking: a valid trade is booked Pending, normalised, with its booking sequence, exact decimals and no execution time', async () => {
+      const answer = await post('{"symbol":" zzreview ","side":"buy","quantity":"0.0000000001","price":"999999999999999.9999999999"}')
       if (answer.status !== 201) return `status ${String(answer.status)}: ${answer.body}`
       booked = /"id":"([^"]+)"/.exec(answer.body)?.[1]
+      bookedAnswer = JSON.parse(answer.body) as Record<string, unknown>
       const want = ['"symbol":"ZZREVIEW"', '"side":"Buy"', '"quantity":0.0000000001', '"price":999999999999999.9999999999',
-        '"executedAt":"2026-03-08T12:30:00.000Z"', `"bookingSequence":${String(disposable.count + 1)}`]
+        '"status":"Pending"', '"executedAt":null', '"createdBy":"User"', `"bookingSequence":${String(disposable.count + 1)}`]
       const missing = want.find((part) => !answer.body.includes(part))
       return missing === undefined ? undefined : `the response lacks ${missing}: ${answer.body}`
     })
+    await check(report, 'Booking: a Pending trade changes no actual position (Executed net and average cost)', async () => {
+      const after = await positionsWithout('ZZREVIEW')
+      if (after.others !== positionsBefore.others) return 'the other positions changed'
+      const own = after.own as { executedNetQuantity?: unknown; averageCost?: unknown } | undefined
+      return own === undefined || (own.executedNetQuantity === 0 && own.averageCost === 0) ? undefined : `ZZREVIEW has an actual position: ${JSON.stringify(own)}`
+    })
+    await check(report, 'Booking: a trade booked as Executed, or with an execution time, is refused, and nothing is stored', async () => {
+      const before = everyWrite(path)
+      const executed = await post('{"symbol":"ZZREVIEW","side":"Buy","quantity":"1","price":"1","status":"Executed"}')
+      const timed = await post('{"symbol":"ZZREVIEW","side":"Buy","quantity":"1","price":"1","executedAt":"2026-03-08T07:30:00-05:00"}')
+      if (executed.status !== 400 || !executed.body.includes('"status":[')) return `status Executed: ${String(executed.status)} ${executed.body}`
+      if (timed.status !== 400 || !timed.body.includes('"executedAt":[')) return `executedAt: ${String(timed.status)} ${timed.body}`
+      return everyWrite(path) === before ? undefined : 'the database changed'
+    })
+    await check(report, 'Execution: the Pending trade is executed in place, at the server clock in UTC, keeping its booking', async () => {
+      const startedAt = Date.now()
+      const answer = await request(`${api}/trades/${booked ?? ''}/execution`, { method: 'POST' })
+      if (answer.status !== 200) return `status ${String(answer.status)}: ${answer.body}`
+      const trade = JSON.parse(answer.body) as Record<string, unknown>
+      const executedAt = String(trade['executedAt'])
+      if (trade['status'] !== 'Executed' || trade['updatedBy'] !== 'User' || trade['updatedAt'] !== executedAt) return `not executed as User: ${answer.body}`
+      if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(executedAt) || Date.parse(executedAt) < startedAt - 1_000 || Date.parse(executedAt) > Date.now() + 1_000) {
+        return `execution time ${executedAt} is not the server clock in canonical UTC`
+      }
+      for (const field of ['id', 'bookingSequence', 'symbol', 'side', 'createdAt', 'createdBy']) {
+        if (trade[field] !== bookedAnswer?.[field]) return `${field} changed: ${JSON.stringify(trade[field])}, booked ${JSON.stringify(bookedAnswer?.[field])}`
+      }
+      return answer.body.includes('"quantity":0.0000000001') && answer.body.includes('"price":999999999999999.9999999999') ? undefined : `the decimals changed: ${answer.body}`
+    })
+    await check(report, 'Execution: a second execution, and a cancellation of the Executed trade, are refused with 409, and nothing changes', async () => {
+      const before = everyWrite(path)
+      const again = await request(`${api}/trades/${booked ?? ''}/execution`, { method: 'POST' })
+      const cancel = await request(`${api}/trades/${booked ?? ''}/cancellation`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"reason":"Too late"}' })
+      if (again.status !== 409 || !again.body.includes('invalid-transition')) return `second execution: ${String(again.status)} ${again.body}`
+      if (cancel.status !== 409 || !cancel.body.includes('invalid-transition')) return `cancellation: ${String(cancel.status)} ${cancel.body}`
+      return everyWrite(path) === before ? undefined : 'the database changed'
+    })
     const snapshot = await readSnapshot(path)
-    await check(report, 'Booking: the trade is counted, and is on the page the domain\'s order puts it, sorted and filtered', async () => {
+    await check(report, 'Execution: the trade is counted, and is on the page the domain\'s order puts it, sorted and filtered', async () => {
       if (snapshot.trades.length !== disposable.count + 1) return `${String(snapshot.trades.length)} trades stored, expected ${String(disposable.count + 1)}`
       const views = [
         [{}, everything, DEFAULT_TRADE_SORT],
@@ -227,16 +290,17 @@ export async function bookingChecks(report: Report, disposable: Disposable): Pro
       }
       return undefined
     })
-    await check(report, 'Booking: positions include the new trade, from the whole history', async () =>
+    await check(report, 'Execution: positions include the executed trade, from the whole history', async () =>
       expectedDifference((await request(`${api}/positions`)).body, expectedResponse({ kind: 'positions', name: 'check' }, snapshot)))
     await check(report, 'Booking: an invalid trade is refused with every field\'s reason, and nothing is stored', async () => {
+      const before = everyWrite(path)
       const answer = await post('{"symbol":"","side":"hold","quantity":"-1","price":"1000000000000000"}')
       if (answer.status !== 400) return `status ${String(answer.status)}`
       const problem = JSON.parse(answer.body) as { type?: string; errors?: Record<string, string[]> }
       if (problem.type !== 'urn:trade-blotter:problem:invalid-trade') return `problem type ${String(problem.type)}`
       const fields = Object.keys(problem.errors ?? {})
       if (fields.join() !== 'symbol,side,quantity,price') return `errors for ${fields.join(', ')}`
-      return (await readSnapshot(path)).fingerprint === snapshot.fingerprint ? undefined : 'the database changed'
+      return everyWrite(path) === before && (await readSnapshot(path)).fingerprint === snapshot.fingerprint ? undefined : 'the database changed'
     })
   } finally {
     await server?.close()

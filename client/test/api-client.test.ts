@@ -8,10 +8,17 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+/** A booking as the API answers it: Pending, with no execution time. */
 const TRADE = tradeJson({
   id: 't1', bookingSequence: 7, symbol: 'MSFT', side: 'Buy',
   quantity: '123456789012345.1234567891', price: '0.0000000001', notional: '12345.67890123451234567891',
-  executedAt: '2026-01-02T14:30:00.123Z',
+  executedAt: '2026-01-02T14:30:00.123Z', status: 'Pending',
+})
+/** The same trade executed. */
+const EXECUTED = tradeJson({
+  id: 't1', bookingSequence: 7, symbol: 'MSFT', side: 'Buy',
+  quantity: '123456789012345.1234567891', price: '0.0000000001', notional: '12345.67890123451234567891',
+  executedAt: '2026-03-01T13:00:00.000Z', updatedAt: '2026-03-01T13:00:00.000Z',
 })
 
 async function failure(promise: Promise<unknown>): Promise<ApiError> {
@@ -25,28 +32,35 @@ async function failure(promise: Promise<unknown>): Promise<ApiError> {
 }
 
 describe('API client: POST /trades', () => {
-  it('sends only the request fields, with decimals as the exact text typed', async () => {
+  it('sends only the request fields, with decimals as the exact text typed: never an execution time or a server field', async () => {
     const server = fakeApi({ 'POST /trades': json(TRADE, 201) })
     const request = {
       symbol: 'MSFT', side: 'Buy', quantity: '123456789012345.1234567891', price: '10.50', executedAt: '2026-01-02T09:30:00-05:00',
-      id: 'mine', bookingSequence: 1, createdAt: '2000-01-01T00:00:00Z', updatedAt: '2000-01-01T00:00:00Z',
+      id: 'mine', bookingSequence: 1, createdAt: '2000-01-01T00:00:00Z', updatedAt: '2000-01-01T00:00:00Z', updatedBy: 'Admin',
     } as CreateTradeRequest
 
     await api.createTrade(request)
 
     expect(server.calls).toHaveLength(1)
     expect(server.calls[0]).toMatchObject({ method: 'POST', url: '/trades', headers: { 'content-type': 'application/json' } })
-    expect(server.calls[0]?.body).toBe(
-      '{"symbol":"MSFT","side":"Buy","quantity":"123456789012345.1234567891","price":"10.50","executedAt":"2026-01-02T09:30:00-05:00"}',
-    )
+    expect(server.calls[0]?.body).toBe('{"symbol":"MSFT","side":"Buy","quantity":"123456789012345.1234567891","price":"10.50"}')
   })
 
-  it('leaves executedAt out when there is none', async () => {
+  it('sends status Pending only when asked to, and never anything else for it', async () => {
     const server = fakeApi({ 'POST /trades': json(TRADE, 201) })
 
     await api.createTrade({ symbol: 'A', side: 'Sell', quantity: '1', price: '2' })
+    await api.createTrade({ symbol: 'A', side: 'Sell', quantity: '1', price: '2', status: 'Pending' })
 
-    expect(server.calls[0]?.body).toBe('{"symbol":"A","side":"Sell","quantity":"1","price":"2"}')
+    expect(server.calls.map((call) => call.body)).toEqual([
+      '{"symbol":"A","side":"Sell","quantity":"1","price":"2"}', '{"symbol":"A","side":"Sell","quantity":"1","price":"2","status":"Pending"}',
+    ])
+  })
+
+  it('refuses an answer that is not a Pending trade with no execution time', async () => {
+    fakeApi({ 'POST /trades': json(EXECUTED, 201) })
+
+    expect((await failure(api.createTrade({ symbol: 'MSFT', side: 'Buy', quantity: '1', price: '1' }))).kind).toBe('server')
   })
 
   it('returns the stored trade with every digit of its decimals', async () => {
@@ -55,7 +69,8 @@ describe('API client: POST /trades', () => {
     expect(await api.createTrade({ symbol: 'MSFT', side: 'Buy', quantity: '1', price: '1' })).toEqual({
       id: 't1', bookingSequence: 7, symbol: 'MSFT', side: 'Buy',
       quantity: '123456789012345.1234567891', price: '0.0000000001', notional: '12345.67890123451234567891',
-      executedAt: '2026-01-02T14:30:00.123Z', createdAt: '2026-03-01T12:00:00.000Z', updatedAt: '2026-03-01T12:00:00.000Z',
+      status: 'Pending', executedAt: null, createdAt: '2026-03-01T12:00:00.000Z', updatedAt: '2026-03-01T12:00:00.000Z',
+      createdBy: 'User', updatedBy: 'User', originalTradeId: null, cancellationReason: null, cancellationTradeId: null,
     })
   })
 
@@ -96,6 +111,52 @@ describe('API client: POST /trades', () => {
 
     expect(error.kind).toBe('rejected')
     expect(error.message).toBe('The request was not accepted (HTTP 415). Reload the page and try again.')
+  })
+})
+
+describe('API client: POST /trades/{id}/execution', () => {
+  it('sends nothing but the id: no body and no content type', async () => {
+    const server = fakeApi({ 'POST /trades/:id/execution': json(EXECUTED) })
+
+    expect(await api.executeTrade('t1')).toMatchObject({ id: 't1', status: 'Executed', executedAt: '2026-03-01T13:00:00.000Z' })
+    expect(server.calls).toHaveLength(1)
+    expect(server.calls[0]).toMatchObject({ method: 'POST', url: '/trades/t1/execution', body: undefined })
+    expect(server.calls[0]?.headers['content-type']).toBeUndefined()
+  })
+
+  it('escapes the id in the path', async () => {
+    const server = fakeApi({ 'POST /trades/:id/execution': json(EXECUTED) })
+
+    await failure(api.executeTrade('a/b c'))
+
+    expect(server.calls[0]?.url).toBe('/trades/a%2Fb%20c/execution')
+  })
+
+  it('refuses an answer that is not this trade, Executed with an execution time', async () => {
+    for (const answer of [TRADE, tradeJson({ id: 'other', bookingSequence: 1, symbol: 'A', side: 'Buy', quantity: '1', price: '1', notional: '1', executedAt: '2026-03-01T13:00:00.000Z' })]) {
+      fakeApi({ 'POST /trades/:id/execution': json(answer) })
+      expect((await failure(api.executeTrade('t1'))).kind).toBe('server')
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('turns a 409 invalid transition into a conflict with the server\'s explanation, and a 404 into not-found', async () => {
+    fakeApi({ 'POST /trades/:id/execution': problem(409, { type: 'urn:trade-blotter:problem:invalid-transition', detail: 'Trade t1 is already executed.' }) })
+    expect(await failure(api.executeTrade('t1'))).toMatchObject({ kind: 'conflict', message: 'Trade t1 is already executed.', problem: 'invalid-transition' })
+    vi.unstubAllGlobals()
+
+    fakeApi({ 'POST /trades/:id/execution': problem(404, { type: 'urn:trade-blotter:problem:trade-not-found', detail: 'No trade has the id t1.' }) })
+    expect(await failure(api.executeTrade('t1'))).toMatchObject({ kind: 'not-found', problem: 'trade-not-found' })
+  })
+
+  it('turns a 409 position limit into a conflict that says the trade was not executed, and a 400 into a rejection', async () => {
+    const detail = 'Trade t1 was not executed: The net quantity of BIG reached the position limit of 1e30. It stays Pending.'
+    fakeApi({ 'POST /trades/:id/execution': problem(409, { type: 'urn:trade-blotter:problem:position-limit', detail, symbol: 'BIG' }) })
+    expect(await failure(api.executeTrade('t1'))).toMatchObject({ kind: 'conflict', message: detail, problem: 'position-limit' })
+    vi.unstubAllGlobals()
+
+    fakeApi({ 'POST /trades/:id/execution': problem(400, { type: 'urn:trade-blotter:problem:invalid-execution', detail: 'Unexpected member x' }) })
+    expect(await failure(api.executeTrade('t1'))).toMatchObject({ kind: 'rejected', problem: 'invalid-execution' })
   })
 })
 
@@ -167,13 +228,13 @@ describe('API client: lists', () => {
 
   it('reads positions with exact decimals', async () => {
     fakeApi({
-      'GET /positions': json('[{"symbol":"AAPL","netQuantity":-0.1,"averageCost":3},' +
-        '{"symbol":"MSFT","netQuantity":3,"averageCost":1.6666666666666666666666666666666666666666666666667}]'),
+      'GET /positions': json('[{"symbol":"AAPL","netQuantity":-0.1,"averageCost":3,"executedNetQuantity":-0.1,"pendingNetQuantity":0,"projectedNetQuantity":-0.1},' +
+        '{"symbol":"MSFT","netQuantity":3,"averageCost":1.6666666666666666666666666666666666666666666666667,"executedNetQuantity":3,"pendingNetQuantity":0,"projectedNetQuantity":3}]'),
     })
 
     expect(await api.listPositions()).toEqual([
-      { symbol: 'AAPL', netQuantity: '-0.1', averageCost: '3' },
-      { symbol: 'MSFT', netQuantity: '3', averageCost: '1.6666666666666666666666666666666666666666666666667' },
+      { symbol: 'AAPL', netQuantity: '-0.1', averageCost: '3', executedNetQuantity: '-0.1', pendingNetQuantity: '0', projectedNetQuantity: '-0.1' },
+      { symbol: 'MSFT', netQuantity: '3', averageCost: '1.6666666666666666666666666666666666666666666666667', executedNetQuantity: '3', pendingNetQuantity: '0', projectedNetQuantity: '3' },
     ])
   })
 })

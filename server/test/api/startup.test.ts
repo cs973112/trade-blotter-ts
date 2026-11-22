@@ -40,7 +40,7 @@ describe('startup and shutdown', () => {
     const app = await createServer(loadConfig({ DATABASE_PATH: path }), { logger: false })
     opened.push(app)
 
-    expect(tables(path)).toEqual([{ name: '__drizzle_migrations' }, { name: 'trades' }])
+    expect(tables(path)).toEqual([{ name: '__drizzle_migrations' }, { name: 'trade_audit' }, { name: 'trades' }])
     expect((await app.inject({ method: 'GET', url: '/trades' })).body).toBe('[]')
     await app.close()
   })

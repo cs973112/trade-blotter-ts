@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { HTTP_SCENARIOS } from '../scenarios/http.ts'
-import { TRADE_REQUEST_SCENARIOS } from '../scenarios/trade-requests.ts'
+import { BOOKED, TRADE_REQUEST_SCENARIOS } from '../scenarios/trade-requests.ts'
 import { createTestServer, SERVER_CLOCK } from '../support/app.ts'
 import { JSON_TYPE, postTrade, PROBLEM_TYPE, rawNumbers } from '../support/http.ts'
 
@@ -51,7 +51,7 @@ describe('API: trade request scenarios', () => {
       bookingSequence: booked,
       symbol: expected.symbol,
       side: expected.side,
-      executedAt: expected.executedAt === 'server clock' ? SERVER_CLOCK : expected.executedAt,
+      ...BOOKED,
       createdAt: SERVER_CLOCK,
       updatedAt: SERVER_CLOCK,
     })

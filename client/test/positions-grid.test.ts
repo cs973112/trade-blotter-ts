@@ -67,7 +67,7 @@ function positionsJson(count: number): string {
     const number = index + 1
     const quantity = number % 2 === 0 ? `-${String(number * 10)}` : String(number * 10)
     const cost = number === 1 ? '1.6666666666666666666666666666666666666666666666667' : `${String(number)}.25`
-    return `{"symbol":"P${String(number).padStart(3, '0')}","netQuantity":${quantity},"averageCost":${cost}}`
+    return `{"symbol":"P${String(number).padStart(3, '0')}","netQuantity":${quantity},"averageCost":${cost},"executedNetQuantity":${quantity},"pendingNetQuantity":0,"projectedNetQuantity":${quantity}}`
   })
   return `[${items.join(',')}]`
 }
@@ -125,7 +125,7 @@ describe('positions grid', () => {
 
     const handles = panel.findAll('[role="separator"]')
     expect(handles.map((element) => element.attributes('aria-label'))).toEqual([
-      'Resize the Symbol column', 'Resize the Direction column', 'Resize the Net quantity column', 'Resize the Average cost column',
+      'Resize the Symbol column', 'Resize the Direction column', 'Resize the Executed net column', 'Resize the Average cost column',
     ])
     for (const element of handles) {
       expect(element.attributes('tabindex')).toBe('0')
@@ -142,13 +142,13 @@ describe('positions grid', () => {
     expect(panel.find('table').attributes('style') ?? '').not.toContain('table-layout')
     expect(headerWidths(panel)).toEqual(['88px', '112px', '136px', '136px'])
 
-    await handle(panel, 'Net quantity').trigger('keydown', { key: 'ArrowRight' })
+    await handle(panel, 'Executed net').trigger('keydown', { key: 'ArrowRight' })
 
     expect(panel.find('table').attributes('style')).toContain('table-layout: fixed')
     expect(headerWidths(panel)).toEqual(['88px', '112px', '146px', '136px'])
     expect(panel.find('table').attributes('style')).toContain(`width: ${String(88 + 112 + 146 + 136)}px`)
-    expect(handle(panel, 'Net quantity').attributes('aria-valuenow')).toBe('146')
-    expect(handle(panel, 'Net quantity').attributes('aria-valuetext')).toBe('146 pixels wide')
+    expect(handle(panel, 'Executed net').attributes('aria-valuenow')).toBe('146')
+    expect(handle(panel, 'Executed net').attributes('aria-valuetext')).toBe('146 pixels wide')
   })
 
   it('resizes from the keyboard: arrows, Shift, Home to the least width, and never narrower', async () => {

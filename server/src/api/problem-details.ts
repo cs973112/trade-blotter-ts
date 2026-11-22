@@ -2,7 +2,10 @@ import { STATUS_CODES } from 'node:http'
 
 import type { FastifyError, FastifyInstance } from 'fastify'
 
-import { TradeQueryValidationError, TradeValidationError } from '../application/errors.ts'
+import {
+  AuditQueryValidationError, CancellationValidationError, ExecutionLimitError, ExecutionValidationError, TradeNotFoundError, TradeQueryValidationError,
+  TradeStateError, TradeValidationError,
+} from '../application/errors.ts'
 import { PositionLimitError } from '../domain/position.ts'
 
 /**
@@ -17,6 +20,10 @@ export const PROBLEM_CONTENT_TYPE = 'application/problem+json'
 export const INVALID_TRADE_TYPE = 'urn:trade-blotter:problem:invalid-trade'
 export const POSITION_LIMIT_TYPE = 'urn:trade-blotter:problem:position-limit'
 export const INVALID_QUERY_TYPE = 'urn:trade-blotter:problem:invalid-query'
+export const TRADE_NOT_FOUND_TYPE = 'urn:trade-blotter:problem:trade-not-found'
+export const INVALID_CANCELLATION_TYPE = 'urn:trade-blotter:problem:invalid-cancellation'
+export const INVALID_TRANSITION_TYPE = 'urn:trade-blotter:problem:invalid-transition'
+export const INVALID_EXECUTION_TYPE = 'urn:trade-blotter:problem:invalid-execution'
 
 export interface ProblemDetails {
   readonly type: string
@@ -25,6 +32,7 @@ export interface ProblemDetails {
   readonly detail?: string
   readonly errors?: Readonly<Record<string, readonly string[]>>
   readonly symbol?: string
+  readonly tradeId?: string
 }
 
 export function problemFor(status: number, detail?: string): ProblemDetails {
@@ -49,6 +57,24 @@ function problemForError(error: FastifyError): ProblemDetails {
   if (error instanceof TradeQueryValidationError) {
     return { type: INVALID_QUERY_TYPE, title: 'Invalid query', status: 400, detail: error.message, errors: error.errors }
   }
+  if (error instanceof AuditQueryValidationError) {
+    return { type: INVALID_QUERY_TYPE, title: 'Invalid query', status: 400, detail: error.message, errors: error.errors }
+  }
+  if (error instanceof CancellationValidationError) {
+    return { type: INVALID_CANCELLATION_TYPE, title: 'Invalid cancellation', status: 400, detail: error.message, errors: error.errors }
+  }
+  if (error instanceof TradeNotFoundError) {
+    return { type: TRADE_NOT_FOUND_TYPE, title: 'Trade not found', status: 404, detail: error.message, tradeId: error.tradeId }
+  }
+  if (error instanceof ExecutionValidationError) {
+    return { type: INVALID_EXECUTION_TYPE, title: 'Invalid execution', status: 400, detail: error.message, ...(Object.keys(error.errors).length === 0 ? {} : { errors: error.errors }) }
+  }
+  if (error instanceof ExecutionLimitError) {
+    return { type: POSITION_LIMIT_TYPE, title: 'Position limit exceeded', status: 409, detail: error.message, symbol: error.symbol, tradeId: error.tradeId }
+  }
+  if (error instanceof TradeStateError) {
+    return { type: INVALID_TRANSITION_TYPE, title: 'Invalid state transition', status: 409, detail: error.message, tradeId: error.tradeId }
+  }
   if (error instanceof PositionLimitError) {
     return { type: POSITION_LIMIT_TYPE, title: 'Position limit exceeded', status: 400, detail: error.message, symbol: error.symbol }
   }
@@ -68,10 +94,21 @@ export function registerProblemDetails(app: FastifyInstance): void {
     for (const method of [route.method].flat()) methods.add(method)
     methodsByPath.set(route.url, methods)
   })
+  // A path with parameters (/trades/:id/audit) matches any one segment in each parameter's place.
+  const methodsFor = (path: string): Set<string> | undefined => {
+    const exact = methodsByPath.get(path)
+    if (exact !== undefined) return exact
+    const segments = path.split('/')
+    for (const [route, methods] of methodsByPath) {
+      const parts = route.split('/')
+      if (parts.length === segments.length && parts.every((part, index) => part.startsWith(':') ? (segments[index] ?? '') !== '' : part === segments[index])) return methods
+    }
+    return undefined
+  }
 
   app.setNotFoundHandler((request, reply) => {
     const path = request.url.split('?')[0] ?? ''
-    const methods = methodsByPath.get(path.length > 1 ? path.replace(/[/]$/, '') : path)
+    const methods = methodsFor(path.length > 1 ? path.replace(/[/]$/, '') : path)
     if (methods !== undefined) {
       return reply.code(405).header('allow', [...methods].sort().join(', ')).type(PROBLEM_CONTENT_TYPE).send(problemFor(405))
     }

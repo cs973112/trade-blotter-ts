@@ -110,14 +110,75 @@ export function runNode(args: readonly string[], env: NodeJS.ProcessEnv, deadlin
   return { status: result.status, stdout: result.stdout, stderr: result.stderr, timedOut, pid: result.pid }
 }
 
-/** Starts `node <args>` in `server/` without waiting. Stop it with `stopChild`. */
-export function startNode(args: readonly string[], env: NodeJS.ProcessEnv): ChildProcess {
+/** Starts `node <args>` in `server/` (or `cwd`) without waiting. Stop it with `stopChild`. */
+export function startNode(args: readonly string[], env: NodeJS.ProcessEnv, cwd: string = SERVER_ROOT): ChildProcess {
   return spawn(process.execPath, ['--disable-warning=ExperimentalWarning', ...args], {
-    cwd: SERVER_ROOT,
+    cwd,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
 }
+
+/**
+ * Waits for a child started by startNode to exit, with its output. A child still running at the
+ * deadline is killed through its own handle and waited for, and comes back with `timedOut`.
+ */
+export function finished(child: ChildProcess, deadlineMs: number): Promise<Finished> {
+  let stdout = ''
+  let stderr = ''
+  child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
+  child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+  return new Promise((resolve) => {
+    let timedOut = false
+    const deadline = setTimeout(() => {
+      timedOut = true
+      child.kill('SIGKILL')
+    }, deadlineMs)
+    child.once('close', (status) => {
+      clearTimeout(deadline)
+      resolve({ status, stdout, stderr, timedOut, pid: child.pid })
+    })
+  })
+}
+
+/**
+ * Runs `command <args>` (no shell) in `cwd` and waits for it to exit. As runNode: a command still
+ * running at the deadline is killed through its handle.
+ */
+export function runCommand(command: string, args: readonly string[], options: { readonly cwd: string; readonly env: NodeJS.ProcessEnv; readonly deadlineMs: number }): Finished {
+  const result = spawnSync(command, args, { cwd: options.cwd, env: options.env, encoding: 'utf8', timeout: options.deadlineMs, killSignal: 'SIGKILL', windowsHide: true })
+  const timedOut = (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT'
+  if (result.error !== undefined && !timedOut) throw result.error
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr, timedOut, pid: result.pid }
+}
+
+/**
+ * npm itself, as `node <npm-cli.js>`, so a test runs the real npm without a shell between it and
+ * the handle that stops it: the npm running this test (npm_execpath) or the one beside this Node.js.
+ */
+export function npmCommand(): { readonly command: string; readonly args: readonly string[] } {
+  const candidates = [
+    process.env['npm_execpath'] ?? '',
+    join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    join(dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  ]
+  const cli = candidates.find((path) => basename(path) === 'npm-cli.js' && existsSync(path))
+  if (cli === undefined) throw new Error(`npm-cli.js not found (looked for ${candidates.filter((path) => path !== '').join(', ')})`)
+  return { command: process.execPath, args: [cli] }
+}
+
+/**
+ * Starts `node <args>` detached from this process, with no output, and does not wait for it: a
+ * process meant to outlive the one that starts it (a stand-in for an orphan). Its id is returned;
+ * the test gives it a token in its command line and stops it by that token (ensureTerminated).
+ */
+export function startDetachedNode(args: readonly string[], options: { readonly cwd: string; readonly env: NodeJS.ProcessEnv }): number | undefined {
+  const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', ...args], { cwd: options.cwd, env: options.env, stdio: 'ignore', windowsHide: true, detached: true })
+  child.unref()
+  return child.pid
+}
+
+export type { ChildProcess }
 
 /** Stops a child this test started, through its own handle, and waits until it has exited. */
 export function stopChild(child: ChildProcess): Promise<void> {
@@ -129,6 +190,30 @@ export function stopChild(child: ChildProcess): Promise<void> {
     child.once('exit', () => {
       resolve()
     })
+    child.kill()
+  })
+}
+
+/**
+ * stopChild with a deadline: resolves once the child has exited, and rejects, naming the process,
+ * if it is still running `withinMs` after being told to stop. A child that has not exited is never
+ * taken for stopped.
+ */
+export function stopChildWithin(child: ChildProcess, withinMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      resolve()
+      return
+    }
+    const deadline = setTimeout(() => {
+      child.off('exit', exited)
+      reject(new Error(`Child process ${String(child.pid)} was told to stop but was still running after ${String(withinMs)} ms (alive: ${String(isRunning(child.pid ?? 0))}).`))
+    }, withinMs)
+    const exited = (): void => {
+      clearTimeout(deadline)
+      resolve()
+    }
+    child.once('exit', exited)
     child.kill()
   })
 }

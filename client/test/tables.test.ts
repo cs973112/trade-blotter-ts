@@ -48,13 +48,13 @@ describe('trade blotter', () => {
 
     // Four headers sort: each shows its state with an arrow, and says what choosing it does.
     expect(table.findAll('thead th').map((cell) => cell.text())).toEqual([
-      'Symbol↕, sort ascending', 'Side', 'Quantity↕, sort ascending', 'Price↕, sort ascending', 'Notional',
+      'Symbol↕, sort ascending', 'Side', 'Status', 'Actions', 'Quantity↕, sort ascending', 'Price↕, sort ascending', 'Notional',
       'Executed at↓, sort oldest first', 'Created at', 'Updated at',
     ])
     expect(rows(table)).toEqual([
-      ['MSFT', 'Sell', '123,456,789,012,345.1234567891', '0.00, exactly 0.0000000001', '12,345.68, exactly 12,345.67890123451234567891',
+      ['MSFT', 'Sell', 'Executed', '', '123,456,789,012,345.1234567891', '0.00, exactly 0.0000000001', '12,345.68, exactly 12,345.67890123451234567891',
         '2026-07-01 09:30:15.250 UTC−04:00', '2026-07-02 04:00:00.000 UTC−04:00', '2026-07-02 04:00:00.000 UTC−04:00'],
-      ['AAPL', 'Buy', '1,000', '187.50', '187,500.00',
+      ['AAPL', 'Buy', 'Executed', '', '1,000', '187.50', '187,500.00',
         '2026-01-02 09:30:00.123 UTC−05:00', '2026-01-02 09:30:01.000 UTC−05:00', '2026-01-02 09:30:01.000 UTC−05:00'],
     ])
   })
@@ -145,12 +145,13 @@ describe('trade blotter', () => {
 describe('positions', () => {
   it('shows long and short positions apart, with the exact net quantity and the average cost to 2 places', async () => {
     fakeApi({
-      'GET /positions': json('[{"symbol":"AAPL","netQuantity":-1500.25,"averageCost":187.5},' +
-        '{"symbol":"MSFT","netQuantity":3,"averageCost":1.6666666666666666666666666666666666666666666666667}]'),
+      'GET /positions': json('[{"symbol":"AAPL","netQuantity":-1500.25,"averageCost":187.5,"executedNetQuantity":-1500.25,"pendingNetQuantity":0,"projectedNetQuantity":-1500.25},' +
+        '{"symbol":"MSFT","netQuantity":3,"averageCost":1.6666666666666666666666666666666666666666666666667,"executedNetQuantity":3,"pendingNetQuantity":0,"projectedNetQuantity":3}]'),
     })
     const panel = await show(PositionsPanel, 'loadPositions')
 
-    expect(panel.findAll('thead th').map((cell) => cell.text())).toEqual(['Symbol', 'Direction', 'Net quantity', 'Average cost'])
+    // The actual position: Executed net and average cost (Pending and Projected net are hidden by default).
+    expect(panel.findAll('thead th').map((cell) => cell.text())).toEqual(['Symbol', 'Direction', 'Executed net', 'Average cost'])
     expect(rows(panel)).toEqual([
       ['AAPL', 'Short', '-1,500.25', '187.50'],
       ['MSFT', 'Long', '3', '1.67, exactly 1.6666666666666666666666666666666666666666666666667'],

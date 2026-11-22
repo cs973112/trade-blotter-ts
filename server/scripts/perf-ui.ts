@@ -436,7 +436,7 @@ interface Controls {
 }
 
 /** Each sortable column header's position among the table's columns, counting from 1. */
-const COLUMN = { symbol: 1, quantity: 3, price: 4, executedAt: 6 } as const
+const COLUMN = { symbol: 1, quantity: 5, price: 6, executedAt: 8 } as const
 
 /**
  * A scenario; id is how --scenarios names it. `filter` names the perf:api scenario with the same

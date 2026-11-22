@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from '../src/App.vue'
 import PositionsPanel from '../src/components/PositionsPanel.vue'
 import { useBlotterStore } from '../src/stores/blotter.ts'
-import { fakeApi, json, pagedTrades, tradeJson } from './support/fake-api.ts'
+import { asPending, fakeApi, json, pagedTrades, tradeJson } from './support/fake-api.ts'
 
 /**
  * The total above both Positions grids: every open position GET /positions returned, however many
@@ -24,7 +24,7 @@ afterEach(() => {
 /** `count` open positions, P0001 onwards, alternately long and short. */
 function positionsJson(count: number): string {
   const items = Array.from({ length: count }, (_, index) =>
-    `{"symbol":"P${String(index + 1).padStart(4, '0')}","netQuantity":${index % 2 === 0 ? '' : '-'}${String(index + 1)},"averageCost":10.5}`)
+    `{"symbol":"P${String(index + 1).padStart(4, '0')}","netQuantity":${index % 2 === 0 ? '' : '-'}${String(index + 1)},"averageCost":10.5,"executedNetQuantity":${index % 2 === 0 ? '' : '-'}${String(index + 1)},"pendingNetQuantity":0,"projectedNetQuantity":${index % 2 === 0 ? '' : '-'}${String(index + 1)}}`)
   return `[${items.join(',')}]`
 }
 
@@ -84,8 +84,8 @@ describe('the positions total', () => {
 })
 
 describe('the positions total in both grids', () => {
-  const AAPL = '{"symbol":"AAPL","netQuantity":10,"averageCost":100}'
-  const MSFT = '{"symbol":"MSFT","netQuantity":-5,"averageCost":301.25}'
+  const AAPL = '{"symbol":"AAPL","netQuantity":10,"averageCost":100,"executedNetQuantity":10,"pendingNetQuantity":0,"projectedNetQuantity":10}'
+  const MSFT = '{"symbol":"MSFT","netQuantity":-5,"averageCost":301.25,"executedNetQuantity":-5,"pendingNetQuantity":0,"projectedNetQuantity":-5}'
   const TRADE = tradeJson({
     id: 't1', bookingSequence: 1, symbol: 'AAPL', side: 'Buy', quantity: '10', price: '100', notional: '1000',
     executedAt: '2026-03-01T15:00:00.000Z',
@@ -119,7 +119,7 @@ describe('the positions total in both grids', () => {
   it('goes up after a booking that opens a position, in both grids', async () => {
     const { server, page, totals } = await openPage(`[${AAPL}]`)
     expect(totals()).toEqual(['Total: 1 position', 'Total: 1 position'])
-    server.set('POST /trades', json(TRADE, 201))
+    server.set('POST /trades', json(asPending(TRADE), 201))
     server.set('GET /positions', json(`[${AAPL},${MSFT}]`))
     await book(page, 'MSFT', 'sell', '5')
     expect(totals()).toEqual(['Total: 2 positions', 'Total: 2 positions'])
@@ -127,7 +127,7 @@ describe('the positions total in both grids', () => {
 
   it('goes down after a booking that closes a position, which the API no longer lists', async () => {
     const { server, page, totals } = await openPage(`[${AAPL},${MSFT}]`)
-    server.set('POST /trades', json(TRADE, 201))
+    server.set('POST /trades', json(asPending(TRADE), 201))
     server.set('GET /positions', json(`[${MSFT}]`))
     await book(page, 'AAPL', 'sell', '10')
     expect(totals()).toEqual(['Total: 1 position', 'Total: 1 position'])

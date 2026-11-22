@@ -61,6 +61,20 @@ describe('column visibility', () => {
   })
 })
 
+describe('column choices naming a column the grid does not have', () => {
+  it('ignore it: a set of shown keys holding a removed column (such as the deferred Pending net) shows only the grid\'s own columns', () => {
+    const stale = new Set(['a', 'b', 'pendingNet', 'projectedNet'])
+    expect(shownColumns(COLUMNS, stale).map((column) => column.key)).toEqual(['a', 'b'])
+    expect(withColumn(stale, COLUMNS, 'pendingNet', true)).toBe(stale)
+    const visibility = useColumnVisibility(COLUMNS)
+    visibility.shown.value = stale
+    expect(visibility.visibleColumns.value.map((column) => column.key)).toEqual(['a', 'b'])
+    expect(visibility.isShown('pendingNet')).toBe(false)
+    visibility.showAll()
+    expect([...visibility.shown.value]).toEqual(['a', 'b', 'c', 'd'])
+  })
+})
+
 describe('showing all columns', () => {
   it('shows every column, those hidden by default included, in the grid\'s order', () => {
     expect([...allShown(COLUMNS)]).toEqual(['a', 'b', 'c', 'd'])
@@ -153,7 +167,7 @@ describe('column widths when columns are hidden and shown', () => {
 
 describe('the Columns control', () => {
   async function showPositions() {
-    fakeApi({ 'GET /positions': json('[{"symbol":"AAPL","netQuantity":-10,"averageCost":187.125}]') })
+    fakeApi({ 'GET /positions': json('[{"symbol":"AAPL","netQuantity":-10,"averageCost":187.125,"executedNetQuantity":-10,"pendingNetQuantity":0,"projectedNetQuantity":-10}]') })
     const pinia = createPinia()
     setActivePinia(pinia)
     wrapper = mount(PositionsPanel, { global: { plugins: [pinia] }, attachTo: document.body })
@@ -180,8 +194,10 @@ describe('the Columns control', () => {
     expect(list.find('legend').text()).toBe('Columns shown in the positions grid')
     const boxes = list.findAll<HTMLInputElement>('input[type="checkbox"]')
     expect(boxes.map((box) => [box.element.parentElement?.textContent.trim(), box.element.checked, box.element.disabled])).toEqual([
-      ['Symbol (always shown)', true, true], ['Direction', true, false], ['Net quantity', true, false], ['Average cost', true, false],
+      ['Symbol (always shown)', true, true], ['Direction', true, false], ['Executed net', true, false], ['Average cost', true, false],
     ])
+    // Pending exposure is deferred: neither the Pending nor the Projected net is offered.
+    expect(list.text()).not.toMatch(/Pending|Projected/)
     expect(document.activeElement).toBe(boxes[1]?.element)
   })
 
@@ -194,13 +210,15 @@ describe('the Columns control', () => {
     expect(headers(panel)).toEqual(['Symbol', 'Average cost'])
     expect(panel.find('tbody tr').findAll('th, td').map((cell) => cell.text())).toEqual(['AAPL', '187.12, exactly 187.125'])
 
+    expect(panel.find('input[data-column="projectedNet"]').exists()).toBe(false)
+    expect(panel.find('input[data-column="pendingNet"]').exists()).toBe(false)
     await panel.find('input[data-column="direction"]').setValue(true)
     expect(headers(panel)).toEqual(['Symbol', 'Direction', 'Average cost'])
 
     const restore = panel.findAll('.column-chooser-panel button').find((button) => button.text() === 'Restore default columns')
     expect(restore?.attributes('aria-disabled')).toBe('false')
     await restore?.trigger('click')
-    expect(headers(panel)).toEqual(['Symbol', 'Direction', 'Net quantity', 'Average cost'])
+    expect(headers(panel)).toEqual(['Symbol', 'Direction', 'Executed net', 'Average cost'])
     expect(restore?.attributes('aria-disabled')).toBe('true')
     expect(restore?.attributes('disabled')).toBeUndefined()
   })
@@ -234,7 +252,7 @@ describe('the Columns control', () => {
     await panel.find('button.refresh-positions').trigger('click')
     await flushPromises()
 
-    expect(headers(panel)).toEqual(['Symbol', 'Net quantity', 'Average cost'])
+    expect(headers(panel)).toEqual(['Symbol', 'Executed net', 'Average cost'])
   })
 })
 
@@ -262,7 +280,7 @@ async function press(button: DOMWrapper<Element>): Promise<void> {
 
 describe('Show all columns: the Trading Positions grid', () => {
   async function showPositions() {
-    fakeApi({ 'GET /positions': json('[{"symbol":"AAPL","netQuantity":-10,"averageCost":187.125}]') })
+    fakeApi({ 'GET /positions': json('[{"symbol":"AAPL","netQuantity":-10,"averageCost":187.125,"executedNetQuantity":-10,"pendingNetQuantity":0,"projectedNetQuantity":-10}]') })
     const pinia = createPinia()
     setActivePinia(pinia)
     wrapper = mount(PositionsPanel, { global: { plugins: [pinia] }, attachTo: document.body })
@@ -277,12 +295,13 @@ describe('Show all columns: the Trading Positions grid', () => {
     const panel = await showPositions()
     const button = showAllButton(panel)
     expect(button.text()).toBe('Show all columns')
+    // Every column the grid has is shown by default; there is nothing hidden to reveal.
     expect(button.attributes('aria-disabled')).toBe('true')
     expect(button.attributes('disabled')).toBeUndefined()
     expect(countText(panel)).toBe('4 of 4 columns shown')
 
     await press(button)
-    expect(gridHeaders(panel)).toEqual(['Symbol', 'Direction', 'Net quantity', 'Average cost'])
+    expect(gridHeaders(panel)).toEqual(['Symbol', 'Direction', 'Executed net', 'Average cost'])
     expect(countText(panel)).toBe('4 of 4 columns shown')
     expect(panel.find('.column-chooser > button').attributes('aria-expanded')).toBe('true')
     expect(document.activeElement).toBe(button.element)
@@ -307,15 +326,19 @@ describe('Show all columns: the Trading Positions grid', () => {
     const button = showAllButton(panel)
     await press(button)
 
-    expect(gridHeaders(panel)).toEqual(['Symbol', 'Direction', 'Net quantity', 'Average cost'])
+    // Show all shows every supported column, and never the deferred Pending or Projected net.
+    expect(gridHeaders(panel)).toEqual(['Symbol', 'Direction', 'Executed net', 'Average cost'])
     expect(widths()).toEqual(resized)
-    expect(boxStates(panel)).toEqual([['symbol', true, true], ['direction', true, false], ['netQuantity', true, false], ['averageCost', true, false]])
+    expect(boxStates(panel)).toEqual([
+      ['symbol', true, true], ['direction', true, false], ['netQuantity', true, false], ['averageCost', true, false],
+    ])
     expect(countText(panel)).toBe('4 of 4 columns shown')
     expect(panel.find('.column-chooser > button').attributes('aria-expanded')).toBe('true')
     expect(panel.find('.column-chooser-panel').isVisible()).toBe(true)
     expect(document.activeElement).toBe(button.element)
     expect(button.attributes('aria-disabled')).toBe('true')
     expect(panel.find('tbody tr').findAll('th, td').map((cell) => cell.text())).toEqual(['AAPL', 'Short', '-10', '187.12, exactly 187.125'])
+    expect(panel.text()).not.toMatch(/Pending net|Projected net/)
   })
 
   it('still closes with Escape from Show all columns, returning focus to the Columns button', async () => {
@@ -341,7 +364,7 @@ describe('Show all columns: the Trading Positions grid', () => {
 })
 
 describe('Show all columns: Positions & Trade Details', () => {
-  const POSITIONS = '[{"symbol":"MS","netQuantity":60,"averageCost":90.125},{"symbol":"MSFT","netQuantity":-3,"averageCost":5}]'
+  const POSITIONS = '[{"symbol":"MS","netQuantity":60,"averageCost":90.125,"executedNetQuantity":60,"pendingNetQuantity":0,"projectedNetQuantity":60},{"symbol":"MSFT","netQuantity":-3,"averageCost":5,"executedNetQuantity":-3,"pendingNetQuantity":0,"projectedNetQuantity":-3}]'
   const TRADE = tradeJson({
     id: 'ms-1', bookingSequence: 7, symbol: 'MS', side: 'Buy', quantity: '60', price: '90.125', notional: '5407.5',
     executedAt: '2026-03-01T15:00:00.000Z',
@@ -370,7 +393,7 @@ describe('Show all columns: Positions & Trade Details', () => {
 
     const button = showAllButton(master)
     await press(button)
-    expect(gridHeaders(master)).toEqual(['Symbol', 'Direction', 'Net quantity', 'Average cost'])
+    expect(gridHeaders(master)).toEqual(['Symbol', 'Direction', 'Executed net', 'Average cost'])
     expect(countText(master)).toBe('4 of 4 columns shown')
     expect(boxStates(master)[0]).toEqual(['symbol', true, true])
     expect(document.activeElement).toBe(button.element)
@@ -382,7 +405,7 @@ describe('Show all columns: Positions & Trade Details', () => {
     const requests = server.sequence().length
     await details.find('.column-chooser > button').trigger('click')
     await flushPromises()
-    expect(countText(details)).toBe('5 of 10 columns shown')
+    expect(countText(details)).toBe('7 of 12 columns shown')
     expect(boxStates(details)[0]).toEqual(['executedAt', true, true])
 
     const button = showAllButton(details)
@@ -390,10 +413,10 @@ describe('Show all columns: Positions & Trade Details', () => {
     await press(button)
 
     expect(gridHeaders(details)).toEqual([
-      'Executed at', 'Side', 'Quantity', 'Price', 'Notional', 'Symbol', 'Created at', 'Updated at', 'Booking sequence', 'Trade ID',
+      'Executed at', 'Side', 'Status', 'Actions', 'Quantity', 'Price', 'Notional', 'Symbol', 'Created at', 'Updated at', 'Booking sequence', 'Trade ID',
     ])
     expect(boxStates(details).every(([, checked]) => checked)).toBe(true)
-    expect(countText(details)).toBe('10 of 10 columns shown')
+    expect(countText(details)).toBe('12 of 12 columns shown')
     expect(button.attributes('aria-disabled')).toBe('true')
     expect(document.activeElement).toBe(button.element)
     expect(details.find('.column-chooser-panel').isVisible()).toBe(true)
@@ -402,8 +425,8 @@ describe('Show all columns: Positions & Trade Details', () => {
     const restore = details.findAll('.column-chooser-panel button').find((candidate) => candidate.text() === 'Restore default columns')
     await restore?.trigger('click')
     await flushPromises()
-    expect(gridHeaders(details)).toEqual(['Executed at', 'Side', 'Quantity', 'Price', 'Notional'])
-    expect(countText(details)).toBe('5 of 10 columns shown')
+    expect(gridHeaders(details)).toEqual(['Executed at', 'Side', 'Status', 'Actions', 'Quantity', 'Price', 'Notional'])
+    expect(countText(details)).toBe('7 of 12 columns shown')
     expect(button.attributes('aria-disabled')).toBe('false')
     // Showing and hiding columns asks the API for nothing.
     expect(server.sequence()).toHaveLength(requests)
@@ -417,7 +440,7 @@ describe('Show all columns: Positions & Trade Details', () => {
     expect(boxStates(details)[0]).toEqual(['executedAt', true, true])
     await details.find('input[data-column="executedAt"]').setValue(false)
     expect(gridHeaders(details)[0]).toBe('Executed at')
-    expect(countText(details)).toBe('10 of 10 columns shown')
+    expect(countText(details)).toBe('12 of 12 columns shown')
   })
 })
 
@@ -470,7 +493,7 @@ describe('Restore default columns keeps keyboard focus', () => {
   }
 
   it('in the Trading Positions grid', async () => {
-    fakeApi({ 'GET /positions': json('[{"symbol":"AAPL","netQuantity":-10,"averageCost":187.125}]') })
+    fakeApi({ 'GET /positions': json('[{"symbol":"AAPL","netQuantity":-10,"averageCost":187.125,"executedNetQuantity":-10,"pendingNetQuantity":0,"projectedNetQuantity":-10}]') })
     const pinia = createPinia()
     setActivePinia(pinia)
     const panel = mount(PositionsPanel, { global: { plugins: [pinia] }, attachTo: document.body })
@@ -480,7 +503,7 @@ describe('Restore default columns keeps keyboard focus', () => {
     await expectRestoreKeepsFocus(panel, async () => {
       await panel.find('input[data-column="direction"]').setValue(false)
       await panel.find('input[data-column="averageCost"]').setValue(false)
-    }, ['Symbol', 'Direction', 'Net quantity', 'Average cost'], 4)
+    }, ['Symbol', 'Direction', 'Executed net', 'Average cost'], 4)
     // Show all columns, still a separate action, has nothing to show at these defaults.
     expect(showAllButton(panel).attributes('aria-disabled')).toBe('true')
   })
@@ -492,7 +515,7 @@ describe('Restore default columns keeps keyboard focus', () => {
     })
 
     async function openDetails() {
-      fakeApi({ 'GET /trades/page': pageJson([TRADE], { page: 1, pageSize: 25, totalCount: 1 }), 'GET /positions': json('[{"symbol":"MS","netQuantity":60,"averageCost":90.125}]') })
+      fakeApi({ 'GET /trades/page': pageJson([TRADE], { page: 1, pageSize: 25, totalCount: 1 }), 'GET /positions': json('[{"symbol":"MS","netQuantity":60,"averageCost":90.125,"executedNetQuantity":60,"pendingNetQuantity":0,"projectedNetQuantity":60}]') })
       const page = mount(App, { global: { plugins: [createPinia()] }, attachTo: document.body })
       wrapper = page
       await flushPromises()
@@ -507,27 +530,27 @@ describe('Restore default columns keeps keyboard focus', () => {
       const { master } = await openDetails()
       await expectRestoreKeepsFocus(master, async () => {
         await master.find('input[data-column="netQuantity"]').setValue(false)
-      }, ['Symbol', 'Direction', 'Net quantity', 'Average cost'], 4)
+      }, ['Symbol', 'Direction', 'Executed net', 'Average cost'], 4)
       expect(master.find('tr.is-selected th').text()).toBe('MS')
     })
 
     it('in Trade Details, hiding again the columns hidden by default after Show all columns, which still works afterwards', async () => {
       const { details } = await openDetails()
-      const defaults = ['Executed at', 'Side', 'Quantity', 'Price', 'Notional']
+      const defaults = ['Executed at', 'Side', 'Status', 'Actions', 'Quantity', 'Price', 'Notional']
       await expectRestoreKeepsFocus(details, async () => {
         await details.find('input[data-column="side"]').setValue(false)
         await press(showAllButton(details))
-        expect(gridHeaders(details)).toHaveLength(10)
-      }, defaults, 10)
+        expect(gridHeaders(details)).toHaveLength(12)
+      }, defaults, 12)
       expect(boxStates(details).filter(([, checked]) => !checked).map(([key]) => key)).toEqual(['symbol', 'createdAt', 'updatedAt', 'bookingSequence', 'id'])
 
-      // Show all columns is unaffected: it shows all ten again, and Restore becomes available.
+      // Show all columns is unaffected: it shows all twelve again, and Restore becomes available.
       await details.find('.column-chooser > button').trigger('click')
       await flushPromises()
       const showAll = showAllButton(details)
       expect(showAll.attributes('aria-disabled')).toBe('false')
       await press(showAll)
-      expect(gridHeaders(details)).toHaveLength(10)
+      expect(gridHeaders(details)).toHaveLength(12)
       expect(document.activeElement).toBe(showAll.element)
       expect(restoreButton(details).attributes('aria-disabled')).toBe('false')
     })

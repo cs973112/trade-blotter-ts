@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { createTestServer } from '../support/app.ts'
-import { JSON_TYPE, postTrade, PROBLEM_TYPE } from '../support/http.ts'
+import { JSON_TYPE, bookExecuted, PROBLEM_TYPE } from '../support/http.ts'
 
 /**
  * symbolMatch on GET /trades and GET /trades/page: `contains` (the default, and what every request
@@ -37,8 +37,8 @@ async function page(query: string): Promise<PageBody> {
 }
 
 async function trade(symbol: string, side: 'Buy' | 'Sell', executedAt: string): Promise<void> {
-  const response = await postTrade(server.app, `{"symbol":"${symbol}","side":"${side}","quantity":"1","price":"10.5","executedAt":"${executedAt}"}`)
-  expect(response.statusCode, response.body).toBe(201)
+  const response = await bookExecuted(server, `{"symbol":"${symbol}","side":"${side}","quantity":"1","price":"10.5"}`, executedAt)
+  expect(response.statusCode, response.body).toBe(200)
 }
 
 /** Seven MS trades (two of them sells), three MSFT, two MSTR, one XMS: booking sequences 1 to 13. */

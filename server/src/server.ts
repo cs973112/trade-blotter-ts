@@ -7,7 +7,7 @@ import { createTradeService } from './application/trade-service.ts'
 import type { Config } from './config.ts'
 import { closeDatabase, openDatabase } from './infrastructure/database/connection.ts'
 import { applyMigrations } from './infrastructure/database/migrate.ts'
-import { createDrizzleTradeRepository } from './infrastructure/drizzle-trade-repository.ts'
+import { createDrizzleLifecycleRepository } from './infrastructure/drizzle-lifecycle-repository.ts'
 import { systemClock } from './infrastructure/system-clock.ts'
 import { uuidGenerator } from './infrastructure/uuid-generator.ts'
 
@@ -27,7 +27,7 @@ export async function createServer(config: Config, overrides: ServerOverrides = 
   const db = openDatabase(config.databasePath)
   try {
     applyMigrations(db)
-    const trades = createDrizzleTradeRepository(db)
+    const trades = createDrizzleLifecycleRepository(db)
     const app = await buildApp({
       logger: overrides.logger ?? { level: config.logLevel },
       docs: config.docsEnabled,

@@ -9,7 +9,7 @@ import { createTestDatabase, rawRows } from '../support/database.ts'
  */
 
 const T = '2026-01-01T09:00:00.000Z'
-const VALID = { id: 'x', symbol: 'ABC', side: 'Buy', quantity: '1', price: '1', executed_at: T, created_at: T, updated_at: T }
+const VALID = { id: 'x', symbol: 'ABC', side: 'Buy', quantity: '1', price: '1', executed_at: T, created_at: T, updated_at: T, status: 'Executed', created_by: 'User', updated_by: 'User' }
 type Row = Record<keyof typeof VALID, string | number | Uint8Array | null>
 
 let database: ReturnType<typeof createTestDatabase>
@@ -27,7 +27,7 @@ afterEach(() => {
 function insert(overrides: Partial<Row>): void {
   const row: Row = { ...VALID, ...overrides }
   db.$client
-    .prepare('insert into trades (id, symbol, side, quantity, price, executed_at, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?)')
+    .prepare(`insert into trades (${Object.keys(row).join(', ')}) values (${Object.keys(row).map(() => '?').join(', ')})`)
     .run(...Object.values(row))
 }
 

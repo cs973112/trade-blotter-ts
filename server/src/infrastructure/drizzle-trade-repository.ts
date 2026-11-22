@@ -22,7 +22,17 @@ const TRADE_COLUMNS = {
   updatedAt: trades.updatedAt,
 }
 
-type StoredTrade = Omit<TradeRow, 'quantityKey' | 'priceKey'>
+type StoredTrade = Pick<TradeRow, keyof typeof TRADE_COLUMNS>
+
+/**
+ * The rows this repository serves: Executed trades. Pending trades, cancelled originals and
+ * cancellation rows (always Cancelled) belong to the trade lifecycle (drizzle-lifecycle-repository.ts),
+ * which the API does not serve yet; so every list, page, count and position history here is of
+ * Executed trades only, exactly the rows every trade was before the lifecycle columns existed.
+ */
+// A fixed literal, never input: SQLite matches it to the partial indexes on Executed trades
+// (schema.ts), which a bound parameter would not let it prove applicable.
+const EXECUTED = sql`${trades.status} = 'Executed'`
 
 /**
  * The column each sort field orders by. Symbols compare as UTF-8 bytes, which is code-point order;
@@ -48,7 +58,7 @@ export function createDrizzleTradeRepository(db: Database): TradeRepository {
         // synchronous, as the node:sqlite driver requires; anything it throws rolls everything back.
         db.transaction((tx) => {
           const history = tx.select(TRADE_COLUMNS).from(trades)
-            .where(eq(trades.symbol, trade.symbol))
+            .where(and(EXECUTED, eq(trades.symbol, trade.symbol)))
             .orderBy(asc(trades.executedAt), asc(trades.bookingSequence))
             .all()
             .map(toTrade)
@@ -87,7 +97,7 @@ export function createDrizzleTradeRepository(db: Database): TradeRepository {
           const window = pageWindow(page, totalCount)
           if (window === undefined) return { trades: [], totalCount }
 
-          const plan = planPageRead(window, totalCount, sort.field, filter, () => tx.select({ count: count() }).from(trades).get()?.count ?? 0)
+          const plan = planPageRead(window, totalCount, sort.field, filter, () => tx.select({ count: count() }).from(trades).where(EXECUTED).get()?.count ?? 0)
           const direction = plan.fromEnd ? (sort.direction === 'asc' ? 'desc' : 'asc') : sort.direction
           const rows = tx.select(TRADE_COLUMNS).from(trades)
             .where(where)
@@ -107,7 +117,7 @@ export function createDrizzleTradeRepository(db: Database): TradeRepository {
  * is written `+column`: the same value and order, but SQLite can no longer walk that column's
  * index to produce it, so it reads the matching rows another way and sorts them.
  */
-function ordering(field: TradeSortField, direction: SortDirection, useSortIndex: boolean): SQL[] {
+export function ordering(field: TradeSortField, direction: SortDirection, useSortIndex: boolean): SQL[] {
   const order = direction === 'asc' ? sql`asc` : sql`desc`
   const columns = [...new Set([SORT_COLUMNS[field], trades.executedAt, trades.bookingSequence])]
   return columns.map((column, index) => index === 0 && !useSortIndex ? sql`+${column} ${order}` : sql`${column} ${order}`)
@@ -175,6 +185,7 @@ export function planPageRead(
  */
 function matching(filter: TradeFilter): SQL | undefined {
   return and(
+    EXECUTED,
     filter.symbolContains === undefined ? undefined : sql`instr(${trades.symbol}, ${filter.symbolContains}) > 0`,
     filter.symbolEquals === undefined ? undefined : eq(trades.symbol, filter.symbolEquals),
     filter.side === undefined ? undefined : eq(trades.side, filter.side),
@@ -190,8 +201,11 @@ function settle<T>(work: () => T): Promise<T> {
   })
 }
 
-/** A new trade as its database row: decimals as canonical text. Also used by the test-data seeder. */
-export function toRow(trade: NewTrade): NewTradeRow {
+/**
+ * A new trade as its database row: decimals as canonical text, an Executed trade booked and last
+ * changed by User, as every booking through this repository is. Also used by the test-data seeder.
+ */
+export function toRow(trade: NewTrade): NewTradeRow & { readonly executedAt: string; readonly status: 'Executed' } {
   return {
     id: trade.id,
     symbol: trade.symbol,
@@ -201,6 +215,11 @@ export function toRow(trade: NewTrade): NewTradeRow {
     executedAt: trade.executedAt,
     createdAt: trade.createdAt,
     updatedAt: trade.updatedAt,
+    status: 'Executed',
+    createdBy: 'User',
+    updatedBy: 'User',
+    originalTradeId: null,
+    cancellationReason: null,
   }
 }
 
@@ -212,13 +231,13 @@ function toTrade(row: StoredTrade): Trade {
     side: row.side,
     quantity: new Dec(row.quantity),
     price: new Dec(row.price),
-    executedAt: storedTimestamp(row.executedAt),
+    executedAt: storedTimestamp(row.executedAt ?? ''),
     createdAt: storedTimestamp(row.createdAt),
     updatedAt: storedTimestamp(row.updatedAt),
   })
 }
 
-function storedTimestamp(text: string): UtcTimestamp {
+export function storedTimestamp(text: string): UtcTimestamp {
   const timestamp = parseTimestamp(text)
   if (timestamp !== text) throw new Error(`A stored timestamp is not canonical UTC: "${text}".`)
   return timestamp

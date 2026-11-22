@@ -1,6 +1,7 @@
 import { compareSymbols, normaliseSymbol } from './symbol.ts'
 import { parseTimestamp, type UtcTimestamp } from './timestamp.ts'
-import { compareTradeOrder, toTradeSide, type Trade, type TradeSide } from './trade.ts'
+import { toTradeSide, type Trade, type TradeSide } from './trade.ts'
+import { TRADE_STATUSES, type TradeStatus } from './trade-status.ts'
 
 /** Fields the trade history can be sorted by. */
 export const TRADE_SORT_FIELDS = ['executedAt', 'symbol', 'quantity', 'price'] as const
@@ -28,6 +29,8 @@ export interface TradeFilter {
   /** Normalised like a symbol: a trade matches if its symbol is exactly it. Never set with symbolContains. */
   readonly symbolEquals?: string
   readonly side?: TradeSide
+  /** Only trades with this status. A trade without an execution time never matches executedFrom or executedTo. */
+  readonly status?: TradeStatus
   /** Inclusive lower bound on executedAt. */
   readonly executedFrom?: UtcTimestamp
   /** Inclusive upper bound on executedAt. */
@@ -55,6 +58,7 @@ export interface TradeQueryRequest {
   readonly symbol?: unknown
   readonly symbolMatch?: unknown
   readonly side?: unknown
+  readonly status?: unknown
   readonly executedFrom?: unknown
   readonly executedTo?: unknown
   readonly sortBy?: unknown
@@ -62,7 +66,7 @@ export interface TradeQueryRequest {
 }
 
 /** Query parameters in the order errors are reported. */
-export const TRADE_QUERY_PARAMETERS = ['symbol', 'symbolMatch', 'side', 'executedFrom', 'executedTo', 'sortBy', 'sortDirection'] as const
+export const TRADE_QUERY_PARAMETERS = ['symbol', 'symbolMatch', 'side', 'status', 'executedFrom', 'executedTo', 'sortBy', 'sortDirection'] as const
 
 export type TradeQueryParameter = (typeof TRADE_QUERY_PARAMETERS)[number]
 
@@ -151,6 +155,20 @@ function checkSide(input: unknown): ParameterResult<TradeSide | undefined> {
   return side === undefined ? invalid('side must be Buy or Sell.') : valid(side)
 }
 
+/** A status, ignoring case and surrounding whitespace, as sides are. */
+export function toTradeStatus(input: unknown): TradeStatus | undefined {
+  const text = typeof input === 'string' ? input.trim().toLowerCase() : undefined
+  return TRADE_STATUSES.find((candidate) => candidate.toLowerCase() === text)
+}
+
+function checkStatus(input: unknown): ParameterResult<TradeStatus | undefined> {
+  const text = single(input, 'status')
+  if (!text.ok) return text
+  if (text.value === undefined) return valid(undefined)
+  const status = toTradeStatus(text.value)
+  return status === undefined ? invalid('status must be Pending, Executed or Cancelled.') : valid(status)
+}
+
 function checkTimestamp(input: unknown, name: string): ParameterResult<UtcTimestamp | undefined> {
   const text = single(input, name)
   if (!text.ok) return text
@@ -195,6 +213,7 @@ function readTradeQuery(request: TradeQueryRequest, rules: TradeQueryRules): { r
   const symbol = checkSymbol(request.symbol, rules.symbolMaxLength)
   const symbolMatch = checkChoice(request.symbolMatch, 'symbolMatch', SYMBOL_MATCHES, DEFAULT_SYMBOL_MATCH)
   const side = checkSide(request.side)
+  const status = checkStatus(request.status)
   const executedFrom = checkTimestamp(request.executedFrom, 'executedFrom')
   let executedTo = checkTimestamp(request.executedTo, 'executedTo')
   const sortBy = checkChoice(request.sortBy, 'sortBy', TRADE_SORT_FIELDS, DEFAULT_TRADE_SORT.field)
@@ -205,8 +224,8 @@ function readTradeQuery(request: TradeQueryRequest, rules: TradeQueryRules): { r
     executedTo = invalid('executedTo must not be earlier than executedFrom.')
   }
 
-  const results = { symbol, symbolMatch, side, executedFrom, executedTo, sortBy, sortDirection }
-  if (!(symbol.ok && symbolMatch.ok && side.ok && executedFrom.ok && executedTo.ok && sortBy.ok && sortDirection.ok)) return { results }
+  const results = { symbol, symbolMatch, side, status, executedFrom, executedTo, sortBy, sortDirection }
+  if (!(symbol.ok && symbolMatch.ok && side.ok && status.ok && executedFrom.ok && executedTo.ok && sortBy.ok && sortDirection.ok)) return { results }
 
   const filter: { -readonly [K in keyof TradeFilter]: TradeFilter[K] } = {}
   if (symbol.value !== undefined) {
@@ -214,6 +233,7 @@ function readTradeQuery(request: TradeQueryRequest, rules: TradeQueryRules): { r
     else filter.symbolContains = symbol.value
   }
   if (side.value !== undefined) filter.side = side.value
+  if (status.value !== undefined) filter.status = status.value
   if (executedFrom.value !== undefined) filter.executedFrom = executedFrom.value
   if (executedTo.value !== undefined) filter.executedTo = executedTo.value
   return { value: { filter, sort: { field: sortBy.value, direction: sortDirection.value } }, results }
@@ -230,6 +250,8 @@ function readTradeQuery(request: TradeQueryRequest, rules: TradeQueryRules): { r
  *   so MS matches MS but not MSFT or MSTR), exactly as written. The symbol is normalised the same
  *   way for both, so the exact match ignores case too. Without a symbol it changes nothing.
  * - `side`: Buy or Sell, ignoring case and surrounding whitespace. Omitted: both sides.
+ * - `status`: Pending, Executed or Cancelled, ignoring case and surrounding whitespace. Omitted:
+ *   every status.
  * - `executedFrom`, `executedTo`: inclusive bounds, RFC 3339 with an offset (see parseTimestamp).
  *   A date without a time, or a time without an offset, is refused, never assumed to be UTC. The
  *   start may equal the end but not follow it.
@@ -275,7 +297,23 @@ export function pageWindow(page: PageRequest, totalCount: number): { readonly of
   return { offset, limit: Math.min(page.pageSize, totalCount - offset) }
 }
 
-type SortableTrade = Pick<Trade, 'symbol' | 'quantity' | 'price' | 'executedAt' | 'bookingSequence'>
+/** A trade as the list orders it: a Pending trade, or a cancelled one, has no execution time. */
+type SortableTrade = Pick<Trade, 'symbol' | 'quantity' | 'price' | 'bookingSequence'> & { readonly executedAt: UtcTimestamp | null }
+
+/**
+ * List order (execution time, then booking sequence), with a trade that has no execution time
+ * (Pending, or cancelled while Pending) before every executed trade: as SQLite orders NULL in
+ * ascending order. In descending order it is therefore after every executed trade. Among such
+ * trades the (original's) booking sequence decides, so the order is always total.
+ */
+export function compareListOrder(a: SortableTrade, b: SortableTrade): number {
+  if (a.executedAt !== b.executedAt) {
+    if (a.executedAt === null) return -1
+    if (b.executedAt === null) return 1
+    return a.executedAt < b.executedAt ? -1 : 1
+  }
+  return a.bookingSequence - b.bookingSequence
+}
 
 /** Compares one sort field alone. Execution time is left to trade order, which also breaks every tie. */
 function compareField(field: TradeSortField, a: SortableTrade, b: SortableTrade): number {
@@ -301,5 +339,29 @@ function compareField(field: TradeSortField, a: SortableTrade, b: SortableTrade)
  */
 export function compareTrades(sort: TradeSort): (a: SortableTrade, b: SortableTrade) => number {
   const sign = sort.direction === 'asc' ? 1 : -1
-  return (a, b) => sign * (compareField(sort.field, a, b) || compareTradeOrder(a, b))
+  return (a, b) => sign * (compareField(sort.field, a, b) || compareListOrder(a, b))
+}
+
+/** Which audit entries of a trade to read: its own row ('trade'), or its logical trade ('logical'). */
+export const AUDIT_SCOPES = ['trade', 'logical'] as const
+
+export type AuditQueryScope = (typeof AUDIT_SCOPES)[number]
+
+export const AUDIT_QUERY_PARAMETERS = ['scope', 'page', 'pageSize'] as const
+
+export type AuditQueryErrors = Readonly<Partial<Record<(typeof AUDIT_QUERY_PARAMETERS)[number], readonly string[]>>>
+
+/**
+ * The query parameters of a trade's audit trail: `scope` (trade, the default, or logical, exactly
+ * as written), `page` and `pageSize` as for a page of trades. Every invalid one is reported at once.
+ */
+export function validateAuditQuery(request: { readonly scope?: unknown; readonly page?: unknown; readonly pageSize?: unknown }):
+  { readonly ok: true; readonly value: { readonly scope: AuditQueryScope; readonly page: PageRequest } } | { readonly ok: false; readonly errors: AuditQueryErrors } {
+  const scope = checkChoice(request.scope, 'scope', AUDIT_SCOPES, 'trade')
+  const page = checkWholeNumber(request.page, 'page', MAX_PAGE, 1)
+  const pageSize = checkWholeNumber(request.pageSize, 'pageSize', MAX_PAGE_SIZE, DEFAULT_PAGE_SIZE)
+  if (scope.ok && page.ok && pageSize.ok) return { ok: true, value: { scope: scope.value, page: { page: page.value, pageSize: pageSize.value } } }
+  const errors: Partial<Record<(typeof AUDIT_QUERY_PARAMETERS)[number], readonly string[]>> = {}
+  for (const [name, result] of [['scope', scope], ['page', page], ['pageSize', pageSize]] as const) if (!result.ok) errors[name] = [result.message]
+  return { ok: false, errors }
 }

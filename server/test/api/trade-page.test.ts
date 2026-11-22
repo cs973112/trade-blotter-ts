@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { createTestServer } from '../support/app.ts'
-import { JSON_TYPE, postTrade, PROBLEM_TYPE, rawNumbers } from '../support/http.ts'
+import { JSON_TYPE, bookExecuted, PROBLEM_TYPE, rawNumbers } from '../support/http.ts'
 
 let server: Awaited<ReturnType<typeof createTestServer>>
 
@@ -30,10 +30,10 @@ async function page(query: string): Promise<PageBody> {
   return response.json<PageBody>()
 }
 
+/** An Executed trade: booked (Pending), then executed at `executedAt` (bookExecuted). */
 async function trade(symbol: string, side: string, quantity: string, price: string, executedAt: string): Promise<void> {
-  const response = await postTrade(server.app,
-    `{"symbol":"${symbol}","side":"${side}","quantity":${quantity},"price":${price},"executedAt":"${executedAt}"}`)
-  expect(response.statusCode, response.body).toBe(201)
+  const response = await bookExecuted(server, `{"symbol":"${symbol}","side":"${side}","quantity":${quantity},"price":${price}}`, executedAt)
+  expect(response.statusCode, response.body).toBe(200)
 }
 
 /** Six trades with ties on every sort field, and decimals whose text order differs from their value (as in trade-history). */

@@ -1,6 +1,11 @@
 import {
   TRADE_PAGE_QUERY_PARAMETERS,
   TRADE_QUERY_PARAMETERS,
+  type Actor,
+  type AuditEntry,
+  type AuditPage,
+  type AuditTradeSnapshot,
+  type Cancellation,
   type CreateTradeRequest,
   type FieldErrors,
   type Position,
@@ -10,11 +15,12 @@ import {
   type TradePage,
   type TradePageQuery,
   type TradeQuery,
+  type TradeStatus,
 } from './contracts.ts'
 import { parseJsonKeepingNumberText } from './json.ts'
 
 /**
- * A small typed client for the four API endpoints. Paths are relative: in development the Vite
+ * A small typed client for the API's seven endpoints. Paths are relative: in development the Vite
  * server forwards them to the API. Every failure becomes an ApiError whose message is safe to
  * show; server-side details are never passed on.
  */
@@ -26,6 +32,15 @@ export type ApiErrorKind =
   | 'invalid-query'
   /** 400 for a business reason, such as the position limit: show the message. */
   | 'rejected'
+  /** 400 for a cancellation whose reason the API did not accept: show the message by the reason. */
+  | 'invalid-cancellation'
+  /** 404 for a trade that does not exist (any more). */
+  | 'not-found'
+  /**
+   * 409: the trade cannot make the change asked of it, such as one already cancelled, or executing it
+   * would breach the position limit (problem position-limit). Nothing was written.
+   */
+  | 'conflict'
   /** The server could not be reached: the request failed before any response arrived. */
   | 'network'
   /**
@@ -39,12 +54,15 @@ export type ApiErrorKind =
 export class ApiError extends Error {
   readonly kind: ApiErrorKind
   readonly fieldErrors: FieldErrors
+  /** The problem type's last part, such as position-limit, when the API named one. */
+  readonly problem: string | undefined
 
-  constructor(kind: ApiErrorKind, message: string, fieldErrors: FieldErrors = {}) {
+  constructor(kind: ApiErrorKind, message: string, fieldErrors: FieldErrors = {}, problem?: string) {
     super(message)
     this.name = 'ApiError'
     this.kind = kind
     this.fieldErrors = fieldErrors
+    this.problem = problem
   }
 }
 
@@ -56,7 +74,7 @@ const UNEXPECTED_RESPONSE = 'The server sent a response this page does not under
 /** Bad gateway, service unavailable, gateway timeout: the API did not answer. Any other 5xx is its own failure. */
 const GATEWAY_STATUSES: ReadonlySet<number> = new Set([502, 503, 504])
 
-const TRADE_FIELDS: readonly TradeField[] = ['symbol', 'side', 'quantity', 'price', 'executedAt']
+const TRADE_FIELDS: readonly TradeField[] = ['symbol', 'side', 'quantity', 'price', 'executedAt', 'status']
 const DECIMAL = /^-?[0-9]+(?:[.][0-9]+)?$/
 
 type JsonObject = Readonly<Record<string, unknown>>
@@ -65,6 +83,9 @@ const isObject = (value: unknown): value is JsonObject => typeof value === 'obje
 const isString = (value: unknown): value is string => typeof value === 'string'
 const isDecimal = (value: unknown): value is string => isString(value) && DECIMAL.test(value)
 const isSide = (value: unknown): value is Side => value === 'Buy' || value === 'Sell'
+const isStatus = (value: unknown): value is TradeStatus => value === 'Pending' || value === 'Executed' || value === 'Cancelled'
+const isActor = (value: unknown): value is Actor => value === 'User' || value === 'Admin'
+const isOptionalText = (value: unknown): value is string | null => value === null || isString(value)
 
 function unexpected(): ApiError {
   return new ApiError('server', UNEXPECTED_RESPONSE)
@@ -72,22 +93,95 @@ function unexpected(): ApiError {
 
 function toTrade(value: unknown): Trade {
   if (!isObject(value)) throw unexpected()
-  const { id, bookingSequence, symbol, side, quantity, price, notional, executedAt, createdAt, updatedAt } = value
+  const {
+    id, bookingSequence, symbol, side, quantity, price, notional, status, executedAt, createdAt, updatedAt, createdBy, updatedBy,
+    originalTradeId, cancellationReason, cancellationTradeId,
+  } = value
   if (
     !isString(id) || !isString(bookingSequence) || !/^[0-9]+$/.test(bookingSequence) || !isString(symbol) || !isSide(side) ||
-    !isDecimal(quantity) || !isDecimal(price) || !isDecimal(notional) ||
-    !isString(executedAt) || !isString(createdAt) || !isString(updatedAt)
+    !isDecimal(quantity) || !isDecimal(price) || !isDecimal(notional) || !isStatus(status) ||
+    !isOptionalText(executedAt) || !isString(createdAt) || !isString(updatedAt) || !isActor(createdBy) || !isActor(updatedBy) ||
+    !isOptionalText(originalTradeId) || !isOptionalText(cancellationReason) || !isOptionalText(cancellationTradeId)
   ) {
     throw unexpected()
   }
-  return { id, bookingSequence: Number(bookingSequence), symbol, side, quantity, price, notional, executedAt, createdAt, updatedAt }
+  return {
+    id, bookingSequence: Number(bookingSequence), symbol, side, quantity, price, notional, status, executedAt, createdAt, updatedAt,
+    createdBy, updatedBy, originalTradeId, cancellationReason, cancellationTradeId,
+  }
 }
 
 function toPosition(value: unknown): Position {
   if (!isObject(value)) throw unexpected()
-  const { symbol, netQuantity, averageCost } = value
-  if (!isString(symbol) || !isDecimal(netQuantity) || !isDecimal(averageCost)) throw unexpected()
-  return { symbol, netQuantity, averageCost }
+  const { symbol, netQuantity, averageCost, executedNetQuantity, pendingNetQuantity, projectedNetQuantity } = value
+  if (!isString(symbol) || !isDecimal(netQuantity) || !isDecimal(averageCost) || !isDecimal(executedNetQuantity) ||
+    !isDecimal(pendingNetQuantity) || !isDecimal(projectedNetQuantity)) throw unexpected()
+  return { symbol, netQuantity, averageCost, executedNetQuantity, pendingNetQuantity, projectedNetQuantity }
+}
+
+function toCancellation(value: unknown): Cancellation {
+  if (!isObject(value)) throw unexpected()
+  const trade = toTrade(value['trade'])
+  const cancellationRecord = toTrade(value['cancellationRecord'])
+  // The trade is now Cancelled, and the record names it; anything else is not this contract.
+  if (trade.status !== 'Cancelled' || cancellationRecord.originalTradeId !== trade.id || trade.cancellationTradeId !== cancellationRecord.id) throw unexpected()
+  return { trade, cancellationRecord }
+}
+
+const AUDIT_ACTIONS: ReadonlySet<unknown> = new Set(['Inserted', 'Updated', 'Deleted'])
+
+function toSnapshot(value: unknown): AuditTradeSnapshot {
+  if (!isObject(value)) throw unexpected()
+  const {
+    bookingSequence, id, symbol, side, quantity, price, executedAt, createdAt, updatedAt, quantityKey, priceKey, status, createdBy, updatedBy,
+    originalTradeId, cancellationReason,
+  } = value
+  if (
+    !isString(bookingSequence) || !/^[0-9]+$/.test(bookingSequence) || !isString(id) || !isString(symbol) || !isString(side) ||
+    !isDecimal(quantity) || !isDecimal(price) || !isOptionalText(executedAt) || !isString(createdAt) || !isString(updatedAt) ||
+    !isString(quantityKey) || !isString(priceKey) || !isStatus(status) || !isActor(createdBy) || !isActor(updatedBy) ||
+    !isOptionalText(originalTradeId) || !isOptionalText(cancellationReason)
+  ) {
+    throw unexpected()
+  }
+  return {
+    bookingSequence: Number(bookingSequence), id, symbol, side, quantity, price, executedAt, createdAt, updatedAt, quantityKey, priceKey, status,
+    createdBy, updatedBy, originalTradeId, cancellationReason,
+  }
+}
+
+function toAuditEntry(value: unknown): AuditEntry {
+  if (!isObject(value)) throw unexpected()
+  const { auditId, auditAction, auditOn, auditBy } = value
+  if (!isString(auditId) || !/^[0-9]+$/.test(auditId) || !AUDIT_ACTIONS.has(auditAction) || !isString(auditOn) || auditBy !== 'System') throw unexpected()
+  return { auditId: Number(auditId), auditAction: auditAction as AuditEntry['auditAction'], auditOn, auditBy, trade: toSnapshot(value['trade']) }
+}
+
+interface AuditAsked {
+  readonly tradeId: string
+  readonly scope: AuditPage['scope']
+  readonly page: number
+  readonly pageSize: number
+}
+
+/** A page of an audit history, refused unless it is the page asked for and its numbers agree, as for trades. */
+function toAuditPage(value: unknown, asked: AuditAsked): AuditPage {
+  if (!isObject(value)) throw unexpected()
+  const items = toList(value['items'], toAuditEntry)
+  const { tradeId, scope } = value
+  const tradeIds = toList(value['tradeIds'], (id) => {
+    if (!isString(id)) throw unexpected()
+    return id
+  })
+  const page = toWholeNumber(value['page'])
+  const pageSize = toWholeNumber(value['pageSize'])
+  const totalCount = toWholeNumber(value['totalCount'])
+  const totalPages = toWholeNumber(value['totalPages'])
+  if (tradeId !== asked.tradeId || scope !== asked.scope || page !== asked.page || pageSize !== asked.pageSize ||
+    totalPages !== Math.ceil(totalCount / pageSize)) throw unexpected()
+  const onPage = page > totalPages ? 0 : Math.min(pageSize, totalCount - (page - 1) * pageSize)
+  if (items.length !== onPage || items.some((entry) => !tradeIds.includes(entry.trade.id))) throw unexpected()
+  return { tradeId: asked.tradeId, scope: asked.scope, tradeIds, items, page, pageSize, totalCount, totalPages }
 }
 
 function toList<T>(value: unknown, convert: (item: unknown) => T): T[] {
@@ -156,7 +250,25 @@ function toApiError(status: number, body: string): ApiError {
     return new ApiError('invalid-query', `The filters were not accepted. ${queryMessages(problem['errors']).join(' ')}`.trim())
   }
   if (isObject(problem) && problem['type'] === 'urn:trade-blotter:problem:position-limit' && isString(problem['detail'])) {
-    return new ApiError('rejected', `The trade was not booked. ${problem['detail']}`)
+    // 409 for an execution (its detail says it was not executed), 400 for a booking.
+    return status === 409
+      ? new ApiError('conflict', problem['detail'], {}, 'position-limit')
+      : new ApiError('rejected', `The trade was not booked. ${problem['detail']}`, {}, 'position-limit')
+  }
+  if (isObject(problem) && problem['type'] === 'urn:trade-blotter:problem:invalid-execution') {
+    return new ApiError('rejected', 'The execution request was not accepted. Reload the page and try again.', {}, 'invalid-execution')
+  }
+  if (isObject(problem) && problem['type'] === 'urn:trade-blotter:problem:invalid-cancellation') {
+    const errors = isObject(problem['errors']) ? problem['errors'] : {}
+    const reason = Array.isArray(errors['reason']) ? errors['reason'].filter(isString) : []
+    const message = reason[0] ?? (isString(problem['detail']) ? problem['detail'] : 'The reason was not accepted.')
+    return new ApiError('invalid-cancellation', message, {}, 'invalid-cancellation')
+  }
+  if (isObject(problem) && problem['type'] === 'urn:trade-blotter:problem:trade-not-found') {
+    return new ApiError('not-found', 'The trade no longer exists.', {}, 'trade-not-found')
+  }
+  if (isObject(problem) && problem['type'] === 'urn:trade-blotter:problem:invalid-transition' && isString(problem['detail'])) {
+    return new ApiError('conflict', problem['detail'], {}, 'invalid-transition')
   }
   return new ApiError('rejected', `The request was not accepted (HTTP ${String(status)}). Reload the page and try again.`)
 }
@@ -196,16 +308,31 @@ async function request(path: string, options: RequestOptions = {}): Promise<unkn
 }
 
 export const api = {
-  /** POST /trades. Sends only the request fields; the server assigns the rest. */
+  /**
+   * POST /trades. Sends only the request fields; the server assigns the rest, the actors included,
+   * and books the trade Pending, with no execution time. The answer must be a Pending trade.
+   */
   async createTrade(trade: CreateTradeRequest): Promise<Trade> {
     const body: CreateTradeRequest = {
       symbol: trade.symbol,
       side: trade.side,
       quantity: trade.quantity,
       price: trade.price,
-      ...(trade.executedAt === undefined ? {} : { executedAt: trade.executedAt }),
+      ...(trade.status === undefined ? {} : { status: trade.status }),
     }
-    return toTrade(await request('/trades', { method: 'POST', body: JSON.stringify(body) }))
+    const booked = toTrade(await request('/trades', { method: 'POST', body: JSON.stringify(body) }))
+    if (booked.status !== 'Pending' || booked.executedAt !== null) throw unexpected()
+    return booked
+  },
+
+  /**
+   * POST /trades/{id}/execution: executes a Pending trade. Nothing is sent: the server sets the
+   * execution time and records it as User. The answer must be the same trade, now Executed.
+   */
+  async executeTrade(id: string): Promise<Trade> {
+    const trade = toTrade(await request(`/trades/${encodeURIComponent(id)}/execution`, { method: 'POST' }))
+    if (trade.id !== id || trade.status !== 'Executed' || trade.executedAt === null) throw unexpected()
+    return trade
   },
 
   /**
@@ -227,6 +354,26 @@ export const api = {
     parameters.append('page', String(query.page))
     parameters.append('pageSize', String(query.pageSize))
     return toTradePage(await request(`/trades/page?${parameters.toString()}`), query)
+  },
+
+  /**
+   * POST /trades/{id}/cancellation: cancels a Pending trade with a reason. Only the reason is sent:
+   * the server records the cancellation as Admin, at its own time. The answer must be the trade,
+   * now Cancelled, and the cancellation record that names it.
+   */
+  async cancelTrade(id: string, reason: string): Promise<Cancellation> {
+    const body = JSON.stringify({ reason })
+    return toCancellation(await request(`/trades/${encodeURIComponent(id)}/cancellation`, { method: 'POST', body }))
+  },
+
+  /**
+   * GET /trades/{id}/audit: one page of a trade's audit history, oldest first. Read only. scope
+   * logical (the default here) lists the original and its cancellation record together.
+   */
+  async tradeAudit(id: string, options: { readonly scope?: AuditPage['scope']; readonly page?: number; readonly pageSize?: number } = {}): Promise<AuditPage> {
+    const asked: AuditAsked = { tradeId: id, scope: options.scope ?? 'logical', page: options.page ?? 1, pageSize: options.pageSize ?? 50 }
+    const parameters = new URLSearchParams({ scope: asked.scope, page: String(asked.page), pageSize: String(asked.pageSize) })
+    return toAuditPage(await request(`/trades/${encodeURIComponent(id)}/audit?${parameters.toString()}`), asked)
   },
 
   /** GET /positions: open positions sorted by symbol, as the API orders them. */

@@ -1,9 +1,10 @@
+import { EventEmitter } from 'node:events'
 import { readdirSync, writeFileSync } from 'node:fs'
 import { createServer as createTcpServer, type AddressInfo } from 'node:net'
 import { join } from 'node:path'
 
 import type { FastifyInstance } from 'fastify'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, onTestFailed } from 'vitest'
 
 import { isAlive, writeState, type AppRecord } from '../../scripts/lifecycle.ts'
 import {
@@ -14,7 +15,7 @@ import { listenersOnPort, processMemory } from '../../scripts/process-probe.ts'
 import { seedDatabase, type Protection } from '../../scripts/trade-data.ts'
 import { loadConfig } from '../../src/config.ts'
 import { createServer } from '../../src/server.ts'
-import { isolatedEnv, runNode, startNode, stopChild } from '../support/child-process.ts'
+import { isolatedEnv, runNode, startNode, stopChild, stopChildWithin } from '../support/child-process.ts'
 import { createTempDir, removeTempDir } from '../support/temp-dir.ts'
 
 /**
@@ -183,8 +184,11 @@ describe('perf:api: measuring', () => {
   })
 
   it('stops when the trades change while it runs, rather than measure other data', async () => {
+    // A trade booked and executed: an Executed trade the benchmark's dataset check counts.
     const booking = async (): Promise<void> => {
-      await server?.inject({ method: 'POST', url: '/trades', payload: { symbol: 'PERFTEST', side: 'Buy', quantity: '1', price: '1' } })
+      const booked = await server?.inject({ method: 'POST', url: '/trades', payload: { symbol: 'PERFTEST', side: 'Buy', quantity: '1', price: '1' } })
+      const id = booked?.json<{ id?: string }>().id
+      if (id !== undefined) await server?.inject({ method: 'POST', url: `/trades/${id}/execution` })
     }
 
     await expect(runBenchmark(api, { warmup: 1, iterations: 1, memory: false, scenarios: SCENARIOS.slice(0, 2), onScenario: () => { void booking() } }))
@@ -266,6 +270,9 @@ describe('perf:api: which API it measures', () => {
   }, 60_000)
 })
 
+/** The child the bounded stop takes, named through the helper so this file imports no process API itself. */
+type StoppableChild = Parameters<typeof stopChildWithin>[0]
+
 describe('perf:api: process probes', () => {
   /** A TCP listener on 127.0.0.1 held by this process, on a port the system picks. */
   async function listening<T>(use: (port: number) => Promise<T> | T): Promise<T> {
@@ -279,20 +286,57 @@ describe('perf:api: process probes', () => {
     }
   }
 
+  // Its own timeout: on Windows each probe runs netstat twice (TCP and TCPv6), six launches in all,
+  // plus a Node child. Alone it takes 0.35-0.5 s; in 14 full-suite runs on Windows it took 0.5-3.6 s,
+  // and 6.2 s in one that failed at Vitest's default 5 s. 20 s is about three times the worst seen.
+  // The child's stop has its own 5 s deadline, and each step reports its time if the test fails.
   it('tell this process from a real other process, and see the port freed', async () => {
+    const started = performance.now()
+    const steps: string[] = []
+    const step = <T>(name: string, work: () => T): T => {
+      const from = performance.now()
+      try {
+        return work()
+      } finally {
+        steps.push(`${name}: ${(performance.now() - from).toFixed(0)} ms`)
+      }
+    }
+    onTestFailed(() => {
+      console.error(`Process-probe test steps (${(performance.now() - started).toFixed(0)} ms in all):\n  ${steps.join('\n  ')}`)
+    })
     const port = await listening(async (open) => {
-      expect(listenersOnPort(open, process.pid)).toBe('only')
+      expect(step('probe for this process', () => listenersOnPort(open, process.pid))).toBe('only')
       // Another process that exists: a child that only waits. It holds no socket on the port.
-      const other = startNode(['-e', 'setInterval(() => {}, 1000)'], isolatedEnv({ DATABASE_PATH: join(dir, 'probe.db') }))
+      const other = step('start the child', () => startNode(['-e', 'setInterval(() => {}, 1000)'], isolatedEnv({ DATABASE_PATH: join(dir, 'probe.db') })))
       try {
         expect(other.pid).toBeDefined()
-        expect(listenersOnPort(open, other.pid ?? 0)).toBe('others')
+        steps.push(`child: pid ${String(other.pid)}`)
+        expect(step('probe for the child', () => listenersOnPort(open, other.pid ?? 0))).toBe('others')
       } finally {
-        await stopChild(other)
+        const from = performance.now()
+        await stopChildWithin(other, 5_000)
+        steps.push(`stop the child: ${(performance.now() - from).toFixed(0)} ms (exit code ${String(other.exitCode)}, signal ${String(other.signalCode)})`)
       }
       return open
     })
-    expect(listenersOnPort(port, process.pid)).toBe('none')
+    expect(step('probe after the listener closed', () => listenersOnPort(port, process.pid))).toBe('none')
+  }, 20_000)
+
+  it('the bounded stop rejects, naming the process, when a child is still running at the deadline, and never reports it stopped', async () => {
+    // Told to stop, it never exits: kill() is recorded and ignored.
+    const kills: unknown[] = []
+    const stubborn = Object.assign(new EventEmitter(), { pid: 999_999_999, exitCode: null, signalCode: null, kill: (signal?: unknown) => kills.push(signal) })
+    let settled = false
+
+    const stopping = stopChildWithin(stubborn as unknown as StoppableChild, 50).finally(() => { settled = true })
+
+    await expect(stopping).rejects.toThrow(/Child process 999999999 was told to stop but was still running after 50 ms/)
+    expect(settled).toBe(true)
+    expect(kills).toHaveLength(1)
+    expect(stubborn.listenerCount('exit')).toBe(0)
+    // One that exits in time resolves.
+    const prompt = Object.assign(new EventEmitter(), { pid: 1, exitCode: null, signalCode: null, kill: () => setImmediate(() => prompt.emit('exit', 0, null)) })
+    await expect(stopChildWithin(prompt as unknown as StoppableChild, 1_000)).resolves.toBeUndefined()
   })
 
   it('never takes an id that no process has for the listener: one that has just exited', async () => {

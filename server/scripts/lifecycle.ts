@@ -2,7 +2,7 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { connect, createServer } from 'node:net'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 
@@ -129,12 +129,29 @@ function removeState(runDir: string): void {
 
 /** True while some process has this id. Signal 0 only checks; it does not affect the process. */
 export function isAlive(pid: number): boolean {
+  return probeProcess(pid) !== 'exited'
+}
+
+/**
+ * What signal 0 says about a process id, without affecting the process:
+ * - alive: a process has the id, and this process may signal it;
+ * - exited: no process has the id (ESRCH);
+ * - no-permission: a process has the id but may not be signalled (EPERM). It is not ours to stop:
+ *   another user's process, a protected one, or, on Windows, one still being torn down. It never
+ *   counts as having exited.
+ * Any other error is thrown.
+ */
+export type ProcessProbe = 'alive' | 'exited' | 'no-permission'
+
+export function probeProcess(pid: number, signal: (pid: number, signal: number) => void = (id, value) => { process.kill(id, value) }): ProcessProbe {
   try {
-    process.kill(pid, 0)
-    return true
+    signal(pid, 0)
+    return 'alive'
   } catch (error) {
-    // EPERM: the process exists but belongs to another user.
-    return (error as NodeJS.ErrnoException).code === 'EPERM'
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'ESRCH') return 'exited'
+    if (code === 'EPERM') return 'no-permission'
+    throw error
   }
 }
 
@@ -174,6 +191,61 @@ export function commandLinesOf(pids: readonly number[]): Map<number, string> {
     if (commandLine !== undefined && commandLine !== '') lines.set(pid, commandLine)
   }
   return lines
+}
+
+/** A live process as the operating system describes it: its executable's name, and its command line when it can be read. */
+export interface ProcessDescription {
+  readonly name: string
+  readonly commandLine?: string
+}
+
+/**
+ * The name and command line of these processes, by id; a process that does not exist is missing.
+ * Unlike commandLinesOf, a process whose command line cannot be read (another user's, or a
+ * protected one) is still listed, with its name: Windows reports the name of every process, and
+ * Linux and macOS report it as they do the command line.
+ */
+export function describeProcesses(pids: readonly number[]): Map<number, ProcessDescription> {
+  const descriptions = new Map<number, ProcessDescription>()
+  const valid = [...new Set(pids)].filter((pid) => Number.isInteger(pid) && pid > 0)
+  if (valid.length === 0) return descriptions
+  const add = (pid: number, name: string, commandLine: string | undefined): void => {
+    if (name === '') return
+    descriptions.set(pid, commandLine === undefined || commandLine === '' ? { name } : { name, commandLine })
+  }
+  if (process.platform === 'win32') {
+    const filter = valid.map((pid) => `ProcessId = ${String(pid)}`).join(' OR ')
+    const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+      `Get-CimInstance Win32_Process -Filter '${filter}' | ForEach-Object { [string]$_.ProcessId + [char]9 + $_.Name + [char]9 + $_.CommandLine }`],
+    { encoding: 'utf8', windowsHide: true, timeout: 30_000 })
+    for (const line of result.status === 0 ? result.stdout.split(/\r?\n/) : []) {
+      const [pid = '', name = '', ...rest] = line.split('\t')
+      add(Number(pid), name.trim(), rest.join('\t').trim())
+    }
+    return descriptions
+  }
+  for (const pid of valid) {
+    if (process.platform === 'linux') {
+      let name: string
+      try {
+        name = readFileSync(`/proc/${String(pid)}/comm`, 'utf8').trim()
+      } catch {
+        continue
+      }
+      let commandLine: string | undefined
+      try {
+        commandLine = readFileSync(`/proc/${String(pid)}/cmdline`, 'utf8').replaceAll('\0', ' ').trim()
+      } catch {
+        commandLine = undefined
+      }
+      add(pid, name, commandLine)
+    } else {
+      const name = spawnSync('ps', ['-p', String(pid), '-o', 'comm='], { encoding: 'utf8', timeout: 10_000 })
+      const command = spawnSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8', timeout: 10_000 })
+      if (name.status === 0) add(pid, name.stdout.trim(), command.status === 0 ? command.stdout.trim() : undefined)
+    }
+  }
+  return descriptions
 }
 
 /** The status of each recorded process, in order. */
@@ -366,6 +438,251 @@ export async function startApps(options: StartOptions): Promise<StartResult> {
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Confirmed termination
+
+export interface OwnedPort {
+  readonly port: number
+  readonly host: string
+}
+
+/** The handle of a child this process started. It names that process only, never a later one given the same id. */
+export interface ChildHandle {
+  readonly exitCode: number | null
+  readonly signalCode: NodeJS.Signals | null
+  kill(signal: NodeJS.Signals): boolean
+}
+
+/**
+ * A process this program started and may stop, with what proves it is still that process: the
+ * handle of its own child, or the token in its command line (app:start's --title). A bare id is
+ * never enough: once the process has gone, the operating system may give the id to any program.
+ */
+export interface OwnedProcess {
+  readonly label: string
+  readonly pid: number
+  readonly token?: string
+  readonly handle?: ChildHandle
+  /** Ports it listened on, which must be free once it has gone. */
+  readonly ports?: readonly OwnedPort[]
+}
+
+/** What the termination steps ask of the operating system; tests pass a stand-in. */
+export interface TerminationSystem {
+  readonly probe: (pid: number) => ProcessProbe
+  /** SIGKILL by id. Throws as process.kill does (ESRCH, EPERM). Called only for a process just identified as ours. */
+  readonly kill: (pid: number) => void
+  readonly describe: (pids: readonly number[]) => Map<number, ProcessDescription>
+  readonly portAnswers: (port: number, host: string) => Promise<boolean>
+  readonly now: () => number
+  readonly sleep: (ms: number) => Promise<void>
+  /** The Node.js executable's file name: a process of another program cannot be one of ours. */
+  readonly nodeName: string
+}
+
+export const systemTermination: TerminationSystem = {
+  probe: (pid) => probeProcess(pid),
+  kill: (pid) => { process.kill(pid, 'SIGKILL') },
+  describe: describeProcesses,
+  portAnswers,
+  now: () => Date.now(),
+  sleep: (ms) => sleep(ms),
+  nodeName: basename(process.execPath),
+}
+
+/**
+ * - already-exited: gone before anything was sent;
+ * - pid-reused: gone; its id now belongs to another program, which was not touched;
+ * - terminated: SIGKILL was accepted, and the process was then confirmed gone;
+ * - exited-during-cleanup: SIGKILL found it already exiting (ESRCH, or EPERM while it was being
+ *   torn down), and it was then confirmed gone;
+ * - still-alive: SIGKILL was accepted, but it was still running at the deadline;
+ * - cannot-terminate: SIGKILL was refused (EPERM or another error) and it was still running at the deadline;
+ * - unidentified: a process holds the id but could not be identified as ours, so it was never
+ *   signalled, and it had not gone by the deadline;
+ * - port-in-use: gone, but a port it listened on still answered at the deadline.
+ */
+export type TerminationOutcome =
+  | 'already-exited' | 'pid-reused' | 'terminated' | 'exited-during-cleanup'
+  | 'still-alive' | 'cannot-terminate' | 'unidentified' | 'port-in-use'
+
+export interface TerminationReport {
+  readonly label: string
+  readonly pid: number
+  readonly outcome: TerminationOutcome
+  /** Confirmed gone, and every port it listened on released. */
+  readonly ok: boolean
+  readonly elapsedMs: number
+  /** What was checked and sent, in order, with the time since the start: the diagnostics. */
+  readonly events: readonly string[]
+}
+
+type Identity =
+  | { readonly kind: 'gone'; readonly reused: boolean; readonly reason: string }
+  | { readonly kind: 'ours'; readonly reason: string }
+  | { readonly kind: 'unknown'; readonly reason: string }
+
+const executable = (name: string): string => name.toLowerCase().replace(/\.exe$/, '')
+
+/**
+ * Whether the process is still ours. A handle answers by itself. Otherwise signal 0 says whether
+ * the id is taken, and, when it is (alive or EPERM), the command line says whose it is: with the
+ * token it is ours; without, the id was reused. When the command line cannot be read, a program
+ * other than Node.js cannot be ours; a Node.js process stays unknown, never assumed to have gone.
+ */
+function identify(target: OwnedProcess, system: TerminationSystem, describe: boolean): Identity {
+  if (target.handle !== undefined) {
+    const { exitCode, signalCode } = target.handle
+    return exitCode !== null || signalCode !== null
+      ? { kind: 'gone', reused: false, reason: `its handle reports it exited (${signalCode === null ? `code ${String(exitCode)}` : signalCode})` }
+      : { kind: 'ours', reason: 'its handle reports it running' }
+  }
+  const probe = system.probe(target.pid)
+  if (probe === 'exited') return { kind: 'gone', reused: false, reason: 'no process has its id (ESRCH)' }
+  const held = probe === 'alive' ? 'a process has its id' : 'a process has its id but may not be signalled (EPERM)'
+  if (target.token === undefined) return { kind: 'unknown', reason: `${held}; no token or handle identifies it` }
+  if (!describe) return { kind: 'unknown', reason: held }
+  const description = system.describe([target.pid]).get(target.pid)
+  if (description === undefined) {
+    return system.probe(target.pid) === 'exited'
+      ? { kind: 'gone', reused: false, reason: 'no process has its id (ESRCH)' }
+      : { kind: 'unknown', reason: `${held}, but the operating system does not list it` }
+  }
+  if (description.commandLine !== undefined) {
+    return description.commandLine.includes(target.token)
+      ? { kind: 'ours', reason: `${held}, and its command line holds the token` }
+      : { kind: 'gone', reused: true, reason: `${held}, but its command line has no token: the id now belongs to ${description.name}` }
+  }
+  if (executable(description.name) !== executable(system.nodeName)) {
+    return { kind: 'gone', reused: true, reason: `${held}: ${description.name}, another program, so the id was reused` }
+  }
+  return { kind: 'unknown', reason: `${held}: a ${description.name} process whose command line cannot be read, so it cannot be identified` }
+}
+
+/** How often the command line is read while waiting: on Windows each reading starts PowerShell. */
+const IDENTIFY_EVERY_MS = 1_000
+
+/**
+ * Waits until the process is confirmed gone (by its handle, ESRCH, or its id now held by another
+ * program), or the deadline passes. Returns the last identity seen. EPERM alone never confirms it.
+ */
+async function waitForExit(target: OwnedProcess, deadline: number, system: TerminationSystem, intervalMs: number, note: (text: string) => void): Promise<Identity> {
+  let lastDescribed = -Infinity
+  let last: Identity | undefined
+  for (;;) {
+    const describe = system.now() - lastDescribed >= IDENTIFY_EVERY_MS || system.now() >= deadline
+    if (describe) lastDescribed = system.now()
+    const identity = identify(target, system, describe)
+    if (identity.kind === 'gone' || system.now() >= deadline) {
+      note(identity.reason)
+      return identity.kind === 'unknown' && last?.kind === 'ours' ? last : identity
+    }
+    if (describe || identity.kind !== 'unknown') last = identity
+    await system.sleep(intervalMs)
+  }
+}
+
+/**
+ * Stops one process this program owns and confirms it has gone and released its ports, within a
+ * bounded time. It is identified first, and signalled only while it is ours; an unrelated process
+ * is never signalled. ESRCH and EPERM from SIGKILL are recorded, never taken as proof that it has
+ * gone: that comes from its handle, ESRCH from signal 0, or its id now belonging to another program.
+ */
+export async function terminateOwned(
+  target: OwnedProcess,
+  options: { readonly timeoutMs?: number; readonly intervalMs?: number } = {},
+  system: TerminationSystem = systemTermination,
+): Promise<TerminationReport> {
+  const started = system.now()
+  const deadline = started + (options.timeoutMs ?? 10_000)
+  const intervalMs = options.intervalMs ?? 100
+  const events: string[] = []
+  const note = (text: string): void => { events.push(`+${String(system.now() - started)} ms: ${text}`) }
+  const report = (outcome: TerminationOutcome, ok: boolean): TerminationReport =>
+    ({ label: target.label, pid: target.pid, outcome, ok, elapsedMs: system.now() - started, events })
+
+  const released = async (outcome: TerminationOutcome): Promise<TerminationReport> => {
+    for (const { port, host } of target.ports ?? []) {
+      for (;;) {
+        if (!(await system.portAnswers(port, host))) {
+          note(`port ${String(port)} released`)
+          break
+        }
+        if (system.now() >= deadline) {
+          note(`port ${String(port)} still answers on ${host}`)
+          return report('port-in-use', false)
+        }
+        await system.sleep(intervalMs)
+      }
+    }
+    return report(outcome, true)
+  }
+
+  const first = identify(target, system, true)
+  note(first.reason)
+  if (first.kind === 'gone') return released(first.reused ? 'pid-reused' : 'already-exited')
+  if (first.kind === 'unknown') {
+    // Never signalled: it may be ours still being torn down, or another program; only its going is accepted.
+    const after = await waitForExit(target, deadline, system, intervalMs, note)
+    if (after.kind !== 'gone') return report('unidentified', false)
+    return released(after.reused ? 'pid-reused' : 'already-exited')
+  }
+
+  let refused: string | undefined
+  let exiting = false
+  try {
+    if (target.handle === undefined) system.kill(target.pid)
+    else if (!target.handle.kill('SIGKILL')) throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' })
+    note('SIGKILL sent')
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === 'ESRCH') {
+      exiting = true
+      note('SIGKILL: ESRCH, it was already exiting; waiting for confirmation')
+    } else {
+      refused = code ?? (error instanceof Error ? error.message : String(error))
+      note(`SIGKILL refused: ${refused}${code === 'EPERM' ? ' (still being torn down, or not ours to stop); waiting for confirmation' : ''}`)
+    }
+  }
+
+  const after = await waitForExit(target, deadline, system, intervalMs, note)
+  if (after.kind === 'gone') return released(refused !== undefined || exiting ? 'exited-during-cleanup' : 'terminated')
+  if (after.kind === 'unknown') return report('unidentified', false)
+  return report(refused === undefined ? 'still-alive' : 'cannot-terminate', false)
+}
+
+/** One report as diagnostics: the process, the outcome and everything that was seen. */
+export function formatTermination(report: TerminationReport): string {
+  return [`${report.label} (process ${String(report.pid)}): ${report.outcome} after ${String(report.elapsedMs)} ms`,
+    ...report.events.map((event) => `  ${event}`)].join('\n')
+}
+
+export class TerminationError extends Error {
+  readonly reports: readonly TerminationReport[]
+
+  constructor(reports: readonly TerminationReport[]) {
+    const failed = reports.filter((report) => !report.ok)
+    super(`${String(failed.length)} owned process(es) not confirmed stopped:\n${failed.map(formatTermination).join('\n')}`)
+    this.name = 'TerminationError'
+    this.reports = reports
+  }
+}
+
+/**
+ * Stops each owned process (terminateOwned), one at a time, and throws TerminationError, with
+ * every report, unless all were confirmed gone with their ports released.
+ */
+export async function ensureTerminated(
+  targets: readonly OwnedProcess[],
+  options: { readonly timeoutMs?: number; readonly intervalMs?: number } = {},
+  system: TerminationSystem = systemTermination,
+): Promise<TerminationReport[]> {
+  const reports: TerminationReport[] = []
+  for (const target of targets) reports.push(await terminateOwned(target, options, system))
+  if (reports.some((report) => !report.ok)) throw new TerminationError(reports)
+  return reports
+}
+
 export type StopOutcome = 'stopped' | 'terminated' | 'already-stopped' | 'pid-reused' | 'unverified' | 'still-running'
 
 export interface StopReport {
@@ -388,16 +705,12 @@ async function stopRecord(record: AppRecord, status: ProcessStatus, timeoutMs: n
 
   if (process.platform === 'win32') {
     spawnSync('taskkill', ['/PID', String(record.pid), '/T', '/F'], { windowsHide: true, timeout: 30_000 })
-    return (await waitUntil(() => !isAlive(record.pid), timeoutMs)) ? 'terminated' : 'still-running'
+    // Gone only when confirmed: ESRCH, or the id now held by another program. EPERM alone is not proof.
+    const after = await waitForExit({ label: record.label, pid: record.pid, token: record.token }, Date.now() + timeoutMs, systemTermination, 200, () => undefined)
+    return after.kind === 'gone' ? 'terminated' : after.kind === 'unknown' ? 'unverified' : 'still-running'
   }
-  const groupAlive = (): boolean => {
-    try {
-      process.kill(-record.pid, 0)
-      return true
-    } catch {
-      return false
-    }
-  }
+  // ESRCH: no process is left in the group. EPERM means one is, so it does not count as gone.
+  const groupAlive = (): boolean => probeProcess(-record.pid) !== 'exited'
   const signal = (name: NodeJS.Signals): void => {
     try {
       process.kill(-record.pid, name)

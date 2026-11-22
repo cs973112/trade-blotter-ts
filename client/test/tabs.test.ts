@@ -27,7 +27,7 @@ const many = (count: number): string[] => Array.from({ length: count }, (_, inde
 }))
 
 async function openPage() {
-  const server = fakeApi({ 'GET /trades/page': pagedTrades(many(120)), 'GET /positions': json('[{"symbol":"AAPL","netQuantity":10,"averageCost":100}]') })
+  const server = fakeApi({ 'GET /trades/page': pagedTrades(many(120)), 'GET /positions': json('[{"symbol":"AAPL","netQuantity":10,"averageCost":100,"executedNetQuantity":10,"pendingNetQuantity":0,"projectedNetQuantity":10}]') })
   wrapper = mount(App, { global: { plugins: [createPinia()] }, attachTo: document.body })
   await flushPromises()
   return { server, page: wrapper }

@@ -14,7 +14,7 @@ export interface HttpScenario {
   readonly expected: { readonly status: number; readonly allow?: string }
 }
 
-const TRADE = rawBody({ symbol: '"CT"', side: '"Buy"', quantity: '1', price: '1', executedAt: '"2026-01-01T09:00:00Z"' })
+const TRADE = rawBody({ symbol: '"CT"', side: '"Buy"', quantity: '1', price: '1' })
 
 const post = (name: string, contentType: string | undefined, body: string, status: number): HttpScenario => ({
   name,

@@ -4,7 +4,7 @@ import { buildApp } from '../../src/api/app.ts'
 import { closeDatabase, openDatabase } from '../../src/infrastructure/database/connection.ts'
 import { createDrizzleTradeRepository } from '../../src/infrastructure/drizzle-trade-repository.ts'
 import { createTestServer, inMemoryServices, SERVER_CLOCK } from '../support/app.ts'
-import { postTrade, PROBLEM_TYPE, rawNumbers } from '../support/http.ts'
+import { bookExecuted, executeTrade, postTrade, PROBLEM_TYPE, rawNumbers } from '../support/http.ts'
 import { newTrade } from '../support/trades.ts'
 
 let server: Awaited<ReturnType<typeof createTestServer>>
@@ -19,45 +19,51 @@ afterEach(async () => {
 
 const post = (members: Record<string, unknown>) => postTrade(server.app, JSON.stringify(members))
 const get = async (url: string) => server.app.inject({ method: 'GET', url })
-const trade = (symbol: string, side: string, quantity: string, price: string, executedAt?: string) =>
-  postTrade(server.app, `{"symbol":"${symbol}","side":"${side}","quantity":${quantity},"price":${price}` +
-    `${executedAt === undefined ? '' : `,"executedAt":"${executedAt}"`}}`)
+/** Books a trade: Pending, as every booking is. */
+const book = (symbol: string, side: string, quantity: string, price: string) =>
+  postTrade(server.app, `{"symbol":"${symbol}","side":"${side}","quantity":${quantity},"price":${price}}`)
+/** An Executed trade: booked, then executed at `executedAt` (by default the server clock's reading). */
+const trade = (symbol: string, side: string, quantity: string, price: string, executedAt = server.clock.peek()) =>
+  bookExecuted(server, `{"symbol":"${symbol}","side":"${side}","quantity":${quantity},"price":${price}}`, executedAt)
 
 describe('API: POST /trades', () => {
-  it('creates a trade and returns it, exactly as stored, with 201', async () => {
-    const response = await postTrade(server.app,
-      '{"symbol":" msft ","side":"buy","quantity":10.5,"price":"301.25","executedAt":"2026-01-02T09:30:00.123-05:00"}')
+  it('creates a Pending trade and returns it, exactly as stored, with 201', async () => {
+    const response = await postTrade(server.app, '{"symbol":" msft ","side":"buy","quantity":10.5,"price":"301.25"}')
 
     expect(response.statusCode).toBe(201)
     expect(response.body).toBe(
       '{"id":"00000000-0000-4000-8000-1","bookingSequence":1,"symbol":"MSFT","side":"Buy","quantity":10.5,"price":301.25,' +
-        '"notional":3163.125,"executedAt":"2026-01-02T14:30:00.123Z","createdAt":"2026-03-01T12:00:00.000Z",' +
-        '"updatedAt":"2026-03-01T12:00:00.000Z"}',
+        '"notional":3163.125,"status":"Pending","executedAt":null,"createdAt":"2026-03-01T12:00:00.000Z",' +
+        '"updatedAt":"2026-03-01T12:00:00.000Z","createdBy":"User","updatedBy":"User","originalTradeId":null,"cancellationReason":null,' +
+        '"cancellationTradeId":null}',
     )
     expect((await get('/trades')).body).toBe(`[${response.body}]`)
   })
 
-  it('uses the server clock for executedAt when it is omitted or null, and for createdAt and updatedAt always', async () => {
-    const omitted = (await post({ symbol: 'A', side: 'Buy', quantity: 1, price: 1 })).json<Record<string, string>>()
+  it('books Pending whether status is omitted, null or Pending, with the server clock for createdAt and updatedAt and no executedAt', async () => {
+    const omitted = (await post({ symbol: 'A', side: 'Buy', quantity: 1, price: 1 })).json<Record<string, unknown>>()
     server.clock.set('2026-03-01T12:00:05.000Z')
-    const nulled = (await post({ symbol: 'A', side: 'Buy', quantity: 1, price: 1, executedAt: null })).json<Record<string, string>>()
+    const nulled = (await post({ symbol: 'A', side: 'Buy', quantity: 1, price: 1, status: null, executedAt: null })).json<Record<string, unknown>>()
+    const named = (await post({ symbol: 'A', side: 'Buy', quantity: 1, price: 1, status: 'pending' })).json<Record<string, unknown>>()
 
-    expect([omitted['executedAt'], omitted['createdAt'], omitted['updatedAt']]).toEqual([SERVER_CLOCK, SERVER_CLOCK, SERVER_CLOCK])
-    expect([nulled['executedAt'], nulled['createdAt'], nulled['updatedAt']])
-      .toEqual(['2026-03-01T12:00:05.000Z', '2026-03-01T12:00:05.000Z', '2026-03-01T12:00:05.000Z'])
+    expect(omitted).toMatchObject({ status: 'Pending', executedAt: null, createdAt: SERVER_CLOCK, updatedAt: SERVER_CLOCK })
+    for (const booked of [nulled, named]) expect(booked).toMatchObject({ status: 'Pending', executedAt: null, createdAt: '2026-03-01T12:00:05.000Z', updatedAt: '2026-03-01T12:00:05.000Z' })
   })
 
   it.each([
-    ['2026-01-01T09:00:00Z', '2026-01-01T09:00:00.000Z'],
-    ['2026-01-01T09:00:00.5+05:30', '2026-01-01T03:30:00.500Z'],
-    ['2026-01-01T23:30:00-08:00', '2026-01-02T07:30:00.000Z'],
-    ['2026-01-01t09:00:00.999z', '2026-01-01T09:00:00.999Z'],
-    ['2099-12-31T23:59:59.999+00:00', '2099-12-31T23:59:59.999Z'],
-  ])('normalises executedAt %s to UTC as %s, keeping server-owned createdAt', async (sent, utc) => {
-    const created = (await post({ symbol: 'A', side: 'Sell', quantity: 1, price: 1, executedAt: sent })).json<Record<string, string>>()
+    ['status Executed', { status: 'Executed' }, ['status']],
+    ['status Cancelled', { status: 'Cancelled' }, ['status']],
+    ['an execution time', { executedAt: '2026-01-01T09:00:00Z' }, ['executedAt']],
+    ['an execution time in the future', { executedAt: '2099-12-31T23:59:59.999+00:00' }, ['executedAt']],
+    ['status Executed with an execution time', { status: 'Executed', executedAt: '2026-01-01T09:00:00Z' }, ['executedAt', 'status']],
+  ])('refuses a booking with %s, storing nothing and using no booking sequence', async (_name, members, fields) => {
+    const response = await post({ symbol: 'A', side: 'Sell', quantity: 1, price: 1, ...members })
 
-    expect(created['executedAt']).toBe(utc)
-    expect(created['createdAt']).toBe(SERVER_CLOCK)
+    expect(response.statusCode).toBe(400)
+    expect(response.json()).toMatchObject({ type: 'urn:trade-blotter:problem:invalid-trade' })
+    expect(Object.keys(response.json<{ errors: object }>().errors)).toEqual(fields)
+    expect((await get('/trades')).body).toBe('[]')
+    expect((await post({ symbol: 'A', side: 'Sell', quantity: 1, price: 1 })).json()).toMatchObject({ bookingSequence: 1, status: 'Pending' })
   })
 
   it('ignores server-managed fields sent by the client', async () => {
@@ -74,7 +80,7 @@ describe('API: POST /trades', () => {
 
   it('reports every invalid field together, in field order, with one message each', async () => {
     const response = await postTrade(server.app,
-      '{"executedAt":"yesterday","price":-1,"quantity":"1e15","side":"hold","symbol":"   "}')
+      '{"status":"Executed","executedAt":"yesterday","price":-1,"quantity":"1e15","side":"hold","symbol":"   "}')
 
     expect(response.statusCode).toBe(400)
     expect(response.headers['content-type']).toBe(PROBLEM_TYPE)
@@ -88,7 +94,8 @@ describe('API: POST /trades', () => {
         side: ['Side must be Buy or Sell.'],
         quantity: ['Quantity must be less than 10^15 with at most 10 decimal places.'],
         price: ['Price must be greater than zero.'],
-        executedAt: ['Execution time must be an RFC 3339 date-time with an offset, such as 2026-01-01T09:00:00Z.'],
+        executedAt: ['A trade is booked as Pending, with no execution time: omit executedAt. The server sets it when the trade is executed.'],
+        status: ['A trade cannot be booked as Executed: it is booked as Pending, then executed (POST /trades/{id}/execution).'],
       },
     }))
   })
@@ -135,25 +142,27 @@ describe('API: POST /trades', () => {
     ['the largest values', '999999999999999.9999999999', '999999999999999.9999999999'],
     ['more digits than a double holds', '123456789012345.1234567891', '0.1'],
     ['numeric strings', '"10.0000000001"', '"7.5"'],
-  ])('round-trips %s exactly, on creation and when listed', async (_name, quantity, price) => {
-    const response = await trade('A', 'Buy', quantity, price)
+  ])('round-trips %s exactly, on creation, on execution and when listed', async (_name, quantity, price) => {
+    const response = await book('A', 'Buy', quantity, price)
+    const executed = await executeTrade(server.app, response.json<{ id: string }>().id)
     const listed = await get('/trades')
     const plain = (text: string) => text.replaceAll('"', '')
 
     expect(response.statusCode).toBe(201)
-    for (const body of [response.body, listed.body]) {
+    expect(executed.statusCode).toBe(200)
+    for (const body of [response.body, executed.body, listed.body]) {
       expect(rawNumbers(body, 'quantity')).toEqual([plain(quantity)])
       expect(rawNumbers(body, 'price')).toEqual([plain(price)])
     }
   })
 
   it('sends the largest notional exactly', async () => {
-    const response = await trade('A', 'Buy', '999999999999999.9999999999', '999999999999999.9999999999')
+    const response = await book('A', 'Buy', '999999999999999.9999999999', '999999999999999.9999999999')
 
     expect(rawNumbers(response.body, 'notional')).toEqual(['999999999999999999999999800000.00000000000000000001'])
   })
 
-  it('refuses a trade that would breach the position limit with 400, storing nothing and using no booking sequence', async () => {
+  it('refuses a booking that would take the projected position to the limit with 400, storing nothing and using no booking sequence', async () => {
     // Reaching 10^30 takes about 10^15 maximum-size trades, which no test can send. One oversized
     // trade is stored directly through the repository instead: this exercises the API's rejection
     // and rollback, not a limit that ordinary valid requests can reach.
@@ -162,7 +171,7 @@ describe('API: POST /trades', () => {
     closeDatabase(seeding)
     const before = (await get('/trades')).body
 
-    const response = await trade('BIG', 'Buy', '999999999999999', '1')
+    const response = await book('BIG', 'Buy', '999999999999999', '1')
 
     expect(response.statusCode).toBe(400)
     expect(response.headers['content-type']).toBe(PROBLEM_TYPE)
@@ -174,7 +183,7 @@ describe('API: POST /trades', () => {
       symbol: 'BIG',
     })
     expect((await get('/trades')).body).toBe(before)
-    expect((await trade('BIG', 'Sell', '1', '1')).json()).toMatchObject({ bookingSequence: 2 })
+    expect((await book('BIG', 'Sell', '1', '1')).json()).toMatchObject({ bookingSequence: 2, status: 'Pending' })
   })
 
   it('answers an unexpected database error with a bare 500 and stores nothing', async () => {
@@ -182,7 +191,7 @@ describe('API: POST /trades', () => {
     sabotage.$client.exec('alter table trades rename to trades_elsewhere')
     closeDatabase(sabotage)
 
-    const response = await trade('A', 'Buy', '1', '1')
+    const response = await book('A', 'Buy', '1', '1')
 
     expect(response.statusCode).toBe(500)
     expect(response.headers['content-type']).toBe(PROBLEM_TYPE)
@@ -206,12 +215,12 @@ describe('API: POST /trades', () => {
 })
 
 describe('API: GET /trades', () => {
-  it('lists newest execution first; equal execution times newest booking first; recording time plays no part', async () => {
-    await trade('A', 'Buy', '1', '1', '2026-01-01T09:00:00Z') // 1
-    await trade('B', 'Buy', '1', '1', '2026-01-01T10:00:00Z') // 2
-    server.clock.set('2026-03-05T00:00:00.000Z')
-    await trade('C', 'Buy', '1', '1', '2026-01-01T08:00:00Z') // 3: recorded last, executed first
-    await trade('D', 'Buy', '1', '1', '2026-01-01T09:00:00Z') // 4: same execution time as A
+  it('lists newest execution first; equal execution times newest booking first; booking time plays no part', async () => {
+    const executed = (symbol: string, at: string, bookedAt: string) => bookExecuted(server, `{"symbol":"${symbol}","side":"Buy","quantity":1,"price":1}`, at, bookedAt)
+    await executed('A', '2026-01-01T09:00:00Z', '2026-01-01T07:00:00Z') // 1
+    await executed('B', '2026-01-01T10:00:00Z', '2026-01-01T07:01:00Z') // 2
+    await executed('C', '2026-01-01T08:00:00Z', '2026-01-01T07:02:00Z') // 3: booked after A and B, executed first
+    await executed('D', '2026-01-01T09:00:00Z', '2026-01-01T07:03:00Z') // 4: same execution time as A
 
     const listed = (await get('/trades')).json<{ symbol: string; bookingSequence: number }[]>()
 
@@ -236,7 +245,7 @@ describe('API: GET /positions', () => {
       await trade('WALK', side, quantity, price, `2026-01-01T09:00:0${String(index)}Z`)
     }
 
-    expect((await get('/positions')).body).toBe('[{"symbol":"WALK","netQuantity":100,"averageCost":13}]')
+    expect((await get('/positions')).body).toBe('[{"symbol":"WALK","netQuantity":100,"averageCost":13,"executedNetQuantity":100,"pendingNetQuantity":0,"projectedNetQuantity":100}]')
   })
 
   it('omits flat positions, sorts by symbol and keeps recurring averages to 50 significant digits', async () => {
@@ -248,26 +257,41 @@ describe('API: GET /positions', () => {
     await trade('FLAT', 'Sell', '0.3', '2')
 
     expect((await get('/positions')).body).toBe(
-      `[{"symbol":"AAPL","netQuantity":-0.1,"averageCost":3},{"symbol":"MSFT","netQuantity":3,"averageCost":1.${'6'.repeat(48)}7}]`,
+      `[{"symbol":"AAPL","netQuantity":-0.1,"averageCost":3,"executedNetQuantity":-0.1,"pendingNetQuantity":0,"projectedNetQuantity":-0.1},{"symbol":"MSFT","netQuantity":3,"averageCost":1.${'6'.repeat(48)}7,"executedNetQuantity":3,"pendingNetQuantity":0,"projectedNetQuantity":3}]`,
     )
   })
 
-  it('places a trade booked late at its execution time', async () => {
+  it('places a trade at its execution time, not its booking order', async () => {
     await trade('X', 'Buy', '100', '10', '2026-01-01T09:00:00Z')
     await trade('X', 'Sell', '100', '12', '2026-01-01T11:00:00Z')
     await trade('X', 'Buy', '100', '20', '2026-01-01T10:00:00Z') // executed between the two above
 
-    expect((await get('/positions')).body).toBe('[{"symbol":"X","netQuantity":100,"averageCost":15}]')
+    expect((await get('/positions')).body).toBe('[{"symbol":"X","netQuantity":100,"averageCost":15,"executedNetQuantity":100,"pendingNetQuantity":0,"projectedNetQuantity":100}]')
   })
 
-  it('breaks execution-time ties by booking sequence', async () => {
-    const at = '2026-01-01T09:00:00Z'
+  it('breaks execution-time ties by booking sequence, whatever order the trades were executed in', async () => {
+    const at = '2026-01-01T09:00:00.000Z'
+    server.clock.set('2026-01-01T08:00:00.000Z')
+    const ids: string[] = []
     for (const [side, quantity, price] of [['Buy', '10', '20'], ['Sell', '17', '21'], ['Buy', '24', '22'], ['Sell', '31', '23'],
       ['Buy', '38', '24'], ['Sell', '45', '25']] as const) {
-      await trade('TIE', side, quantity, price, at)
+      ids.push((await book('TIE', side, quantity, price)).json<{ id: string }>().id)
     }
+    server.clock.set(at)
+    // Executed last booked first: the same execution time, so booking order decides.
+    for (const id of [...ids].reverse()) expect((await executeTrade(server.app, id)).statusCode).toBe(200)
 
-    expect((await get('/positions')).body).toBe('[{"symbol":"TIE","netQuantity":-21,"averageCost":25}]')
+    expect((await get('/positions')).body).toBe('[{"symbol":"TIE","netQuantity":-21,"averageCost":25,"executedNetQuantity":-21,"pendingNetQuantity":0,"projectedNetQuantity":-21}]')
+  })
+
+  it('counts only Executed trades: a Pending booking changes no actual position, and executing it does', async () => {
+    await trade('P', 'Buy', '10', '5', '2026-01-01T09:00:00Z')
+    const pending = (await book('P', 'Buy', '30', '9')).json<{ id: string }>()
+    const before = (await get('/positions')).body
+
+    expect(before).toBe('[{"symbol":"P","netQuantity":10,"averageCost":5,"executedNetQuantity":10,"pendingNetQuantity":30,"projectedNetQuantity":40}]')
+    expect((await executeTrade(server.app, pending.id)).statusCode).toBe(200)
+    expect((await get('/positions')).body).toBe('[{"symbol":"P","netQuantity":40,"averageCost":8,"executedNetQuantity":40,"pendingNetQuantity":0,"projectedNetQuantity":40}]')
   })
 
   it('returns an empty array when every position is flat', async () => {

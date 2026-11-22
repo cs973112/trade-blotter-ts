@@ -1,0 +1,4 @@
+CREATE INDEX `trades_logical_trade_order` ON `trades` (`executed_at`,`booking_sequence`) WHERE "trades"."original_trade_id" is null;--> statement-breakpoint
+CREATE INDEX `trades_logical_symbol_trade_order` ON `trades` (`symbol`,`executed_at`,`booking_sequence`) WHERE "trades"."original_trade_id" is null;--> statement-breakpoint
+CREATE INDEX `trades_logical_quantity_order` ON `trades` (`quantity_key`,`executed_at`,`booking_sequence`) WHERE "trades"."original_trade_id" is null;--> statement-breakpoint
+CREATE INDEX `trades_logical_price_order` ON `trades` (`price_key`,`executed_at`,`booking_sequence`) WHERE "trades"."original_trade_id" is null;
