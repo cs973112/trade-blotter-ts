@@ -620,9 +620,52 @@ Under WSL the tools run as Linux processes, which cannot drive a Windows browser
 programs are never chosen there. `review:01` reports which browser it found; without one, steps
 05 and 06 report their browser parts SKIPPED and end INCOMPLETE (exit code 3), never as passed.
 
+## Development feedback: check:fast
+
+```powershell
+npm run check:fast                 # development feedback in about two minutes; never acceptance
+```
+
+`check:fast` is for the edit, test, edit loop: the project's own npm scripts, each a PASS or a FAIL
+with its log in `.run/check-fast/<run id>/` and a `summary.json`. It never starts an application,
+a browser or a benchmark, uses no port of its own and touches no development or reviewer database
+(the tests make their own in the temp folder, as `npm test` always does). **`npm run check:all`
+remains the comprehensive acceptance**: a passing `check:fast` is never reported as complete
+verification, and its last line says so.
+
+The checks run in four groups, one after another:
+
+| Group | Checks | Run |
+| --- | --- | --- |
+| 1 | `lint`, `typecheck`, `build`, `db:check -w server`, `check:docs` | at once: only `build` writes (`server/dist/`, `client/dist/`), and none of the others reads what it writes |
+| 2 | Server application tests: the Vitest project `app` (`npm test -w server -- --project app`), every test outside `server/test/scripts/`: domain, application, infrastructure (repositories and the database), API, platform, scenarios, architecture, isolation and tooling configuration | alone |
+| 3 | Client tests (`npm test -w client`) | alone |
+| 4 | The quick tooling tests in `server/test/scripts/`, by file (`FAST_TOOLING_TESTS` in `server/scripts/check-fast.ts`) | alone |
+
+Left to `check:all`: the reviewer workflow and its applications, the UI checks in a browser, both
+benchmarks, failure detection, and the tooling tests that exercise them or take minutes:
+`check-all-supervisor`, `check-all-main`, `check-all-failures`, `failure-detection`, `perf-api`,
+`perf-ui`, `review`, `lifecycle` and `ui-check` (`CHECK_ALL_ONLY_TESTS`, each with the reason). A
+test names every file in `server/test/scripts/` exactly once, in one list or the other, so a new
+tooling test cannot be left out of both unnoticed.
+
+The server and client tests could run at once without conflict (each Vitest run names its
+temporary folders and databases by a run id of its own), but measured together they saved little:
+52 s against 29 s and 29 s apart, each nearly twice as slow, so they run one after the other. A
+failed check fails the run (exit code 1) once its group has finished; every later check is listed
+`NOT RUN`, with the end of the failed check's log. Each check has a 15-minute deadline, after
+which it and its own child processes are stopped; nothing else is ever signalled. Exit code 2 is
+an unknown argument.
+
+Observed on 2026-11-22 on Windows 11 (run `20261122T020315465Z`, not a guarantee): 8 PASS in 121 s; lint,
+typecheck, build, schema and documentation checks together 41 s, the server application tests 29 s,
+the client tests 29 s and the quick tooling tests 22 s. `check:all` took 1,051 s the same day
+(run `20261122T020547.013Z-5fa17b`).
+
 ## Complete verification: check:all
 
-One command runs every verification, each run in a folder of its own:
+One command runs every verification, each run in a folder of its own. It is the acceptance;
+`check:fast` above is development feedback only:
 
 ```powershell
 npm run check:all                  # complete verification
@@ -948,10 +991,12 @@ trades, and rows 17 to 20 on its own lifecycle dataset. The checklist as a whole
 | `npm run lint` | ESLint over the whole repository |
 | `npm run typecheck` | Type-check the API and the frontend without emitting files |
 | `npm run build` | Build the API to `server/dist/` and the frontend to `client/dist/` |
-| `npm test` | Run every test once (1,900 API and tool tests, one of them Linux-only, and 441 frontend tests, on 2026-11-22) |
+| `npm test` | Run every test once (1,909 API and tool tests, one of them Linux-only, and 441 frontend tests, on 2026-11-22) |
 | `npm test -w server` | API tests only |
 | `npm test -w client` | Frontend tests only |
 | `npm run verify` | Lint, typecheck, build and test, in that order |
+| `npm run check:fast` | Development feedback in about two minutes: static checks, schema, documentation and every application test; see [check:fast](#development-feedback-checkfast). Not acceptance |
+| `npm run check:all` | Comprehensive acceptance: everything, including the reviewer workflow, browser checks, benchmarks and failure detection; see [check:all](#complete-verification-checkall) |
 | `npm run app:start` / `app:status` / `app:stop` | The built applications in the background; see [In the background](#in-the-background-appstart-appstop-appstatus) |
 | `npm run db:seed` / `db:clear` | Sample trades in a separate database; see [Sample data](#sample-data-dbseed-and-dbclear) |
 | `npm run perf:api` / `perf:api:sizes` | API benchmark on a seeded database; see [API performance](#api-performance-perfapi). Not part of `npm test` or `verify` |
@@ -1321,8 +1366,8 @@ same search everywhere ([Finding a browser](#finding-a-browser)). What has actua
 - **Windows 11 x64**, Chrome 157, on Node.js 22.21.0 (npm 10.9.4, SQLite 3.50.4), the supported
   version, most recently on 2026-11-22: `npm ci`, then `npm run check:all` (the seven reviewer
   steps with `check:ui`, `db:check` and both benchmarks, the failure-detection checks and the
-  documentation checks), run `20261122T011915.335Z-3961c7` on 2026-11-22 (M6 Phase 2): every check passed,
-  1,900 API and tool tests (1,899 passed, 1 Linux-only test skipped) and 441 frontend tests, 65 of
+  documentation checks), run `20261122T020547.013Z-5fa17b` on 2026-11-22 (after `check:fast` was added): every check passed,
+  1,909 API and tool tests (1,908 passed, 1 Linux-only test skipped) and 441 frontend tests, 65 of
   65 UI checks, 56 functional checks and 37 of 37 failure-detection checks (31 server, 6 client); `npm ci` printed the
   six expected engine warnings ([Node.js versions](#nodejs-versions)). Earlier the same day, when 22.23.1 was
   also supported, the full and quick `check:all` passed on both 22.23.1 and 22.21.0. The test suite

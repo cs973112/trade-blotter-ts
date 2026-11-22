@@ -95,12 +95,19 @@ The repository uses LF line endings (`.gitattributes`). If Git converts them on 
 
 ```bash
 npm run verify             # all of the steps below, in order; exit code 0 means the setup works
+npm run check:fast         # development feedback (about two minutes); never acceptance
 ```
+
+`check:fast` runs lint, typecheck, build, `db:check` and the documentation checks at once, then
+the server application tests (every test outside `server/test/scripts/`), the client tests and the
+quick tooling tests, each a PASS or a FAIL, with logs in `.run/check-fast/`; exit code 1 when any
+failed. It starts no application, browser or benchmark and leaves failure detection out:
+`check:all` below is the acceptance. See README.md, "Development feedback: check:fast".
 
 `npm run check:ui` (after `npm run build`) runs 65 checks of the page in a real headless browser,
 on throwaway databases of its own, and saves screenshots: `npm run check:ui -- --out <folder>`.
 
-Everything at once, including the reviewer workflow, the benchmarks, the failure-detection checks
+For acceptance, everything at once, including the reviewer workflow, the benchmarks, the failure-detection checks
 and the documentation checks, each run in a folder of its own under `.run/check-all/`:
 
 ```bash
@@ -120,7 +127,7 @@ One step at a time:
 npm run lint               # ESLint over the repository
 npm run typecheck          # API and frontend, no output files
 npm run build              # API to server/dist/, frontend to client/dist/
-npm test -w server         # API and tool tests (1,900 on 2026-11-22: 1,899 run, 1 Linux-only test skipped elsewhere)
+npm test -w server         # API and tool tests (1,909 on 2026-11-22: 1,908 run, 1 Linux-only test skipped elsewhere)
 npm test -w client         # frontend tests (441 on 2026-11-22)
 npm run db:check -w server # the migrations folder has no conflicts (drift is a test: schema-drift.test.ts)
 ```
@@ -416,7 +423,7 @@ The same commands, with no platform-specific source edits, are meant to work on 
 - **Windows 11 x64** (Chrome 157), on Node.js 22.21.0 (npm 10.9.4, SQLite 3.50.4), the supported
   version: `npm ci` and `npm run check:all` (the seven reviewer steps with `check:ui`, `db:check`
   and both benchmarks, failure detection and the documentation checks), most recently on
-  2026-11-22 (run `20261122T011915.335Z-3961c7`, M6 Phase 2). Earlier, when 22.23.1 (npm 12.0.1, SQLite
+  2026-11-22 (run `20261122T020547.013Z-5fa17b`, after `check:fast` was added). Earlier, when 22.23.1 (npm 12.0.1, SQLite
   3.51.3) was also supported, every command in this guide was run on it by 2026-11-13, and
   `check:all` (full and quick) passed on both versions on 2026-11-20. One intermittent Windows
   failure was seen: a reviewer test's clean-up failed with `kill EPERM` (once, on 2026-11-20). The
