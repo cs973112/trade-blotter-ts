@@ -3,7 +3,7 @@ import { computed, nextTick, reactive, ref, useTemplateRef, watch } from 'vue'
 
 import { ApiError } from '../api/client.ts'
 import type { CreateTradeRequest, FieldErrors, Side, Trade } from '../api/contracts.ts'
-import { checkDecimalInput, formatDecimal, type DecimalInputProblem } from '../lib/decimal-text.ts'
+import { checkDecimalInput, formatDecimal, numericOnly, type DecimalInputProblem } from '../lib/decimal-text.ts'
 import { narrowsList, tradeMatchesFilters } from '../lib/trade-filters.ts'
 import { useBlotterStore } from '../stores/blotter.ts'
 
@@ -84,8 +84,17 @@ function clearServerError(field: FormField): void {
 
 watch(() => form.symbol, () => { clearServerError('symbol') })
 watch(() => form.side, () => { clearServerError('side') })
-watch(() => form.quantity, () => { clearServerError('quantity') })
-watch(() => form.price, () => { clearServerError('price') })
+// Quantity and price accept numbers only: anything but digits and one decimal point is dropped as it is typed or pasted.
+watch(() => form.quantity, (value) => {
+  const kept = numericOnly(value)
+  if (kept !== value) form.quantity = kept
+  clearServerError('quantity')
+})
+watch(() => form.price, (value) => {
+  const kept = numericOnly(value)
+  if (kept !== value) form.price = kept
+  clearServerError('price')
+})
 
 const formElement = useTemplateRef<HTMLFormElement>('formElement')
 

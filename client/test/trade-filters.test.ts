@@ -36,7 +36,7 @@ function errors(overrides: Partial<TradeFilters>, offsetAt: OffsetAt = NEW_YORK)
 
 describe('trade filters: building the query', () => {
   it('gives an empty query for the defaults: no filter', () => {
-    expect(DEFAULT_TRADE_FILTERS).toEqual({ symbol: '', side: '', status: '', fromDate: '', toDate: '' })
+    expect(DEFAULT_TRADE_FILTERS).toEqual({ symbol: '', side: '', fromDate: '', toDate: '' })
     expect(query({})).toEqual({})
   })
 

@@ -229,11 +229,13 @@ describe('Positions & Trade Details: the trades', () => {
     await choose(page, 'MS')
 
     expect(details(page).findAll('thead th').map((cell) => cell.find('.column-label, .sort-button').text().split(/[↑↓↕]/)[0])).toEqual([
-      'Executed at', 'Side', 'Status', 'Actions', 'Quantity', 'Price', 'Notional',
+      'Actions', 'Executed at', 'Side', 'Status', 'Quantity', 'Price', 'Notional',
     ])
     const [first, second] = detailRows(page)
-    expect(first?.slice(1)).toEqual(['Buy', 'Executed', 'History', '0.0000000001', '90.12, exactly 90.125', '0.00, exactly 0.0000000090125'])
-    expect(second?.slice(1)).toEqual(['Sell', 'Executed', 'History', '1', '90.14, exactly 90.135', '90.14, exactly 90.135'])
+    // The Actions cell holds the edit and History icons, with no text; then the execution time.
+    expect(first?.[0]).toBe('')
+    expect(first?.slice(2)).toEqual(['Buy', 'Executed', '0.0000000001', '90.12, exactly 90.125', '0.00, exactly 0.0000000090125'])
+    expect(second?.slice(2)).toEqual(['Sell', 'Executed', '1', '90.14, exactly 90.135', '90.14, exactly 90.135'])
     expect(details(page).find('td.price .money').attributes('title')).toBe('Exactly 90.125')
     const cost = () => details(page).find('.position-summary dd.average-cost')
     // What a sighted user reads: the text without what only screen readers get.

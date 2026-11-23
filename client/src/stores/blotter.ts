@@ -19,8 +19,8 @@ export { emptyList, messageFor, type ListState, type ShownPage } from './list-st
  * changing the filters, the sort or the page size goes back to page 1. Positions never use any of
  * it: they always cover every trade.
  *
- * Executing or cancelling a Pending trade refreshes the same lists, and the Trade Details and their audit
- * history when they show that trade's symbol. A refusal (the trade was executed, cancelled or changed
+ * Executing or cancelling a Pending trade refreshes the same lists, and the Trade Details when they
+ * show that trade's symbol. A refusal (the trade was executed, cancelled or changed
  * meanwhile, or no longer exists) refreshes them too, since what is shown is then out of date.
  */
 export const useBlotterStore = defineStore('blotter', () => {
@@ -160,17 +160,16 @@ export const useBlotterStore = defineStore('blotter', () => {
     return trade
   }
 
-  /** Trades, positions, and the Trade Details (with the audit history) when they show this symbol. */
+  /** Trades, positions, and the Trade Details when they show this symbol. */
   async function refreshAfterChange(symbol: string | undefined): Promise<void> {
     const details = useDetailsStore()
     const showsSymbol = symbol === undefined || details.symbol === symbol
-    await Promise.all([refresh(), showsSymbol && details.symbol !== undefined ? details.reload() : undefined, showsSymbol ? details.reloadAudit() : undefined])
+    await Promise.all([refresh(), showsSymbol && details.symbol !== undefined ? details.reload() : undefined])
   }
 
   /**
    * Executes a Pending trade (the server sets the time and records it as User), then refreshes what
-   * it changes: the trades, the positions, and the Trade Details with their audit history when they
-   * show its symbol. Throws ApiError if it was not executed; after a 404 or 409, the lists are
+   * it changes: the trades, the positions, and the Trade Details when they show its symbol. Throws ApiError if it was not executed; after a 404 or 409, the lists are
    * refreshed first, so the page no longer offers what the server refused.
    */
   async function executeTrade(id: string, symbol: string): Promise<Trade> {

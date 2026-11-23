@@ -38,7 +38,9 @@ changing tab sends no request.
 - **Trading:** book a trade with a symbol, a side (Buy or Sell), a quantity and a price. Every
   trade is booked **Pending**, with no execution time: the form has no status and no execution
   time, and the API refuses a booking as Executed or Cancelled and any execution time. The trade is
-  then executed, separately, from Trade History or Trade Details (M7). Invalid input is reported
+  then executed, separately, from Trade History or Trade Details (M7). Quantity and Price accept
+  numbers only: anything but digits and one decimal point is dropped as it is typed or pasted (no
+  letters, spaces, separators, signs or exponents). Invalid input is reported
   field by field, every problem at once; a booking refused at the position limit says it was
   checked against the Executed and Pending trades together; and the confirmation says where the
   trade went (on the trade list's page, on another page, or left out by its filters). Beside the
@@ -54,19 +56,27 @@ changing tab sends no request.
   move with the arrow keys and press Enter) to see its trades, a page at a time from the server,
   matched on the exact symbol (`symbolMatch=exact`, so MS never lists MSFT or MSTR), with the
   position's summary (its Executed net, average cost and trade count), each trade's status, Previous
-  and Next, 25/50/100 a page and sorting by Executed at, Quantity or Price. Each Pending row has
-  **Execute…** and **Cancel…**; **Cancel a Pending trade in …** lists the symbol's Pending trades
-  (side, quantity, price, when booked and id) to choose one. **History** shows a trade's audit history
-  below the grid, read only. Side by side on a wide screen, stacked (with a button that moves to the
+  and Next, 25/50/100 a page and sorting by Executed at, Quantity or Price. The first column,
+  **Actions**, has two icon buttons on every row: **Edit** (a pencil) opens the **Trade details**
+  dialog, which offers **Execute**, **Keep Pending** and **Cancel trade** with a reason for a Pending
+  trade (an Executed or Cancelled trade is shown read only); **History** (a clock) opens the same
+  dialog with the trade's audit history, read only. **Cancel a Pending trade in …**
+  lists the symbol's Pending trades (side, quantity, price, when booked and id) to choose one. Side by side on a wide screen, stacked (with a button that moves to the
   trades) on a narrow one.
 - **Trade History:** every trade, newest execution first, 50 a page (25 or 100 on request), with
   Previous and Next above and below the table and the range ("51–100 of 25,000 trades"). Each
   logical trade is listed once with its **Status** (Pending, Executed or Cancelled, each written out
   and drawn differently: an outline for Pending, struck through for Cancelled, whose reason is the
   tooltip); a cancellation record is never listed as a trade, and a Pending trade shows a dash for
-  its execution time. **Execute…** and **Cancel…** appear only on Pending trades: Executed and
-  Cancelled are final. Search by all or part of a
-  symbol, filter by side, by status and by execution dates in your time zone (daylight-saving days
+  its execution time. The first column, **Actions**, holds each row's details button (an
+  information icon, "Trade details" as its tooltip), on every trade: it opens the **Trade details**
+  dialog with every field of the trade (status, quantity, price, notional, execution time, who
+  booked and last updated it and when, booking sequence and id, and a cancelled trade's reason and
+  cancellation record). For a Pending trade the dialog offers **Execute**, **Keep Pending**, and a
+  reason with **Cancel trade**; an Executed or Cancelled trade is final, shown read only with
+  **Close**. A close button (×) and Escape also close it. Beside it, the **History** button (a
+  clock) opens the same dialog with the trade's audit history, read only. Search by all or part of a
+  symbol, filter by side and by execution dates in your time zone (daylight-saving days
   included exactly), and sort by the Executed at, Symbol, Quantity or Price header. The API filters, sorts (decimals by exact value), counts and pages; the page never loads
   the whole history.
 - **Grids you can arrange:** in both Positions grids and the Trade Details, drag a column's
@@ -79,8 +89,9 @@ changing tab sends no request.
   again), and is likewise marked unavailable, keeping focus, once the defaults are shown; **Reset
   column widths** sizes the columns by their contents again. Hidden columns leave no gap; tables
   scroll sideways inside their own box, never the page.
-- **Executing a Pending trade:** **Execute…** opens a dialog that shows the trade and asks for
-  confirmation, with focus on **Keep Pending**. Nothing is typed and nothing but the trade's id is
+- **Executing a Pending trade:** **Execute** in Trade History's **Trade details** dialog, or, in
+  Trade Details, **Execute…** and **Confirm execution** in a dialog that shows the trade; either
+  way focus starts on **Keep Pending**. Nothing is typed and nothing but the trade's id is
   sent: the server executes it in one transaction, with its own clock as the execution time, and
   records it as User. The same trade becomes Executed (no record is added) and counts in the
   Executed net and average cost from then on. Confirm can be pressed once (it shows "Executing…"
@@ -89,16 +100,19 @@ changing tab sends no request.
   positions and the Trade Details are loaded again after it, or after a successful execution. The
   page behind is inert while the dialog is open; Escape or **Keep Pending** closes it, and focus
   returns to what opened it.
-- **Cancelling a Pending trade:** a dialog shows the trade (or, from Trade Details, lets you choose
-  among the symbol's Pending trades), asks for a reason (required, up to 500 characters, no line
+- **Cancelling a Pending trade:** in Trade History, the **Trade details** dialog has the reason and
+  **Cancel trade**; in Trade Details, a dialog shows the trade (or lets you choose among the
+  symbol's Pending trades). Either asks for a reason (required, up to 500 characters, no line
   breaks or other control characters) and for confirmation. It sends only the reason: the server
   records the cancellation as Admin, with its own time and a cancellation record. Confirm can be
   pressed once (it shows "Cancelling…" until the answer); a refusal is explained (a reason the API
   did not accept, a trade already cancelled, one that no longer exists), and after a successful,
   or a refused because out of date, cancellation the trade list, the positions and the Trade
-  Details are loaded again. The page behind is inert while the dialog is open; Escape or **Keep
-  trade** closes it, and focus returns to what opened it.
-- **Audit history:** in Trade Details, a trade's history from the database's audit trail
+  Details are loaded again. The page behind is inert while the dialog is open; Escape, **Keep
+  Pending** (Trade History) or **Keep trade** (Trade Details) closes it, and focus returns to what
+  opened it.
+- **Audit history:** a trade's **History** button, in Trade History or Trade Details, opens the
+  **Trade details** dialog with its history from the database's audit trail
   (`scope=logical`): the original's entries and its cancellation record's in one timeline, oldest
   first, each with what happened ("Trade booked by User as Pending", "Trade executed by User",
   "Trade cancelled by Admin", "Cancellation record created by Admin"), the audit action, when and by whom it was recorded
@@ -149,7 +163,7 @@ There is no database server, Docker image or external service. npm workspaces ho
 ## Screenshots
 
 The three tabs on the reviewer's benchmark (25,000 trades, 167 open positions), taken by
-`npm run check:ui` in headless Chrome 157 on 2026-11-22 (`check:all` run `20261122T011915.335Z-3961c7`), dark theme.
+`npm run check:ui` in headless Chrome 157 on 2026-11-22, after Trade History's details dialog was added, dark theme.
 The Positions grids show the actual position only (Executed net and average cost): since M6 Phase 2
 the page offers no Pending or Projected net.
 
@@ -163,14 +177,14 @@ Show all columns in Trade Details at 1280 px, with the list still open, every co
 focus kept on the button:
 ![Trade Details with all 12 columns shown and the Columns list open](docs/screenshots/ui-1280-benchmark-show-all-columns.png)
 
-Cancelling a Pending trade from Trade History at 1280 px (the lifecycle fixture of `check:ui`):
-the trade, its exact quantity and the 2-decimal price and notional, the required reason with its
-count, and the page behind made inert:
-![The Cancel a Pending trade dialog over Trade History, Reason focused](docs/screenshots/ui-1280-lifecycle-dialog.png)
+A Pending trade's **Trade details** dialog, opened from its details button in Trade History at
+1280 px (the lifecycle fixture of `check:ui`): every field of the trade, the reason needed only to
+cancel, **Execute**, **Cancel trade** and **Keep Pending** (focused), the close button, and the
+page behind made inert:
+![The Trade details dialog of a Pending trade over Trade History, Keep Pending focused](docs/screenshots/ui-1280-lifecycle-dialog.png)
 
-Executing a Pending trade (M7), from the same list: the trade and the confirmation, with focus on
-Keep Pending and nothing to type, since the server sets the execution time:
-![The Execute a Pending trade dialog over Trade History, Keep Pending focused](docs/screenshots/ui-1280-lifecycle-execute-dialog.png)
+An Executed trade's dialog, from the same list: final, shown read only, with only **Close**:
+![The Trade details dialog of an Executed trade, read only](docs/screenshots/ui-1280-lifecycle-final-dialog.png)
 
 Earlier screenshots (before the tabs), including the form asking which occurrence of a repeated
 local time is meant and the page while the API is unavailable, are in
@@ -551,7 +565,7 @@ npm run review:07   # stop
 | `review:02` | Seeds 25,000 benchmark trades and 120 scratch trades (dataset version 2), or recognises them by their fingerprint | 2 PASS, 13 s |
 | `review:03` | Builds if anything is missing or older than its sources; starts the benchmark pair (API 5391, frontend 4191) and the scratch pair (API 5392, frontend 4192) and confirms both | 3 PASS, 19 s |
 | `review:04` | 56 functional checks against the running applications, each compared with the database: `GET /trades` unchanged, pages, sizes, sorts, exact decimals, ties, filters, invalid parameters, positions, the frontends, and on a throwaway database bookings (Pending, no actual position, Executed bookings refused) and executions (in place at the server clock, a second execution and a cancellation of it refused, then listed and in the positions) | 56 PASS, 10 s |
-| `review:05` | `lint`, `typecheck`, `build`, both test suites and `db:check`, each with a log in `.run/review/logs/`; then the 65 UI checks (`check:ui`) in a real browser, with screenshots in `.run/review/ui-check/<time>/`. Without a browser the UI checks are SKIPPED and the result is INCOMPLETE | 72 PASS (6 commands, 65 UI checks, no console errors) and 1 WARN (one Linux-only test skipped on Windows); observed 437 s, about 7.3 min, in `check:all` run `20261122T011915.335Z-3961c7` (the server tests alone 310 s) |
+| `review:05` | `lint`, `typecheck`, `build`, both test suites and `db:check`, each with a log in `.run/review/logs/`; then the 64 UI checks (`check:ui`) in a real browser, with screenshots in `.run/review/ui-check/<time>/`. Without a browser the UI checks are SKIPPED and the result is INCOMPLETE | 72 PASS (6 commands, 65 UI checks, no console errors) and 1 WARN (one Linux-only test skipped on Windows); observed 437 s, about 7.3 min, in `check:all` run `20261122T011915.335Z-3961c7` (the server tests alone 310 s) |
 | `review:06` | The API benchmark (62 scenarios) and the UI benchmark (17 scenarios) on 25,000 trades; results in `.run/review/perf/` | 2 PASS, 3 min |
 | `review:07` | Stops the reviewer's applications after confirming they are its own; compares the development database with step 01 | 3 PASS, 17 s |
 
@@ -687,7 +701,7 @@ available on their own, in `.run/review/`.
 | Lint, typecheck, build | `review:05`'s first three commands |
 | Server tests, Client tests | Every test, counted one by one from vitest's JSON results |
 | Schema check | `db:check` |
-| UI checks in a browser | `check:ui`'s 65 checks and the console |
+| UI checks in a browser | `check:ui`'s 64 checks and the console |
 | Seed and start | `review:02` and `review:03` |
 | Functional checks | `review:04` |
 | Performance benchmarks | `review:06`; left out by `--quick` |
@@ -842,8 +856,8 @@ If port 5299 or 5173 is already in use, for example by your own running copy, ch
 
 **4. Book and execute these trades, one at a time, in this order.** Book each with the form on
 the **Trading** tab (it is booked Pending, with no execution time), then, on the **Trade History**
-tab, choose **Execute…** on it and **Confirm execution**. Its execution time is the moment you
-confirm, so the trades are executed in this order:
+tab, choose its details button (the first column) and **Execute**. Its execution time is the
+moment you execute it, so the trades are executed in this order:
 
 | # | Symbol | Side | Quantity | Price | What executing it does to the position |
 | --- | --- | --- | --- | --- | --- |
@@ -884,7 +898,7 @@ Symbol, Quantity, Price and Executed at sort as soon as you choose them.
 | Side Buy applied; type `zzz` in Symbol without Apply; choose Quantity | sorted with the applied Side Buy filter only; "Changes not applied yet." stays |
 | 25 trades per page (either pager) | both pagers change; page 1 |
 | Positions & Trade Details tab: choose AAPL | its 3 trades; MSFT, closed, is not in the list |
-| Book a trade at price 10.125, then check Exact values in Trade History | the price shows 10.12 (half to even), then "10.12 exactly 10.125"; it is Pending, with **Execute…** and **Cancel…** |
+| Book a trade at price 10.125, then check Exact values in Trade History | the price shows 10.12 (half to even), then "10.12 exactly 10.125"; it is Pending; its details button's dialog offers **Execute** and **Cancel trade** |
 
 With ten trades everything fits on one page, so Previous and Next stay disabled. To try paging,
 use the scratch applications of the [reviewer workflow](#reviewer-workflow-review01-to-review07)
@@ -903,11 +917,11 @@ curl.exe "http://localhost:5299/trades/page?symbol=aPl&page=1&pageSize=2"
 | --- | --- |
 | Trading: book AAPL Buy 10 at 151 | "Booked as Pending: Buy 10 AAPL at 151. Execute it from Trade History or Trade Details; …"; Positions: AAPL Executed net 120, Average cost 152.00, unchanged |
 | Book PEND Buy 5 at 20 | PEND appears in Positions as Flat: Executed net 0, Average cost 0.00 |
-| Trade History: Status Pending, Apply | the two Pending trades, each with a dash for Executed at and **Execute…** and **Cancel…**; Executed trades have neither |
-| **Execute…** on AAPL 10 at 151; **Confirm execution** | "Executed: Buy 10 AAPL at 151.00, recorded by User. It now counts in the Executed net and average cost."; it shows Executed, with the time you confirmed, and no buttons; Positions: AAPL 130 at 151.92 |
-| Cancel… on PEND; Confirm with no reason | "Enter a reason for the cancellation."; nothing is sent |
-| Type a reason; Confirm cancellation | "Cancelled: Buy 5 PEND at 20.00. Reason: …. Cancellation record …, recorded by Admin."; PEND shows Cancelled (the reason as its tooltip) and leaves Positions |
-| Positions & Trade Details: choose AAPL; **History** on the trade you executed | two entries, oldest first: Trade booked by User as Pending; Trade executed by User; each recorded by System |
+| Trade History | the two Pending trades are at the end of the list (no execution time), each with a dash for Executed at; every row has only its details and History buttons; a Pending trade's dialog offers **Execute**, **Keep Pending** and **Cancel trade**, an Executed one's only **Close** |
+| Details button on AAPL 10 at 151; **Execute** | "Executed: Buy 10 AAPL at 151.00, recorded by User. It now counts in the Executed net and average cost."; it shows Executed, with the time you executed it, and its dialog now offers only **Close**; Positions: AAPL 130 at 151.92 |
+| Details button on PEND; **Cancel trade** with no reason | "Enter a reason for the cancellation."; nothing is sent |
+| Type a reason; **Cancel trade** | "Cancelled: Buy 5 PEND at 20.00. Reason: …. Cancellation record …, recorded by Admin."; PEND shows Cancelled (the reason as its tooltip) and leaves Positions |
+| Positions & Trade Details: choose AAPL; the **History** button (clock) on the trade you executed | two entries, oldest first: Trade booked by User as Pending; Trade executed by User; each recorded by System |
 | Execute the same trade again with `curl.exe -X POST http://localhost:5299/trades/<id>/execution` | `409` with `invalid-transition`: a trade is executed once |
 | Book AAPL Sell 5 at 160; in Trade Details **Cancel a Pending trade in AAPL…** | the one Pending trade, with its id; cancel it with a reason: AAPL's Executed net stays 130 |
 
@@ -975,9 +989,9 @@ version 2 (see [Sample data](#sample-data-dbseed-and-dbclear)).
 | 14 | 4192 | Book Buy 2.5 of a new symbol at 10.0000000001 | "Booked as Pending: …"; "It is on another page of the trade list.": trades without an execution time come after every executed one, newest first |
 | 15 | 4192 | Side Sell, Apply; book a Buy | "It is not in the trade list because it does not match the current filters." |
 | 16 | 4192 | With Side Sell applied, choose Symbol; book a Sell of `ZZ…` | "It matches the filters but is on another page of the trade list."; the filter and the sort stay as they were |
-| 17 | 4192 | Clear; Executed at ↑ (oldest first); **Execute…** on the trade from row 14, Confirm execution | one execution; the row shows Executed with the time you confirmed; Positions list the symbol Long 2.5 at 10.00 at once, whatever the trade list shows |
-| 18 | 4192 | Book a Buy of 3 of a new symbol at 9.995 | it is listed in Positions as Flat (Executed net 0); in Trade History as Pending, Executed at "—", with Execute… and Cancel… |
-| 19 | 4192 | Cancel… on it, by keyboard: Enter, type a reason, Enter twice | one cancellation; the row shows Cancelled; the symbol leaves Positions; the outcome names the cancellation record and Admin, and has the focus |
+| 17 | 4192 | Clear; Executed at ↑ (oldest first); the details button of the trade from row 14, **Execute** | one execution; the row shows Executed with the time you executed it; Positions list the symbol Long 2.5 at 10.00 at once, whatever the trade list shows |
+| 18 | 4192 | Book a Buy of 3 of a new symbol at 9.995 | it is listed in Positions as Flat (Executed net 0); in Trade History as Pending, Executed at "—"; its details button's dialog offers Execute, Keep Pending and Cancel trade |
+| 19 | 4192 | Its details button, by keyboard: Enter, Tab to the reason, type it, Enter twice | one cancellation; the row shows Cancelled; the symbol leaves Positions; the outcome names the cancellation record and Admin, and focus is back on the details button |
 | 20 | 4192 | Positions & Trade Details: choose a symbol, then History on one of its trades | its audit history, read only, every entry recorded by System |
 
 The values in rows 1 to 11a were read from the running benchmark applications of dataset version 2
@@ -991,7 +1005,7 @@ trades, and rows 17 to 20 on its own lifecycle dataset. The checklist as a whole
 | `npm run lint` | ESLint over the whole repository |
 | `npm run typecheck` | Type-check the API and the frontend without emitting files |
 | `npm run build` | Build the API to `server/dist/` and the frontend to `client/dist/` |
-| `npm test` | Run every test once (1,909 API and tool tests, one of them Linux-only, and 441 frontend tests, on 2026-11-22) |
+| `npm test` | Run every test once (1,909 API and tool tests, one of them Linux-only, and 457 frontend tests, on 2026-11-22) |
 | `npm test -w server` | API tests only |
 | `npm test -w client` | Frontend tests only |
 | `npm run verify` | Lint, typecheck, build and test, in that order |
@@ -1001,7 +1015,7 @@ trades, and rows 17 to 20 on its own lifecycle dataset. The checklist as a whole
 | `npm run db:seed` / `db:clear` | Sample trades in a separate database; see [Sample data](#sample-data-dbseed-and-dbclear) |
 | `npm run perf:api` / `perf:api:sizes` | API benchmark on a seeded database; see [API performance](#api-performance-perfapi). Not part of `npm test` or `verify` |
 | `npm run perf:ui` / `perf:ui:sizes` | Browser benchmark in headless Chrome; see [Browser performance](#browser-performance-perfui). Not part of `npm test` or `verify` |
-| `npm run check:ui` | The page in a real headless browser, found as for `perf:ui`: 65 checks. The three tabs, the Positions grid (25 rows in view, sticky header, column resizing), layouts at 1280, 768 and 390 px, booking with exact decimals, money to 2 places with the exact value kept (booked, then executed); then Positions & Trade Details (choosing by pointer and keyboard, exact-symbol matching against MS, MSFT, MSTR and AMS, server paging and sorting, the Columns chooser, resizing after hiding columns, a late answer dropped, its layouts); then both Positions grids at the benchmark's scale (167 positions: 25 in view, first, middle and last by keyboard and wheel, sticky header, sideways and vertical scrolling apart at 390 px, the positions total in both grids at 1280, 768 and 390 px, Show all columns and Restore default columns by keyboard in all three grids, columns, resizing, choosing positions after scrolling, MSFT's 831 trades paged and sorted on the server); then the trade lifecycle (booking always Pending with no status or execution time, the actual position with a Flat Pending-only symbol, the Status column and filter, a Pending trade's dash for its execution time, Execute and Cancel only on Pending trades, executing by keyboard with focus on Keep Pending, Confirm pressed twice sending one request with no body, the Executed net and average cost changing, a 409 for a trade executed meanwhile, cancelling by keyboard with focus kept in the dialog and returned to its button, Confirm pressed twice sending one request with only the reason, a 409 for a trade cancelled meanwhile, choosing among a symbol's Pending trades in Trade Details, the audit timeline by User, Admin and System, a late audit answer dropped, both dialogs at 1280, 768 and 390 px); console errors. Uses four throwaway databases of its own (40 open positions; a master-detail set; the benchmark's 25,000 trades, generated afresh; a lifecycle set booked and cancelled through the lifecycle repository) and free ports; needs `npm run build`. `--out <folder>` for the screenshots |
+| `npm run check:ui` | The page in a real headless browser, found as for `perf:ui`: 64 checks. The three tabs, the Positions grid (25 rows in view, sticky header, column resizing), layouts at 1280, 768 and 390 px, booking with exact decimals, money to 2 places with the exact value kept (booked, then executed); then Positions & Trade Details (choosing by pointer and keyboard, exact-symbol matching against MS, MSFT, MSTR and AMS, server paging and sorting, the Columns chooser, resizing after hiding columns, a late answer dropped, its layouts); then both Positions grids at the benchmark's scale (167 positions: 25 in view, first, middle and last by keyboard and wheel, sticky header, sideways and vertical scrolling apart at 390 px, the positions total in both grids at 1280, 768 and 390 px, Show all columns and Restore default columns by keyboard in all three grids, columns, resizing, choosing positions after scrolling, MSFT's 831 trades paged and sorted on the server); then the trade lifecycle (booking always Pending with no status or execution time, the actual position with a Flat Pending-only symbol, the Status column and filter, a Pending trade's dash for its execution time, Execute and Cancel only on Pending trades, executing by keyboard with focus on Keep Pending, Confirm pressed twice sending one request with no body, the Executed net and average cost changing, a 409 for a trade executed meanwhile, cancelling by keyboard with focus kept in the dialog and returned to its button, Confirm pressed twice sending one request with only the reason, a 409 for a trade cancelled meanwhile, choosing among a symbol's Pending trades in Trade Details, the audit timeline by User, Admin and System, a late audit answer dropped, both dialogs at 1280, 768 and 390 px); console errors. Uses four throwaway databases of its own (40 open positions; a master-detail set; the benchmark's 25,000 trades, generated afresh; a lifecycle set booked and cancelled through the lifecycle repository) and free ports; needs `npm run build`. `--out <folder>` for the screenshots |
 | `npm run db:check -w server` | The migrations folder is consistent (`drizzle-kit check`); schema drift is a test |
 | `npm run review:01` ... `review:07` | The reviewer workflow; see [Reviewer workflow](#reviewer-workflow-review01-to-review07) |
 | `npm run check:all` | Every verification in one run of its own: the reviewer workflow, failure detection and the documentation checks; `-- --quick` leaves out the benchmarks, `-- --verbose` prints everything. See [Complete verification](#complete-verification-checkall) |
@@ -1084,7 +1098,8 @@ position, and the logical audit history in Trade Details. It never sends `status
 
 `GET /trades` takes optional query parameters, combined with AND: `symbol` (case-insensitive,
 matches anywhere in the symbol), `symbolMatch` (`contains`, the default, or `exact`: the whole
-symbol, so `symbol=ms&symbolMatch=exact` lists MS but not MSFT or MSTR; the Trade Details use it),
+symbol, so `symbol=ms&symbolMatch=exact` lists MS but not MSFT or MSTR; Trade Details' **Cancel a
+Pending trade in …** and the Trade Details grid use it),
 `side` (`Buy` or `Sell`), `executedFrom` and `executedTo`
 (inclusive, RFC 3339 with `Z` or an offset; write `+` as `%2B`), `sortBy` (`executedAt`,
 `symbol`, `quantity` or `price`) and `sortDirection` (`asc` or `desc`). Without them the list is
@@ -1409,7 +1424,7 @@ same search everywhere ([Finding a browser](#finding-a-browser)). What has actua
 - **No authentication or authorization.** The actors recorded (User for bookings and executions,
   Admin for cancellations) are labels the server assigns to each operation; anyone who can reach the
   API can book, execute or cancel. User and Admin roles with real sign-in are deferred
-  ([roadmap](docs/roadmap.md#planned)).
+  ([roadmap](docs/roadmap.md#m6m7--identity-and-authorization), M6–M7).
 - **Pending exposure is deferred.** The page shows the actual position only (Executed net and
   average cost); no grid, Columns choice or summary shows the Pending or Projected Net. The API
   still calculates and sends both, and the booking limit still uses the projected position
@@ -1424,7 +1439,7 @@ same search everywhere ([Finding a browser](#finding-a-browser)). What has actua
 - Realised profit and loss is not calculated.
 - The API listens on `localhost` by default.
 - The frontend tests use jsdom; layout, scrolling and real input are checked in a real browser
-  by `check:ui` (65 checks), which runs in `review:05` but not in `npm test` or `verify`.
+  by `check:ui` (64 checks), which runs in `review:05` but not in `npm test` or `verify`.
 - `GET /trades` still returns every matching trade in one response (10 MB with the lifecycle
   fields and up to about 0.8 s for 25,000), for clients that need the whole list; the frontend uses
   `GET /trades/page`.
@@ -1481,13 +1496,13 @@ same search everywhere ([Finding a browser](#finding-a-browser)). What has actua
   the Exact values setting are kept while you change tab, but not when the page is reloaded.
 - The Trade History table has no column resizing or Columns control; the Positions grids and the
   Trade Details do.
-- At 1280 px, side by side, the Trade Details' seven default columns on the benchmark (Status and
-  Actions, with Cancel… and History, beside Executed at and Side) need more than their panel (the
+- At 1280 px, side by side, the Trade Details' seven default columns on the benchmark (Actions,
+  with its Edit and History icons, first, then Executed at, Side and Status) need more than their panel (the
   full timestamp alone takes about 260 px), so Quantity, Price and Notional are reached by
   scrolling the grid sideways; at 768 px the Trading tab's Positions grid, with its six columns,
   also scrolls sideways inside its box for the last one (the page itself never does). Trade
-  History scrolls sideways at 1280 px for Created at and Updated at; Status and Cancel… are always
-  in view; long values (a 21-digit quantity, a 32-character
+  History scrolls sideways at 1280 px for Created at and Updated at; the details button (first)
+  and Status are always in view; long values (a 21-digit quantity, a 32-character
   symbol) do the same in the master. Exact values shown beside rounded ones make money columns
   wider. The page itself never scrolls sideways.
 - In table cells the exact value of a rounded figure is a tooltip, screen-reader text, or (with
@@ -1566,5 +1581,5 @@ published, with the same lockfile), all from two packages:
   policies, persistence, API contract, testing
 - [Known issues](docs/known-issues.md): open issues and every verification failure with its
   resolution
-- [Roadmap](docs/roadmap.md): delivered milestones (M0 to M7, and both phases of M6) and deferred
-  candidates, none of them implemented
+- [Roadmap](docs/roadmap.md): the product roadmap, M1 to M4 delivered and M5 to M20 planned (none
+  of them authorized or implemented yet)

@@ -6,7 +6,6 @@ import {
   DEFAULT_TRADE_FILTERS,
   INCOMPLETE_DATE_MESSAGES,
   toTradeQuery,
-  TRADE_STATUSES,
   type DateFilterErrors,
   type TradeFilters,
 } from '../lib/trade-filters.ts'
@@ -100,14 +99,6 @@ const describedBy = (field: keyof DateFilterErrors): string =>
           <option value="">All</option>
           <option value="Buy">Buy</option>
           <option value="Sell">Sell</option>
-        </select>
-      </div>
-
-      <div class="field">
-        <label for="filter-status">Status</label>
-        <select id="filter-status" v-model="draft.status" name="status">
-          <option value="">All</option>
-          <option v-for="status in TRADE_STATUSES" :key="status" :value="status">{{ status }}</option>
         </select>
       </div>
 

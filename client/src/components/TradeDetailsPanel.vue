@@ -3,7 +3,7 @@ import { storeToRefs } from 'pinia'
 import { computed, nextTick, ref, watch } from 'vue'
 
 import type { SortField, Trade } from '../api/contracts.ts'
-import { describeTrade, isCancellable, isExecutable } from '../lib/cancellation.ts'
+import { describeTrade } from '../lib/cancellation.ts'
 import { useColumnVisibility, type ChoosableColumn } from '../lib/column-visibility.ts'
 import { useResizableGrid, type ResizableColumn } from '../lib/column-widths.ts'
 import { formatDecimal } from '../lib/decimal-text.ts'
@@ -13,7 +13,7 @@ import { useBlotterStore } from '../stores/blotter.ts'
 import { useCancellationStore } from '../stores/cancellation.ts'
 import { useExecutionStore } from '../stores/execution.ts'
 import { useDetailsStore } from '../stores/details.ts'
-import AuditHistory from './AuditHistory.vue'
+import { useTradeDialogStore } from '../stores/trade-dialog.ts'
 import ColumnChooser from './ColumnChooser.vue'
 import ColumnResizer from './ColumnResizer.vue'
 import ExactValuesToggle from './ExactValuesToggle.vue'
@@ -27,27 +27,26 @@ import TradePager from './TradePager.vue'
  * The trades of the position chosen in the master grid: one page at a time from GET /trades/page
  * with symbolMatch=exact, so only that symbol's trades (MS never shows MSFT or MSTR). The API
  * sorts, counts and pages them; this panel never loads every trade. Columns can be resized and
- * hidden, as in the Positions grid.
+ * hidden, as in the Positions grid. Each row's first cell has an edit button, which opens the trade
+ * dialog (Execute, Keep Pending, Cancel with a reason, for a Pending trade), and a History button,
+ * which opens the same dialog with the trade's audit history.
  */
 const blotter = useBlotterStore()
 const details = useDetailsStore()
 const { positions } = storeToRefs(blotter)
-const { symbol, trades, sort, page, pageSize, shownSymbol, shownSort, shownPage, showsChosen, auditTradeId } = storeToRefs(details)
+const { symbol, trades, sort, page, pageSize, shownSymbol, shownSort, shownPage, showsChosen } = storeToRefs(details)
 const cancellation = useCancellationStore()
 const { outcome } = storeToRefs(cancellation)
 const execution = useExecutionStore()
 const { outcome: executed } = storeToRefs(execution)
 
+const tradeDialog = useTradeDialogStore()
+
 const opener = (event: Event): HTMLElement | null => event.currentTarget instanceof HTMLElement ? event.currentTarget : null
 
-/** A row's Execute button: that one Pending trade. */
-function startExecute(trade: Trade, event: Event): void {
-  execution.openFor(trade, 'details', opener(event))
-}
-
-/** A row's Cancel button: that one Pending trade. */
-function startCancel(trade: Trade, event: Event): void {
-  cancellation.openFor(trade, 'details', opener(event))
+/** A row's edit button: the trade dialog, which offers Execute and Cancel for a Pending trade. */
+function startEdit(trade: Trade, event: Event): void {
+  tradeDialog.openFor(trade, opener(event), 'details')
 }
 
 /** The summary's button: the chosen symbol's Pending trades, to choose one from. */
@@ -55,24 +54,24 @@ function startCancelForSymbol(event: Event): void {
   if (symbol.value !== undefined) void cancellation.openForSymbol(symbol.value, 'details', opener(event))
 }
 
-/** A row's History button: the trade's audit history below the grid, which takes focus once shown. */
-async function showHistory(trade: Trade): Promise<void> {
-  await details.showAudit(trade.id)
-  await nextTick()
-  document.getElementById('audit-heading')?.focus()
+/** A row's History button: the trade dialog with the trade's audit history, read only. */
+function showHistory(trade: Trade, event: Event): void {
+  tradeDialog.openFor(trade, opener(event), 'details', true)
 }
 
 const VISIBLE_TRADES = 25
 
 type TradeColumn = ResizableColumn & ChoosableColumn & { readonly field?: SortField; readonly numeric?: boolean }
 
-/** In order. The execution time identifies a trade within one symbol, so it is always shown. */
+/**
+ * In order. Actions comes first, so each trade's edit and History buttons are always in view; the
+ * execution time identifies a trade within one symbol, so it is always shown too.
+ */
 const COLUMNS: readonly TradeColumn[] = [
+  { key: 'actions', label: 'Actions', essential: true, minWidth: 96, maxWidth: 200 },
   { key: 'executedAt', label: 'Executed at', field: 'executedAt', essential: true, minWidth: 150, maxWidth: 480 },
   { key: 'side', label: 'Side', minWidth: 76, maxWidth: 240 },
   { key: 'status', label: 'Status', minWidth: 112, maxWidth: 240 },
-  // Beside the status, so Execute, Cancel and History are in view without scrolling sideways.
-  { key: 'actions', label: 'Actions', essential: true, minWidth: 264, maxWidth: 400 },
   { key: 'quantity', label: 'Quantity', field: 'quantity', numeric: true, minWidth: 120, maxWidth: 800 },
   { key: 'price', label: 'Price', field: 'price', numeric: true, minWidth: 100, maxWidth: 800 },
   { key: 'notional', label: 'Notional', numeric: true, minWidth: 116, maxWidth: 800 },
@@ -276,31 +275,28 @@ const cellText = (trade: Trade, key: string): string => {
                   <td v-else-if="column.key === 'status'" class="status"><StatusBadge :status="trade.status" :reason="trade.cancellationReason" /></td>
                   <td v-else-if="column.key === 'actions'" class="actions">
                     <button
-                      v-if="isExecutable(trade)"
                       type="button"
-                      class="button-secondary button-small execute-trade"
-                      :aria-label="`Execute the Pending trade: ${describeTrade(trade)}`"
-                      @click="startExecute(trade, $event)"
+                      class="icon-button trade-edit"
+                      :aria-label="`Edit the trade: ${describeTrade(trade)}, ${trade.status}`"
+                      title="Edit"
+                      @click="startEdit(trade, $event)"
                     >
-                      Execute…
-                    </button>
-                    <button
-                      v-if="isCancellable(trade)"
-                      type="button"
-                      class="button-secondary button-small cancel-trade"
-                      :aria-label="`Cancel the Pending trade: ${describeTrade(trade)}`"
-                      @click="startCancel(trade, $event)"
-                    >
-                      Cancel…
+                      <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
+                        <path d="M10.6 2.6l2.8 2.8-7.6 7.6-3.4.6.6-3.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+                        <path d="M9.2 4l2.8 2.8" fill="none" stroke="currentColor" stroke-width="1.5" />
+                      </svg>
                     </button>
                     <button
                       type="button"
-                      class="button-secondary button-small show-history"
-                      :aria-label="`Audit history of the trade: ${describeTrade(trade)}`"
-                      :aria-pressed="auditTradeId === trade.id"
-                      @click="showHistory(trade)"
+                      class="icon-button show-history"
+                      :aria-label="`Audit history of the trade: ${describeTrade(trade)}, ${trade.status}`"
+                      title="History"
+                      @click="showHistory(trade, $event)"
                     >
-                      History
+                      <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
+                        <circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.5" />
+                        <path d="M8 4.4V8l2.6 1.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
                     </button>
                   </td>
                   <td v-else-if="column.key === 'price'" class="numeric price"><MoneyValue :value="trade.price" :show-exact="showExact" /></td>
@@ -315,9 +311,9 @@ const cellText = (trade: Trade, key: string): string => {
         </div>
         <TradePager placement="bottom" v-bind="pager" />
       </template>
-      <AuditHistory />
       <p id="details-help" class="hint">
-        Only trades in exactly {{ symbol }} are listed, each once with its status; History shows a trade's audit history below. Prices and notionals are shown to 2 decimal places; point at one,
+        Only trades in exactly {{ symbol }} are listed, each once with its status. The edit button opens a trade, to execute or cancel it
+        while it is Pending; History opens it with its audit history. Prices and notionals are shown to 2 decimal places; point at one,
         or turn on Exact values, for its exact value. Choose Executed at, Quantity or Price to sort. To resize a column, drag the edge of its header,
         or focus the edge and press the Left or Right arrow key.
       </p>

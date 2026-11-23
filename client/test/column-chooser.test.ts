@@ -406,14 +406,15 @@ describe('Show all columns: Positions & Trade Details', () => {
     await details.find('.column-chooser > button').trigger('click')
     await flushPromises()
     expect(countText(details)).toBe('7 of 12 columns shown')
-    expect(boxStates(details)[0]).toEqual(['executedAt', true, true])
+    // Actions (first) and Executed at always stay.
+    expect(boxStates(details).slice(0, 2)).toEqual([['actions', true, true], ['executedAt', true, true]])
 
     const button = showAllButton(details)
     expect(button.attributes('aria-disabled')).toBe('false')
     await press(button)
 
     expect(gridHeaders(details)).toEqual([
-      'Executed at', 'Side', 'Status', 'Actions', 'Quantity', 'Price', 'Notional', 'Symbol', 'Created at', 'Updated at', 'Booking sequence', 'Trade ID',
+      'Actions', 'Executed at', 'Side', 'Status', 'Quantity', 'Price', 'Notional', 'Symbol', 'Created at', 'Updated at', 'Booking sequence', 'Trade ID',
     ])
     expect(boxStates(details).every(([, checked]) => checked)).toBe(true)
     expect(countText(details)).toBe('12 of 12 columns shown')
@@ -425,21 +426,22 @@ describe('Show all columns: Positions & Trade Details', () => {
     const restore = details.findAll('.column-chooser-panel button').find((candidate) => candidate.text() === 'Restore default columns')
     await restore?.trigger('click')
     await flushPromises()
-    expect(gridHeaders(details)).toEqual(['Executed at', 'Side', 'Status', 'Actions', 'Quantity', 'Price', 'Notional'])
+    expect(gridHeaders(details)).toEqual(['Actions', 'Executed at', 'Side', 'Status', 'Quantity', 'Price', 'Notional'])
     expect(countText(details)).toBe('7 of 12 columns shown')
     expect(button.attributes('aria-disabled')).toBe('false')
     // Showing and hiding columns asks the API for nothing.
     expect(server.sequence()).toHaveLength(requests)
   })
 
-  it('in Trade Details, keeps Executed at fixed whatever is chosen', async () => {
+  it('in Trade Details, keeps Actions and Executed at fixed whatever is chosen', async () => {
     const { details } = await openDetails()
     await details.find('.column-chooser > button').trigger('click')
     await flushPromises()
     await press(showAllButton(details))
-    expect(boxStates(details)[0]).toEqual(['executedAt', true, true])
+    expect(boxStates(details).slice(0, 2)).toEqual([['actions', true, true], ['executedAt', true, true]])
     await details.find('input[data-column="executedAt"]').setValue(false)
-    expect(gridHeaders(details)[0]).toBe('Executed at')
+    await details.find('input[data-column="actions"]').setValue(false)
+    expect(gridHeaders(details).slice(0, 2)).toEqual(['Actions', 'Executed at'])
     expect(countText(details)).toBe('12 of 12 columns shown')
   })
 })
@@ -536,7 +538,7 @@ describe('Restore default columns keeps keyboard focus', () => {
 
     it('in Trade Details, hiding again the columns hidden by default after Show all columns, which still works afterwards', async () => {
       const { details } = await openDetails()
-      const defaults = ['Executed at', 'Side', 'Status', 'Actions', 'Quantity', 'Price', 'Notional']
+      const defaults = ['Actions', 'Executed at', 'Side', 'Status', 'Quantity', 'Price', 'Notional']
       await expectRestoreKeepsFocus(details, async () => {
         await details.find('input[data-column="side"]').setValue(false)
         await press(showAllButton(details))

@@ -9,8 +9,9 @@ import { fakeApi, json, pageJson, positionJson, problem, tradeJson, type FakeRes
 
 /**
  * The trade lifecycle on the page, against a scripted API: Pending-only booking, the Status column
- * and filter, executing a Pending trade and cancelling one (from Trade History and from Trade
- * Details, with a choice among several for cancelling), the actual position in the Positions grids,
+ * and filter, Trade History's trade dialog (opened from every row's details button), executing a
+ * Pending trade and cancelling one (from that dialog and from Trade Details, with a choice among
+ * several for cancelling in Trade Details), the actual position in the Positions grids,
  * and the read-only audit history. Nothing but the id is sent for an execution, and only the reason
  * for a cancellation; the times and the actors come from the server.
  */
@@ -89,6 +90,26 @@ const historyRow = (page: VueWrapper, id: string): DOMWrapper<HTMLTableRowElemen
 }
 const posts = (server: ReturnType<typeof fakeApi>) => server.calls.filter((call) => call.method === 'POST')
 const count = (server: ReturnType<typeof fakeApi>, path: string) => server.calls.filter((call) => call.url.split('?')[0] === path).length
+
+/** An audit entry of trade `id` as the API sends it, with the snapshot's fields changed by `fields`. */
+function auditEntry(auditId: number, action: 'Inserted' | 'Updated', on: string, fields: Record<string, unknown>): string {
+  const trade = JSON.stringify({
+    bookingSequence: 4, id: 'c1', symbol: 'MSFT', side: 'Buy', quantity: 1, price: 1.005, executedAt: null, createdAt: '2026-03-02T10:00:00.000Z',
+    updatedAt: '2026-03-02T10:00:00.000Z', quantityKey: 'k', priceKey: 'k', status: 'Pending', createdBy: 'User', updatedBy: 'User', originalTradeId: null,
+    cancellationReason: null, ...fields,
+  })
+  return `{"auditId":${String(auditId)},"auditAction":"${action}","auditOn":"${on}","auditBy":"System","trade":${trade}}`
+}
+
+/** The cancelled trade c1's audit history: booked by User, cancelled by Admin, its cancellation record created by Admin. */
+const CANCELLED_AUDIT = json(`{"tradeId":"c1","scope":"logical","tradeIds":["c1","r1"],"items":[${[
+  auditEntry(10, 'Inserted', '2026-03-02T10:00:00.000Z', {}),
+  auditEntry(11, 'Updated', '2026-03-03T09:00:00.000Z', { status: 'Cancelled', updatedBy: 'Admin', updatedAt: '2026-03-03T09:00:00.000Z' }),
+  auditEntry(12, 'Inserted', '2026-03-03T09:00:00.000Z', { id: 'r1', bookingSequence: 9, status: 'Cancelled', createdBy: 'Admin', updatedBy: 'Admin', originalTradeId: 'c1', cancellationReason: 'Booked in error' }),
+].join(',')}],"page":1,"pageSize":25,"totalCount":3,"totalPages":1}`)
+
+/** The details' own requests for MSFT: exactly that symbol (symbolMatch=exact), never a status. */
+const detailLoads = (server: ReturnType<typeof fakeApi>): number => server.calls.filter((call) => /^\/trades\/page\?symbol=MSFT&symbolMatch=exact&(sortBy|page)=/.test(call.url)).length
 
 async function book(page: VueWrapper, fields: { symbol: string; side: 'Buy' | 'Sell'; quantity: string; price: string }) {
   await page.find('#trade-symbol').setValue(fields.symbol)
@@ -239,9 +260,9 @@ describe('M6 Phase 2: positions show the actual position only', () => {
 
     // Executing it: the actual position becomes 40 at 299.76 (299.755, half to even), everywhere at once.
     await page.find('#tab-history').trigger('click')
-    await history(page).find('tbody tr button.execute-trade').trigger('click')
+    await history(page).find('tbody tr button.trade-details').trigger('click')
     await flushPromises()
-    await dialog(page).find('form').trigger('submit')
+    await dialog(page).find('button.confirm-execution').trigger('click')
     await flushPromises()
     expect(await actual()).toEqual(shows('40', '299.76'))
 
@@ -249,9 +270,9 @@ describe('M6 Phase 2: positions show the actual position only', () => {
     await book(page, { symbol: 'MSFT', side: 'Buy', quantity: '5', price: '1' })
     expect(await actual()).toEqual(shows('40', '299.76'))
     await page.find('#tab-history').trigger('click')
-    await history(page).find('tbody tr button.cancel-trade').trigger('click')
+    await history(page).find('tbody tr button.trade-details').trigger('click')
     await flushPromises()
-    await page.find('#cancel-reason').setValue('Withdrawn')
+    await page.find('#trade-reason').setValue('Withdrawn')
     await dialog(page).find('form').trigger('submit')
     await flushPromises()
     expect(await actual()).toEqual(shows('40', '299.76'))
@@ -259,24 +280,47 @@ describe('M6 Phase 2: positions show the actual position only', () => {
   })
 })
 
+/** Opens Trade History's trade dialog from the details button of the row of `id`, as a click would (focus on the button first). */
+async function openDetails(page: VueWrapper, id: string): Promise<DOMWrapper<HTMLButtonElement>> {
+  const button = historyRow(page, id).find<HTMLButtonElement>('button.trade-details')
+  button.element.focus()
+  await button.trigger('click')
+  await flushPromises()
+  return button
+}
+
 describe('M5: Trade History statuses', () => {
-  it('lists each logical trade once with its status, a dash for no execution time, and Execute and Cancel only on Pending trades', async () => {
+  it('lists each logical trade once with its status, a dash for no execution time, and only a details and a History button on every row: Execute and Cancel only in a Pending trade\'s dialog', async () => {
     const { page } = await openPage()
     const headers = history(page).findAll('thead th').map((cell) => cell.text().replace(/[↑↓↕].*$/, '').trim())
-    expect(headers).toEqual(['Symbol', 'Side', 'Status', 'Actions', 'Quantity', 'Price', 'Notional', 'Executed at', 'Created at', 'Updated at'])
+    expect(headers).toEqual(['Actions', 'Symbol', 'Side', 'Status', 'Quantity', 'Price', 'Notional', 'Executed at', 'Created at', 'Updated at'])
     const statuses = history(page).findAll('tbody .status-badge').map((badge) => badge.text())
     expect(statuses).toEqual(['Pending', 'Pending', 'Pending', 'Cancelled, reason: Booked in error', 'Executed'])
     expect(historyRow(page, 'c1').find('.status-badge').attributes('title')).toBe('Reason: Booked in error')
     expect(historyRow(page, 'p1').find('td.executed .none').attributes('aria-label')).toBe('Not executed')
-    for (const id of ['p1', 'p2', 'n1']) {
-      expect(historyRow(page, id).find('button.cancel-trade').exists()).toBe(true)
-      expect(historyRow(page, id).find('button.execute-trade').exists()).toBe(true)
+    // Every row, whatever its status, has two buttons, in the first cell: details, then History; no Execute or Cancel in any row.
+    for (const id of ['p1', 'p2', 'n1', 'e1', 'c1']) {
+      const row = historyRow(page, id)
+      const first = row.findAll('td, th')[0]
+      expect(row.findAll('button').map((button) => button.attributes('title')), id).toEqual(['Trade details', 'History'])
+      expect(first?.findAll('button').map((button) => button.classes().filter((name) => name !== 'icon-button')), id).toEqual([['trade-details'], ['show-history']])
+      expect(first?.findAll('button svg').map((icon) => icon.attributes('aria-hidden')), id).toEqual(['true', 'true'])
     }
-    for (const id of ['e1', 'c1']) {
-      expect(historyRow(page, id).find('button.cancel-trade').exists()).toBe(false)
-      expect(historyRow(page, id).find('button.execute-trade').exists()).toBe(false)
+    expect(historyRow(page, 'p1').find('button.show-history').attributes('aria-label')).toBe('Audit history of the trade: Sell 4 MSFT at 300.12, Pending')
+    expect(history(page).find('button.execute-trade').exists()).toBe(false)
+    expect(history(page).find('button.cancel-trade').exists()).toBe(false)
+    expect(historyRow(page, 'p1').find('button.trade-details').attributes('aria-label')).toBe('Trade details: Sell 4 MSFT at 300.12, Pending')
+    expect(historyRow(page, 'c1').find('button.trade-details').attributes('aria-label')).toBe('Trade details: Buy 1 MSFT at 1.00, Cancelled')
+    // Execute and Cancel are offered in the dialog of a Pending trade only.
+    for (const [id, offered] of [['p1', true], ['p2', true], ['n1', true], ['e1', false], ['c1', false]] as const) {
+      await openDetails(page, id)
+      expect(dialog(page).find('button.confirm-execution').exists(), id).toBe(offered)
+      expect(dialog(page).find('button.confirm-cancellation').exists(), id).toBe(offered)
+      expect(dialog(page).find('#trade-reason').exists(), id).toBe(offered)
+      expect(dialog(page).find('button.keep-pending').text(), id).toBe(offered ? 'Keep Pending' : 'Close')
+      await dialog(page).trigger('keydown', { key: 'Escape' })
+      await flushPromises()
     }
-    expect(historyRow(page, 'p1').find('button.execute-trade').attributes('aria-label')).toBe('Execute the Pending trade: Sell 4 MSFT at 300.12')
     expect(history(page).find('[role="status"].visually-hidden').text()).toBe('Showing 1–5 of 5 trades, page 1 of 1.')
     expect(isCancellable({ status: 'Executed', originalTradeId: null })).toBe(false)
     expect(isCancellable({ status: 'Cancelled', originalTradeId: null })).toBe(false)
@@ -286,46 +330,185 @@ describe('M5: Trade History statuses', () => {
     expect(isExecutable({ status: 'Pending', originalTradeId: 'x' })).toBe(false)
   })
 
-  it('filters by status through the API, and says when no trade matches', async () => {
+  it('has no Status filter, so the list never asks for one, and says when no trade matches', async () => {
     const { server, page } = await openPage()
-    await page.find('#filter-status').setValue('Cancelled')
-    await page.find('.trade-filters button[type="submit"]').trigger('click')
-    await flushPromises()
-    expect(server.calls.at(-1)?.url).toBe('/trades/page?status=Cancelled&page=1&pageSize=50')
-    expect(history(page).findAll('tbody tr')).toHaveLength(1)
+    expect(page.find('#filter-status').exists()).toBe(false)
+    expect(page.find('.trade-filters').text()).not.toContain('Status')
 
     server.set('GET /trades/page', pageJson([], { page: 1, pageSize: 50, totalCount: 0 }))
-    await page.find('#filter-status').setValue('Pending')
+    await page.find('#filter-side').setValue('Sell')
     await page.find('.trade-filters button[type="submit"]').trigger('click')
     await flushPromises()
+    expect(server.calls.at(-1)?.url).toBe('/trades/page?side=Sell&page=1&pageSize=50')
     expect(history(page).text()).toContain('No trades match these filters.')
 
     await page.find('.trade-filters button[type="button"]').trigger('click')
     await flushPromises()
-    expect((page.find('#filter-status').element as HTMLSelectElement).value).toBe('')
+    expect(server.calls.filter((call) => call.url.startsWith('/trades/page') && call.url.includes('status=')).map((call) => call.url)).toEqual([])
   })
 })
 
-describe('M7: executing from Trade History', () => {
-  it('asks for confirmation in an accessible dialog, sends only the id, then refreshes the trades and positions and reports the outcome', async () => {
-    const { server, page } = await openPage({ 'POST /trades/:id/execution': executionOf(PENDING) })
-    const button = historyRow(page, 'p1').find<HTMLButtonElement>('button.execute-trade')
+describe('Trade History: the trade dialog', () => {
+  it('shows every field of a Pending trade in an accessible dialog, the page behind inert, focus on Keep Pending', async () => {
+    const { page } = await openPage()
+    await openDetails(page, 'p1')
+
+    expect(dialog(page).attributes()).toMatchObject({ 'aria-modal': 'true', 'aria-labelledby': 'trade-dialog-heading', 'aria-describedby': 'trade-dialog-intro' })
+    expect(page.find('#trade-dialog-heading').text()).toBe('Trade details')
+    expect(page.find('#trade-dialog-intro').text()).toContain('This trade is Pending.')
+    const summary = dialog(page).find('.trade-dialog-summary')
+    expect(summary.attributes('aria-label')).toBe('Trade')
+    expect(summary.findAll('dt').map((term) => term.text())).toEqual(['Trade', 'Status', 'Quantity', 'Price', 'Notional', 'Executed at', 'Booked', 'Last updated', 'Booking sequence', 'Trade ID'])
+    expect(summary.text()).toContain('Sell 4 MSFT at 300.12')
+    expect(summary.find('.status-badge').text()).toBe('Pending')
+    expect(summary.find('.executed .none').attributes('aria-label')).toBe('Not executed')
+    expect(summary.find('.booked').text()).toContain(', by User')
+    expect(summary.find('.booking-sequence').text()).toBe('2')
+    expect(summary.find('.trade-id').text()).toBe('p1')
+    expect(document.activeElement?.classList.contains('keep-pending')).toBe(true)
+    expect(page.find('main').attributes('inert')).toBeDefined()
+    expect(page.find('header').attributes('inert')).toBeDefined()
+  })
+
+  it('shows an Executed or Cancelled trade read only: final, its reason and cancellation record, and only Close', async () => {
+    const { server, page } = await openPage()
+    await openDetails(page, 'c1')
+    expect(page.find('#trade-dialog-intro').text()).toBe('This trade is Cancelled: it is final, and never counted in the Executed net or average cost.')
+    const summary = dialog(page).find('.trade-dialog-summary')
+    expect(summary.find('.cancellation-reason').text()).toBe('Booked in error')
+    expect(summary.findAll('.trade-id').map((cell) => cell.text())).toEqual(['r1', 'c1'])
+    expect(dialog(page).findAll('.dialog-actions button').map((button) => button.text())).toEqual(['Close'])
+    expect(document.activeElement?.classList.contains('keep-pending')).toBe(true)
+    await dialog(page).find('button.keep-pending').trigger('click')
+    await flushPromises()
+    expect(dialog(page).exists()).toBe(false)
+
+    await openDetails(page, 'e1')
+    expect(page.find('#trade-dialog-intro').text()).toBe('This trade is Executed: it is final, and counts in the Executed net and average cost.')
+    expect(dialog(page).find('.trade-dialog-summary .executed time').attributes('datetime')).toBe(T)
+    expect(dialog(page).find('.cancellation-reason').exists()).toBe(false)
+    expect(dialog(page).findAll('.dialog-actions button').map((button) => button.text())).toEqual(['Close'])
+    expect(posts(server)).toHaveLength(0)
+  })
+
+  it('closes with Escape, the close button, or Keep Pending, sends nothing, and gives focus back to the details button; Tab stays in the dialog', async () => {
+    const { server, page } = await openPage()
+    await openDetails(page, 'p2')
+    await dialog(page).trigger('keydown', { key: 'Tab' })
+    await dialog(page).trigger('keydown', { key: 'Escape' })
+    await flushPromises()
+    expect(dialog(page).exists()).toBe(false)
+    expect(page.find('main').attributes('inert')).toBeUndefined()
+    expect(document.activeElement).toBe(historyRow(page, 'p2').find('button.trade-details').element)
+
+    await openDetails(page, 'p2')
+    const close = dialog(page).find('button.dialog-close')
+    expect(close.attributes('aria-label')).toBe('Close the trade details')
+    await close.trigger('click')
+    await flushPromises()
+    expect(dialog(page).exists()).toBe(false)
+    expect(document.activeElement).toBe(historyRow(page, 'p2').find('button.trade-details').element)
+
+    await openDetails(page, 'p2')
+    await page.find('#trade-reason').setValue('Not sent')
+    await dialog(page).find('button.keep-pending').trigger('click')
+    await flushPromises()
+    expect(dialog(page).exists()).toBe(false)
+    expect(posts(server)).toHaveLength(0)
+
+    // Each opening starts afresh: the reason typed before is gone.
+    await openDetails(page, 'p2')
+    expect((page.find('#trade-reason').element as HTMLInputElement).value).toBe('')
+  })
+})
+
+describe('Trade History: the History button', () => {
+  it('opens the trade dialog with the trade\'s audit history, read only, focus on its heading; the dialog still offers what the trade allows', async () => {
+    const { server, page } = await openPage({ 'GET /trades/:id/audit': CANCELLED_AUDIT })
+    const button = historyRow(page, 'c1').find<HTMLButtonElement>('button.show-history')
     button.element.focus()
     await button.trigger('click')
     await flushPromises()
 
-    expect(dialog(page).attributes()).toMatchObject({ 'aria-modal': 'true', 'aria-labelledby': 'execute-dialog-heading', 'aria-describedby': 'execute-dialog-intro' })
-    expect(page.find('#execute-dialog-heading').text()).toBe('Execute a Pending trade')
-    expect(page.find('#execute-dialog-intro').text()).toContain('recorded by User')
-    expect(dialog(page).find('.cancel-trade-summary').attributes('aria-label')).toBe('Trade to execute')
-    expect(dialog(page).find('.cancel-trade-summary .trade-id').text()).toBe('p1')
-    expect(dialog(page).text()).toContain('Sell 4 MSFT at 300.12')
-    // Focus starts on the safe choice, and the page behind is inert.
-    expect(document.activeElement?.classList.contains('keep-pending')).toBe(true)
-    expect(page.find('main').attributes('inert')).toBeDefined()
+    expect(server.calls.at(-1)?.url).toBe('/trades/c1/audit?scope=logical&page=1&pageSize=25')
+    expect(dialog(page).classes()).toContain('with-audit')
+    expect(document.activeElement?.id).toBe('trade-dialog-audit-heading')
+    expect(page.find('#trade-dialog-audit-heading').text()).toBe('Audit history')
+    const rows = dialog(page).findAll('.trade-dialog-audit-table tbody tr').map((row) => row.findAll('th, td').map((cell) => cell.text().split(',')[0]?.trim()))
+    expect(rows.map((row) => [row[0], row[1], row[3], row[4], row[5], row[6], row[7], row[8], row[13]])).toEqual([
+      ['Trade booked by User as Pending', 'Inserted', 'System', 'c1', '—', 'Pending', 'User', 'User', '—'],
+      ['Trade cancelled by Admin', 'Updated', 'System', 'c1', '—', 'Cancelled', 'User', 'Admin', '—'],
+      ['Cancellation record created by Admin', 'Inserted', 'System', 'r1', 'c1', 'Cancelled', 'Admin', 'Admin', 'Booked in error'],
+    ])
+    expect(dialog(page).find('.audit-summary').text()).toBe('3 entries for this trade and its cancellation record, oldest first.')
+    // A Cancelled trade: read only, with only Close; nothing in the audit history writes.
+    expect(dialog(page).findAll('.dialog-actions button').map((item) => item.text())).toEqual(['Close'])
+    expect(dialog(page).find('.trade-dialog-audit').findAll('button')).toHaveLength(0)
+    await dialog(page).trigger('keydown', { key: 'Escape' })
+    await flushPromises()
+    expect(document.activeElement).toBe(historyRow(page, 'c1').find('button.show-history').element)
+    expect(posts(server)).toHaveLength(0)
+  })
+
+  it('offers Execute and Cancel for a Pending trade beside its audit history; the details button shows no audit history', async () => {
+    const pendingAudit = json(`{"tradeId":"p1","scope":"logical","tradeIds":["p1"],"items":[${auditEntry(20, 'Inserted', '2026-03-02T10:00:00.000Z', { id: 'p1', status: 'Pending' })}],"page":1,"pageSize":25,"totalCount":1,"totalPages":1}`)
+    const { server, page } = await openPage({ 'GET /trades/:id/audit': pendingAudit })
+    await historyRow(page, 'p1').find('button.show-history').trigger('click')
+    await flushPromises()
+    expect(dialog(page).find('.audit-summary').text()).toBe('1 entry for this trade, oldest first.')
+    expect(dialog(page).findAll('.dialog-actions button').map((item) => item.text())).toEqual(['Execute', 'Cancel trade', 'Keep Pending'])
+    await dialog(page).trigger('keydown', { key: 'Escape' })
+    await flushPromises()
+
+    const audits = count(server, '/trades/p1/audit')
+    await historyRow(page, 'p1').find('button.trade-details').trigger('click')
+    await flushPromises()
+    expect(dialog(page).find('.trade-dialog-audit').exists()).toBe(false)
+    expect(count(server, '/trades/p1/audit')).toBe(audits)
+  })
+
+  it('says when the audit history cannot be loaded, and tries again', async () => {
+    const { server, page } = await openPage({ 'GET /trades/:id/audit': problem(500, { detail: 'SQLITE_BUSY' }) })
+    await historyRow(page, 'c1').find('button.show-history').trigger('click')
+    await flushPromises()
+    expect(dialog(page).find('.trade-dialog-audit [role="alert"]').text()).toContain('The audit history could not be loaded.')
+    expect(dialog(page).text()).not.toContain('SQLITE')
+    server.set('GET /trades/:id/audit', CANCELLED_AUDIT)
+    await dialog(page).find('button.retry-audit').trigger('click')
+    await flushPromises()
+    expect(dialog(page).findAll('.trade-dialog-audit-table tbody tr')).toHaveLength(3)
+  })
+
+  it('drops an audit answer that arrives after the dialog was closed and opened for another trade', async () => {
+    let release: (() => void) | undefined
+    const late = json(`{"tradeId":"c1","scope":"logical","tradeIds":["c1"],"items":[${auditEntry(10, 'Inserted', '2026-03-02T10:00:00.000Z', {})}],"page":1,"pageSize":25,"totalCount":1,"totalPages":1}`)
+    const { page } = await openPage({
+      'GET /trades/:id/audit': (_body, url) => url.startsWith('/trades/c1/')
+        ? new Promise<FakeResponse>((resolve) => { release = () => { resolve(late) } })
+        : json('{"tradeId":"p2","scope":"logical","tradeIds":["p2"],"items":[],"page":1,"pageSize":25,"totalCount":0,"totalPages":0}'),
+    })
+    await historyRow(page, 'c1').find('button.show-history').trigger('click')
+    await dialog(page).trigger('keydown', { key: 'Escape' })
+    await flushPromises()
+    await historyRow(page, 'p2').find('button.show-history').trigger('click')
+    await flushPromises()
+    release?.()
+    await flushPromises()
+    expect(dialog(page).find('.trade-dialog-summary .trade-id').text()).toBe('p2')
+    expect(dialog(page).find('.trade-dialog-audit').text()).toContain('No audit entries for this trade.')
+  })
+})
+
+describe('M7: executing from Trade History', () => {
+  it('executes from the trade dialog, sending only the id, then refreshes the trades and positions and reports the outcome', async () => {
+    const { server, page } = await openPage({ 'POST /trades/:id/execution': executionOf(PENDING) })
+    await openDetails(page, 'p1')
+    expect(page.find('#trade-dialog-intro').text()).toContain('recorded by User')
+    expect(dialog(page).find('.trade-dialog-summary .trade-id').text()).toBe('p1')
+    expect(dialog(page).find('button.confirm-execution').text()).toBe('Execute')
 
     const before = { trades: count(server, '/trades/page'), positions: count(server, '/positions') }
-    await dialog(page).find('form').trigger('submit')
+    await dialog(page).find('button.confirm-execution').trigger('click')
     await flushPromises()
 
     expect(posts(server).map((call) => [call.url, call.body, call.headers['content-type']])).toEqual([['/trades/p1/execution', undefined, undefined]])
@@ -335,26 +518,33 @@ describe('M7: executing from Trade History', () => {
     expect(count(server, '/positions')).toBe(before.positions + 1)
     const outcome = page.find('#history-execution-outcome')
     expect(outcome.text()).toBe('Executed: Sell 4 MSFT at 300.12, recorded by User. It now counts in the Executed net and average cost.')
-    // The list still shows p1 as Pending here (the scripted list does not change), so its button takes focus back.
-    expect(document.activeElement).toBe(historyRow(page, 'p1').find('button.execute-trade').element)
+    // The scripted list still has the row, so its details button takes focus back.
+    expect(document.activeElement).toBe(historyRow(page, 'p1').find('button.trade-details').element)
+    // Opening the dialog again dismisses the outcome shown.
+    await openDetails(page, 'p2')
+    expect(page.find('#history-execution-outcome').exists()).toBe(false)
   })
 
-  it('sends one execution however often Confirm is pressed while it is on its way, and cannot be closed meanwhile', async () => {
+  it('sends one execution however often Execute is pressed while it is on its way, and cannot be closed meanwhile', async () => {
     let release: (() => void) | undefined
     const slow = () => new Promise<FakeResponse>((resolve) => { release = () => { resolve(executionOf(PENDING)) } })
     const { server, page } = await openPage({ 'POST /trades/:id/execution': slow })
-    await historyRow(page, 'p1').find('button.execute-trade').trigger('click')
-    await flushPromises()
-    await dialog(page).find('form').trigger('submit')
-    await dialog(page).find('form').trigger('submit')
+    await openDetails(page, 'p1')
+    await dialog(page).find('button.confirm-execution').trigger('click')
+    await dialog(page).find('button.confirm-execution').trigger('click')
     await flushPromises()
     const confirm = dialog(page).find<HTMLButtonElement>('button.confirm-execution')
     expect(confirm.element.disabled).toBe(true)
     expect(confirm.text()).toBe('Executing…')
     expect(confirm.attributes('aria-busy')).toBe('true')
     expect(dialog(page).find<HTMLButtonElement>('button.keep-pending').element.disabled).toBe(true)
+    expect(dialog(page).find<HTMLButtonElement>('button.confirm-cancellation').element.disabled).toBe(true)
+    expect(dialog(page).find<HTMLButtonElement>('button.dialog-close').element.disabled).toBe(true)
     await dialog(page).trigger('keydown', { key: 'Escape' })
     expect(dialog(page).exists()).toBe(true)
+    // Cancelling meanwhile sends nothing either.
+    await page.find('#trade-reason').setValue('Too late')
+    await dialog(page).find('form').trigger('submit')
     release?.()
     await flushPromises()
     expect(posts(server)).toHaveLength(1)
@@ -375,10 +565,9 @@ describe('M7: executing from Trade History', () => {
     ['a server failure (500)', problem(500, { detail: 'SQLITE_BUSY' }), 'The trade was not executed. The server could not complete the request. Try again in a moment.', false],
   ])('reports %s in the dialog, refreshing the lists when the trade is no longer Pending', async (_name, response, message, final) => {
     const { server, page } = await openPage({ 'POST /trades/:id/execution': response })
-    await historyRow(page, 'p1').find('button.execute-trade').trigger('click')
-    await flushPromises()
+    await openDetails(page, 'p1')
     const before = count(server, '/trades/page')
-    await dialog(page).find('form').trigger('submit')
+    await dialog(page).find('button.confirm-execution').trigger('click')
     await flushPromises()
 
     expect(dialog(page).find('[role="alert"]').text()).toBe(message)
@@ -386,27 +575,8 @@ describe('M7: executing from Trade History', () => {
     expect(document.activeElement?.classList.contains('dialog-error')).toBe(true)
     expect(count(server, '/trades/page')).toBe(final ? before + 1 : before)
     expect(dialog(page).find('button.confirm-execution').exists()).toBe(!final)
+    expect(dialog(page).find('button.confirm-cancellation').exists()).toBe(!final)
     expect(dialog(page).find('button.keep-pending').text()).toBe(final ? 'Close' : 'Keep Pending')
-  })
-
-  it('closes with Escape or Keep Pending, sends nothing, and gives focus back to the button that opened it; Tab stays in the dialog', async () => {
-    const { server, page } = await openPage()
-    const button = historyRow(page, 'p2').find<HTMLButtonElement>('button.execute-trade')
-    button.element.focus()
-    await button.trigger('click')
-    await flushPromises()
-    await dialog(page).trigger('keydown', { key: 'Tab' })
-    await dialog(page).trigger('keydown', { key: 'Escape' })
-    await flushPromises()
-    expect(dialog(page).exists()).toBe(false)
-    expect(document.activeElement).toBe(historyRow(page, 'p2').find('button.execute-trade').element)
-
-    await historyRow(page, 'p2').find('button.execute-trade').trigger('click')
-    await flushPromises()
-    await dialog(page).find('button.keep-pending').trigger('click')
-    await flushPromises()
-    expect(dialog(page).exists()).toBe(false)
-    expect(posts(server)).toHaveLength(0)
   })
 
   it('opens nothing for a trade that is not Pending', async () => {
@@ -419,30 +589,28 @@ describe('M7: executing from Trade History', () => {
 })
 
 describe('M5: cancelling from Trade History', () => {
-  it('asks for a reason and confirmation, sends only the reason, then refreshes the trades and positions and reports the outcome', async () => {
+  it('asks for a reason in the trade dialog, sends only the reason, then refreshes the trades and positions and reports the outcome', async () => {
     const { server, page } = await openPage({ 'POST /trades/:id/cancellation': cancellationOf(PENDING, 'Client withdrew') })
-    const button = historyRow(page, 'p1').find<HTMLButtonElement>('button.cancel-trade')
-    expect(button.attributes('aria-label')).toBe('Cancel the Pending trade: Sell 4 MSFT at 300.12')
-    button.element.focus()
-    await button.trigger('click')
-    await flushPromises()
+    await openDetails(page, 'p1')
 
-    expect(dialog(page).attributes('aria-modal')).toBe('true')
     expect(dialog(page).text()).toContain('Sell 4 MSFT at 300.12')
-    expect(dialog(page).find('.cancel-trade-summary .trade-id').text()).toBe('p1')
-    expect(document.activeElement?.id).toBe('cancel-reason')
+    expect(dialog(page).find('.trade-dialog-summary .trade-id').text()).toBe('p1')
+    expect(page.find('label[for="trade-reason"]').text()).toBe('Reason for cancelling')
+    expect(dialog(page).find('button.confirm-cancellation').text()).toBe('Cancel trade')
     // The page behind is inert while the dialog is open.
     expect(page.find('main').attributes('inert')).toBeDefined()
 
-    // Confirming without a reason sends nothing.
+    // Cancelling without a reason sends nothing, and moves focus to the reason.
     await dialog(page).find('form').trigger('submit')
     await flushPromises()
     expect(posts(server)).toHaveLength(0)
-    expect(page.find('#cancel-reason-error').text()).toBe('Enter a reason for the cancellation.')
+    expect(page.find('#trade-reason-error').text()).toBe('Enter a reason for the cancellation.')
+    expect(document.activeElement?.id).toBe('trade-reason')
+    expect(page.find('#trade-reason').attributes('aria-describedby')).toBe('trade-reason-hint trade-reason-error')
 
     const before = { trades: count(server, '/trades/page'), positions: count(server, '/positions') }
-    await page.find('#cancel-reason').setValue('  Client withdrew  ')
-    await dialog(page).find('form').trigger('submit')
+    await page.find('#trade-reason').setValue('  Client withdrew  ')
+    await dialog(page).find('button.confirm-cancellation').trigger('submit')
     await flushPromises()
 
     expect(posts(server).map((call) => [call.url, call.body])).toEqual([['/trades/p1/cancellation', '{"reason":"Client withdrew"}']])
@@ -452,23 +620,27 @@ describe('M5: cancelling from Trade History', () => {
     expect(count(server, '/positions')).toBe(before.positions + 1)
     const outcome = page.find('#history-cancellation-outcome')
     expect(outcome.text()).toBe('Cancelled: Sell 4 MSFT at 300.12. Reason: Client withdrew. Cancellation record record-p1, recorded by Admin.')
+    expect(document.activeElement).toBe(historyRow(page, 'p1').find('button.trade-details').element)
   })
 
-  it('sends one cancellation however often Confirm is pressed while it is on its way', async () => {
+  it('sends one cancellation however often Cancel trade is pressed while it is on its way', async () => {
     let release: (() => void) | undefined
     const slow = () => new Promise<FakeResponse>((resolve) => { release = () => { resolve(cancellationOf(PENDING, 'Twice')) } })
     const { server, page } = await openPage({ 'POST /trades/:id/cancellation': slow })
-    await historyRow(page, 'p1').find('button.cancel-trade').trigger('click')
-    await page.find('#cancel-reason').setValue('Twice')
+    await openDetails(page, 'p1')
+    await page.find('#trade-reason').setValue('Twice')
     await dialog(page).find('form').trigger('submit')
     await dialog(page).find('form').trigger('submit')
     await flushPromises()
-    const confirm = dialog(page).find<HTMLButtonElement>('button[type="submit"]')
+    const confirm = dialog(page).find<HTMLButtonElement>('button.confirm-cancellation')
     expect(confirm.element.disabled).toBe(true)
     expect(confirm.text()).toBe('Cancelling…')
-    // Escape does not close it while sending.
+    expect(confirm.attributes('aria-busy')).toBe('true')
+    expect(dialog(page).find<HTMLButtonElement>('button.confirm-execution').element.disabled).toBe(true)
+    // Escape does not close it while sending, and Execute sends nothing.
     await dialog(page).trigger('keydown', { key: 'Escape' })
     expect(dialog(page).exists()).toBe(true)
+    await dialog(page).find('button.confirm-execution').trigger('click')
     release?.()
     await flushPromises()
     expect(posts(server)).toHaveLength(1)
@@ -478,23 +650,26 @@ describe('M5: cancelling from Trade History', () => {
   it('shows the API\'s reason message by the reason, and checks control characters and the length before sending', async () => {
     const refused = problem(400, { type: 'urn:trade-blotter:problem:invalid-cancellation', detail: 'Reason is required.', errors: { reason: ['Reason must not contain control or invisible characters.'] } })
     const { server, page } = await openPage({ 'POST /trades/:id/cancellation': refused })
-    await historyRow(page, 'p1').find('button.cancel-trade').trigger('click')
-    await page.find('#cancel-reason').setValue('tab\there')
+    await openDetails(page, 'p1')
+    await page.find('#trade-reason').setValue('tab\there')
     await dialog(page).find('form').trigger('submit')
     await flushPromises()
     expect(posts(server)).toHaveLength(0)
-    expect(page.find('#cancel-reason-error').text()).toContain('control or invisible characters')
+    expect(page.find('#trade-reason-error').text()).toContain('control or invisible characters')
 
-    await page.find('#cancel-reason').setValue('x'.repeat(REASON_MAX_LENGTH + 1))
+    await page.find('#trade-reason').setValue('x'.repeat(REASON_MAX_LENGTH + 1))
     await dialog(page).find('form').trigger('submit')
-    expect(page.find('#cancel-reason-error').text()).toBe('The reason can be at most 500 characters.')
+    expect(page.find('#trade-reason-error').text()).toBe('The reason can be at most 500 characters.')
 
-    await page.find('#cancel-reason').setValue('Fine by the page')
+    await page.find('#trade-reason').setValue('Fine by the page')
     await dialog(page).find('form').trigger('submit')
     await flushPromises()
     expect(posts(server)).toHaveLength(1)
-    expect(page.find('#cancel-reason-error').text()).toBe('Reason must not contain control or invisible characters.')
-    expect(document.activeElement?.id).toBe('cancel-reason')
+    expect(page.find('#trade-reason-error').text()).toBe('Reason must not contain control or invisible characters.')
+    expect(document.activeElement?.id).toBe('trade-reason')
+    // The API's message stays until the reason changes.
+    await page.find('#trade-reason').setValue('Fine by the page, again')
+    expect(page.find('#trade-reason-error').exists()).toBe(false)
     expect(checkReason('  ok ')).toEqual({ ok: true, value: 'ok' })
     expect(checkReason('é'.normalize('NFD').repeat(500)).ok).toBe(true)
   })
@@ -502,48 +677,43 @@ describe('M5: cancelling from Trade History', () => {
   it('reports a trade already cancelled (409), refreshes the lists, and offers only Close', async () => {
     const conflict = problem(409, { type: 'urn:trade-blotter:problem:invalid-transition', detail: 'Trade p1 is already cancelled.', tradeId: 'p1' })
     const { server, page } = await openPage({ 'POST /trades/:id/cancellation': conflict })
-    await historyRow(page, 'p1').find('button.cancel-trade').trigger('click')
-    await page.find('#cancel-reason').setValue('Again')
+    await openDetails(page, 'p1')
+    await page.find('#trade-reason').setValue('Again')
     const before = count(server, '/trades/page')
     await dialog(page).find('form').trigger('submit')
     await flushPromises()
     expect(dialog(page).find('[role="alert"]').text()).toBe('The trade was not cancelled. Trade p1 is already cancelled. The lists have been refreshed.')
+    expect(document.activeElement?.classList.contains('dialog-error')).toBe(true)
     expect(count(server, '/trades/page')).toBe(before + 1)
     expect(dialog(page).find('button[type="submit"]').exists()).toBe(false)
-    expect(dialog(page).find('.dialog-actions button').text()).toBe('Close')
+    expect(dialog(page).find('button.confirm-execution').exists()).toBe(false)
+    expect(dialog(page).findAll('.dialog-actions button').map((button) => button.text())).toEqual(['Close'])
   })
 
   it('reports a trade that no longer exists (404)', async () => {
     const missing = problem(404, { type: 'urn:trade-blotter:problem:trade-not-found', detail: 'No trade has the id p1.', tradeId: 'p1' })
     const { page } = await openPage({ 'POST /trades/:id/cancellation': missing })
-    await historyRow(page, 'p1').find('button.cancel-trade').trigger('click')
-    await page.find('#cancel-reason').setValue('Gone')
+    await openDetails(page, 'p1')
+    await page.find('#trade-reason').setValue('Gone')
     await dialog(page).find('form').trigger('submit')
     await flushPromises()
     expect(dialog(page).find('[role="alert"]').text()).toBe('The trade was not cancelled. The trade no longer exists. The lists have been refreshed.')
   })
 
-  it('closes with Escape or Keep trade, sends nothing, and gives focus back to the button that opened it; Tab stays in the dialog', async () => {
-    const { server, page } = await openPage()
-    const button = historyRow(page, 'p2').find<HTMLButtonElement>('button.cancel-trade')
-    button.element.focus()
-    await button.trigger('click')
+  it('drops an answer that arrives after the dialog was closed and opened for another trade', async () => {
+    let release: (() => void) | undefined
+    const slow = () => new Promise<FakeResponse>((resolve) => { release = () => { resolve(problem(500, { detail: 'late' })) } })
+    const { page } = await openPage({ 'POST /trades/:id/cancellation': slow })
+    await openDetails(page, 'p1')
+    await page.find('#trade-reason').setValue('Slow')
+    await dialog(page).find('form').trigger('submit')
     await flushPromises()
-    const controls = dialog(page).findAll<HTMLElement>('input, button')
-    controls.at(-1)?.element.focus()
-    await dialog(page).trigger('keydown', { key: 'Tab' })
-    // jsdom has no layout, so only the wrap from the last control is checked when controls have boxes; Escape always closes.
-    await dialog(page).trigger('keydown', { key: 'Escape' })
+    const { useTradeDialogStore } = await import('../src/stores/trade-dialog.ts')
+    // Only the store can close it while sending; the dialog cannot.
+    expect(useTradeDialogStore().close()).toBe(false)
+    release?.()
     await flushPromises()
-    expect(dialog(page).exists()).toBe(false)
-    expect(document.activeElement).toBe(historyRow(page, 'p2').find('button.cancel-trade').element)
-
-    await historyRow(page, 'p2').find('button.cancel-trade').trigger('click')
-    await flushPromises()
-    await dialog(page).findAll('.dialog-actions button').at(-1)?.trigger('click')
-    await flushPromises()
-    expect(dialog(page).exists()).toBe(false)
-    expect(posts(server)).toHaveLength(0)
+    expect(dialog(page).find('[role="alert"]').text()).toBe('The trade was not cancelled. The server could not complete the request. Try again in a moment.')
   })
 })
 
@@ -555,7 +725,7 @@ describe('M5: Positions & Trade Details', () => {
   }
   const detailsPanel = (page: VueWrapper) => page.find('section[aria-labelledby="details-heading"]')
 
-  it('shows the actual position of the chosen symbol and a Status column, with Execute and Cancel only on its Pending trades', async () => {
+  it('shows the actual position of the chosen symbol and a Status column; every row has only an edit and a History button, first, and only a Pending trade\'s dialog offers Execute and Cancel', async () => {
     const { page } = await openPage({}, 'details')
     await chooseMsft(page)
     const summary = detailsPanel(page).find('.position-summary').text()
@@ -565,22 +735,48 @@ describe('M5: Positions & Trade Details', () => {
     expect(summary).toMatch(/Average cost301\.26/)
     const statuses = detailsPanel(page).findAll('tbody .status-badge').map((badge) => badge.text().split(',')[0])
     expect(statuses).toEqual(['Pending', 'Pending', 'Cancelled', 'Executed'])
-    expect(detailsPanel(page).findAll('tbody button.cancel-trade')).toHaveLength(2)
-    expect(detailsPanel(page).findAll('tbody button.execute-trade')).toHaveLength(2)
+    expect(detailsPanel(page).findAll('thead th').map((cell) => cell.text().replace(/[↑↓↕].*$/, '').trim())).toEqual(['Actions', 'Executed at', 'Side', 'Status', 'Quantity', 'Price', 'Notional'])
+    for (const row of detailsPanel(page).findAll('tbody tr')) {
+      expect(row.findAll('td, th')[0]?.findAll('button').map((button) => button.attributes('title'))).toEqual(['Edit', 'History'])
+      expect(row.findAll('button')).toHaveLength(2)
+    }
+    expect(detailsPanel(page).find('button.execute-trade').exists()).toBe(false)
+    expect(detailsPanel(page).find('button.cancel-trade').exists()).toBe(false)
+    expect(detailsPanel(page).findAll('tbody button.trade-edit').at(1)?.attributes('aria-label')).toBe('Edit the trade: Sell 4 MSFT at 300.12, Pending')
+    // The summary's button to choose among the Pending trades stays.
+    expect(detailsPanel(page).find('button.cancel-pending').text()).toBe('Cancel a Pending trade in MSFT…')
+    const offered: string[][] = []
+    for (const index of [0, 1, 2, 3]) {
+      await detailsPanel(page).findAll('tbody button.trade-edit').at(index)?.trigger('click')
+      await flushPromises()
+      offered.push(dialog(page).findAll('.dialog-actions button').map((button) => button.text()))
+      await dialog(page).trigger('keydown', { key: 'Escape' })
+      await flushPromises()
+    }
+    expect(offered).toEqual([['Execute', 'Cancel trade', 'Keep Pending'], ['Execute', 'Cancel trade', 'Keep Pending'], ['Close'], ['Close']])
   })
 
-  it('executes from a row of the details grid, then reloads the details and the positions, and reports it there', async () => {
+  it('executes from a row\'s edit button in the details grid, then reloads the details and the positions, and reports it there', async () => {
     const { server, page } = await openPage({ 'POST /trades/:id/execution': executionOf(PENDING) }, 'details')
     await chooseMsft(page)
-    const before = { details: server.calls.filter((call) => call.url.includes('symbolMatch=exact')).length, positions: count(server, '/positions') }
-    await detailsPanel(page).findAll('tbody button.execute-trade').at(1)?.trigger('click')
+    const before = { details: detailLoads(server), positions: count(server, '/positions') }
+    const edit = detailsPanel(page).findAll<HTMLButtonElement>('tbody button.trade-edit').at(1)
+    edit?.element.focus()
+    await edit?.trigger('click')
     await flushPromises()
-    await dialog(page).find('form').trigger('submit')
+    expect(page.find('#trade-dialog-heading').text()).toBe('Trade details')
+    expect(dialog(page).find('.trade-dialog-summary .trade-id').text()).toBe('p1')
+    expect(document.activeElement?.classList.contains('keep-pending')).toBe(true)
+    expect(page.find('main').attributes('inert')).toBeDefined()
+    await dialog(page).find('button.confirm-execution').trigger('click')
     await flushPromises()
     expect(posts(server).map((call) => call.url)).toEqual(['/trades/p1/execution'])
-    expect(server.calls.filter((call) => call.url.includes('symbolMatch=exact')).length).toBeGreaterThan(before.details)
+    expect(detailLoads(server)).toBeGreaterThan(before.details)
     expect(count(server, '/positions')).toBe(before.positions + 1)
     expect(page.find('#details-execution-outcome').text()).toContain('Executed: Sell 4 MSFT at 300.12')
+    // Reported in Trade Details, not in Trade History.
+    expect(page.find('#history-execution-outcome').exists()).toBe(false)
+    expect(document.activeElement).toBe(detailsPanel(page).findAll('tbody button.trade-edit').at(1)?.element)
   })
 
   it('cancels one of several Pending trades of the symbol, chosen by its details, from the summary\'s button', async () => {
@@ -601,24 +797,43 @@ describe('M5: Positions & Trade Details', () => {
     expect(page.find('#cancel-choice-error').text()).toBe('Choose the trade to cancel.')
 
     await choices[0]?.find('input').setValue(true)
-    const detailLoads = server.calls.filter((call) => call.url.includes('symbolMatch=exact')).length
+    const loadsBefore = detailLoads(server)
     await dialog(page).find('form').trigger('submit')
     await flushPromises()
     expect(posts(server).map((call) => call.url)).toEqual(['/trades/p2/cancellation'])
     expect(page.find('#details-cancellation-outcome').text()).toContain('Cancelled: Buy 2 MSFT at 299.50. Reason: Duplicate.')
     // The details' own page is loaded again, besides the trade list and positions.
-    expect(server.calls.filter((call) => call.url.includes('symbolMatch=exact')).length).toBeGreaterThan(detailLoads)
+    expect(detailLoads(server)).toBeGreaterThan(loadsBefore)
   })
 
-  it('cancels from a row of the details grid', async () => {
+  it('cancels with a reason from a row\'s edit button in the details grid, and reports it there', async () => {
     const { server, page } = await openPage({ 'POST /trades/:id/cancellation': cancellationOf(PENDING, 'Row') }, 'details')
     await chooseMsft(page)
-    await detailsPanel(page).findAll('tbody button.cancel-trade').at(1)?.trigger('click')
+    await detailsPanel(page).findAll('tbody button.trade-edit').at(1)?.trigger('click')
     await flushPromises()
-    await page.find('#cancel-reason').setValue('Row')
     await dialog(page).find('form').trigger('submit')
     await flushPromises()
-    expect(posts(server).map((call) => call.url)).toEqual(['/trades/p1/cancellation'])
+    expect(posts(server)).toHaveLength(0)
+    expect(page.find('#trade-reason-error').text()).toBe('Enter a reason for the cancellation.')
+    await page.find('#trade-reason').setValue('Row')
+    await dialog(page).find('form').trigger('submit')
+    await flushPromises()
+    expect(posts(server).map((call) => [call.url, call.body])).toEqual([['/trades/p1/cancellation', '{"reason":"Row"}']])
+    expect(page.find('#details-cancellation-outcome').text()).toBe('Cancelled: Sell 4 MSFT at 300.12. Reason: Row. Cancellation record record-p1, recorded by Admin.')
+  })
+
+  it('closes the edit dialog with Escape, sends nothing, and gives focus back to the edit button', async () => {
+    const { server, page } = await openPage({}, 'details')
+    await chooseMsft(page)
+    const edit = detailsPanel(page).findAll<HTMLButtonElement>('tbody button.trade-edit').at(0)
+    edit?.element.focus()
+    await edit?.trigger('click')
+    await flushPromises()
+    await dialog(page).trigger('keydown', { key: 'Escape' })
+    await flushPromises()
+    expect(dialog(page).exists()).toBe(false)
+    expect(document.activeElement).toBe(detailsPanel(page).findAll('tbody button.trade-edit').at(0)?.element)
+    expect(posts(server)).toHaveLength(0)
   })
 
   it('drops the Pending trades of a symbol that arrive after the dialog was closed', async () => {
@@ -637,21 +852,14 @@ describe('M5: Positions & Trade Details', () => {
     expect(dialog(page).exists()).toBe(false)
   })
 
-  it('shows the audit history read only: the original\'s entries and its cancellation record\'s, by User, Admin and System', async () => {
-    const snapshot = (fields: Record<string, unknown>) => JSON.stringify({
-      bookingSequence: 4, id: 'c1', symbol: 'MSFT', side: 'Buy', quantity: 1, price: 1.005, executedAt: null, createdAt: '2026-03-02T10:00:00.000Z',
-      updatedAt: '2026-03-02T10:00:00.000Z', quantityKey: 'k', priceKey: 'k', status: 'Pending', createdBy: 'User', updatedBy: 'User', originalTradeId: null,
-      cancellationReason: null, ...fields,
-    })
-    const entries = [
-      `{"auditId":10,"auditAction":"Inserted","auditOn":"2026-03-02T10:00:00.000Z","auditBy":"System","trade":${snapshot({})}}`,
-      `{"auditId":11,"auditAction":"Updated","auditOn":"2026-03-03T09:00:00.000Z","auditBy":"System","trade":${snapshot({ status: 'Cancelled', updatedBy: 'Admin', updatedAt: '2026-03-03T09:00:00.000Z' })}}`,
-      `{"auditId":12,"auditAction":"Inserted","auditOn":"2026-03-03T09:00:00.000Z","auditBy":"System","trade":${snapshot({ id: 'r1', bookingSequence: 9, status: 'Cancelled', createdBy: 'Admin', updatedBy: 'Admin', originalTradeId: 'c1', cancellationReason: 'Booked in error' })}}`,
-    ]
-    const audit = json(`{"tradeId":"c1","scope":"logical","tradeIds":["c1","r1"],"items":[${entries.join(',')}],"page":1,"pageSize":25,"totalCount":3,"totalPages":1}`)
-    const { server, page } = await openPage({ 'GET /trades/:id/audit': audit }, 'details')
+  it('shows the audit history read only, in the trade dialog, from a row\'s History button: the original\'s entries and its cancellation record\'s, by User, Admin and System', async () => {
+    const { server, page } = await openPage({ 'GET /trades/:id/audit': CANCELLED_AUDIT }, 'details')
     await chooseMsft(page)
-    await detailsPanel(page).findAll('tbody button.show-history').at(2)?.trigger('click')
+    const history = detailsPanel(page).findAll<HTMLButtonElement>('tbody button.show-history').at(2)
+    expect(history?.attributes('title')).toBe('History')
+    expect(history?.attributes('aria-label')).toBe('Audit history of the trade: Buy 1 MSFT at 1.00, Cancelled')
+    history?.element.focus()
+    await history?.trigger('click')
     await flushPromises()
     expect(server.calls.at(-1)?.url).toBe('/trades/c1/audit?scope=logical&page=1&pageSize=25')
     const rows = page.findAll('.audit-table tbody tr').map((row) => row.findAll('th, td').map((cell) => cell.text().split(',')[0]?.trim()))
@@ -664,10 +872,17 @@ describe('M5: Positions & Trade Details', () => {
     // The price to 2 places, half to even, the exact value kept.
     expect(page.find('.audit-table td.price .money').text()).toMatch(/^1\.00/)
     expect(page.find('.audit-table td.price .money').attributes('title')).toBe('Exactly 1.005')
-    expect(page.find('.audit-summary').text()).toBe('3 entries for trade c1 and its cancellation record, oldest first.')
-    expect(document.activeElement?.id).toBe('audit-heading')
-    // Read only: no control writes an entry.
-    expect(page.find('.audit-history').findAll('button').map((button) => button.text())).toEqual(['Refresh', 'Close'])
+    expect(page.find('.audit-summary').text()).toBe('3 entries for this trade and its cancellation record, oldest first.')
+    expect(dialog(page).classes()).toContain('with-audit')
+    expect(document.activeElement?.id).toBe('trade-dialog-audit-heading')
+    expect(page.find('main').attributes('inert')).toBeDefined()
+    // Read only: nothing in the audit history writes; the Cancelled trade's dialog offers only Close. No panel below the grid.
+    expect(dialog(page).find('.trade-dialog-audit').findAll('button')).toHaveLength(0)
+    expect(dialog(page).findAll('.dialog-actions button').map((button) => button.text())).toEqual(['Close'])
+    expect(detailsPanel(page).find('.audit-history').exists()).toBe(false)
+    await dialog(page).trigger('keydown', { key: 'Escape' })
+    await flushPromises()
+    expect(document.activeElement).toBe(detailsPanel(page).findAll('tbody button.show-history').at(2)?.element)
   })
 
   it('describes an execution in the audit history as executed by User', async () => {
@@ -690,20 +905,21 @@ describe('M5: Positions & Trade Details', () => {
 
   it('keeps only the newest audit history asked for: a late answer for another trade is dropped', async () => {
     let releaseFirst: (() => void) | undefined
-    const answer = (id: string) => json(`{"tradeId":"${id}","scope":"logical","tradeIds":["${id}"],"items":[],"page":1,"pageSize":25,"totalCount":0,"totalPages":0}`)
+    const answer = (id: string) => json(`{"tradeId":"${id}","scope":"logical","tradeIds":["${id}"],"items":[${id === 'p2' ? auditEntry(30, 'Inserted', '2026-03-02T11:00:00.000Z', { id: 'p2' }) : ''}],"page":1,"pageSize":25,"totalCount":${id === 'p2' ? '1' : '0'},"totalPages":${id === 'p2' ? '1' : '0'}}`)
     const { page } = await openPage({
       'GET /trades/:id/audit': (_body, url) => url.startsWith('/trades/p2/')
         ? new Promise<FakeResponse>((resolve) => { releaseFirst = () => { resolve(answer('p2')) } })
         : answer('p1'),
     }, 'details')
     await chooseMsft(page)
-    const buttons = detailsPanel(page).findAll('tbody button.show-history')
-    await buttons.at(0)?.trigger('click')
-    await buttons.at(1)?.trigger('click')
+    await detailsPanel(page).findAll('tbody button.show-history').at(0)?.trigger('click')
+    await dialog(page).trigger('keydown', { key: 'Escape' })
+    await flushPromises()
+    await detailsPanel(page).findAll('tbody button.show-history').at(1)?.trigger('click')
     await flushPromises()
     releaseFirst?.()
     await flushPromises()
-    expect(page.find('#audit-heading').text()).toBe('Audit history: trade p1')
-    expect(page.find('.audit-history').text()).toContain('No audit entries for this trade.')
+    expect(dialog(page).find('.trade-dialog-summary .trade-id').text()).toBe('p1')
+    expect(dialog(page).find('.trade-dialog-audit').text()).toContain('No audit entries for this trade.')
   })
 })

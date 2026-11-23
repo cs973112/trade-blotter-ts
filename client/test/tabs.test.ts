@@ -126,7 +126,7 @@ describe('tabs on the page', () => {
     await page.find('#filter-symbol').setValue('s0')
     await page.find('form.trade-filters').trigger('submit')
     await flushPromises()
-    await page.find('section[aria-labelledby="blotter-heading"] thead th:nth-child(1) button').trigger('click')
+    await page.find('section[aria-labelledby="blotter-heading"] thead th:nth-child(2) button').trigger('click')
     await flushPromises()
     await page.find('nav.pager select').setValue('25')
     await flushPromises()

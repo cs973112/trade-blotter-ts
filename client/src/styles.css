@@ -484,16 +484,34 @@ th:not([aria-sort]) .sort-indicator { opacity: 0.55; }
 .cancel-trade-summary dt { color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; align-self: center; }
 .cancel-trade-summary dd { margin: 0; font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
 .cancel-trade-summary dd.numeric { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+/* The Actions column's icon buttons (Trade History and Trade Details), and the trade dialog: a little wider and taller than the others, with a close button. */
+.icon-button {
+  display: inline-grid; place-items: center; width: 30px; height: 30px; padding: 0;
+  color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); cursor: pointer;
+}
+.icon-button:hover { border-color: currentColor; }
+.icon-button svg { display: block; }
+.data-table td.actions .icon-button + .icon-button { margin-left: 6px; }
+.trade-dialog { width: min(680px, 100%); min-height: min(600px, calc(100vh - 32px)); padding: 24px 26px; }
+.trade-dialog .trade-dialog-summary { gap: 8px 18px; margin: 16px 0; }
+.trade-dialog.with-audit { width: min(1000px, 100%); }
+.trade-dialog-audit { margin: 4px 0 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.trade-dialog-audit h3 { margin: 0 0 4px; font-size: 1rem; }
+#trade-dialog-audit-heading:focus-visible { outline-offset: 3px; }
+.dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.dialog-close {
+  flex: 0 0 auto; display: inline-grid; place-items: center; width: 32px; height: 32px; margin: -4px -6px 0 0; padding: 0;
+  color: var(--muted); background: transparent; border: 1px solid transparent; border-radius: var(--radius); cursor: pointer;
+}
+.dialog-close:hover:not(:disabled) { color: var(--text); border-color: var(--border); }
+.dialog-close:disabled { cursor: not-allowed; opacity: 0.5; }
 .cancel-choices { margin: 12px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); }
 .cancel-choice { display: flex; align-items: flex-start; gap: 8px; margin: 6px 0 0; font-weight: 400; }
 .cancel-choice input { margin-top: 4px; }
 .cancel-choice-text { min-width: 0; overflow-wrap: anywhere; }
 .cancel-choice-text .numeric { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
-/* The audit history in Trade Details. */
-.audit-history { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
-.audit-history h3 { margin: 0; font-size: 1rem; }
-#audit-heading:focus-visible { outline-offset: 3px; }
+/* The audit history, in the trade dialog. */
 .audit-table td, .audit-table th { white-space: nowrap; }
 .audit-table .audit-what { font-weight: 600; }
 .audit-table .audit-reason { white-space: normal; min-width: 12em; }

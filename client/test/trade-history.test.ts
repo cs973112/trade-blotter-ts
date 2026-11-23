@@ -165,7 +165,9 @@ describe('trade list: accessibility', () => {
     expect(form.attributes('role')).toBe('search')
     expect(form.attributes('aria-label')).toBe('Search and filter trades')
     const labels = form.findAll('label').map((label) => [label.attributes('for'), label.text()])
-    expect(labels).toEqual([['filter-symbol', 'Symbol'], ['filter-side', 'Side'], ['filter-status', 'Status'], ['filter-from-date', 'From'], ['filter-to-date', 'To']])
+    expect(labels).toEqual([['filter-symbol', 'Symbol'], ['filter-side', 'Side'], ['filter-from-date', 'From'], ['filter-to-date', 'To']])
+    // The list has no status filter: each trade's status is in its row.
+    expect(page.find('#filter-status').exists()).toBe(false)
     for (const [id] of labels) expect(form.find(`#${id ?? ''}`).exists()).toBe(true)
     expect(page.find('#filter-sort-by').exists()).toBe(false)
     expect(page.find('#filter-sort-direction').exists()).toBe(false)
@@ -180,14 +182,14 @@ describe('trade list: accessibility', () => {
     const { page } = await openPage()
     const headers = blotter(page).findAll('thead th')
 
-    // Status and Actions do not sort; the Actions cells hold buttons, not the header.
-    expect(headers.map((cell) => cell.find('button').exists())).toEqual([true, false, false, false, true, true, false, true, false, false])
+    // Actions (first) and Status do not sort; the Actions cells hold the details buttons, not the header.
+    expect(headers.map((cell) => cell.find('button').exists())).toEqual([false, true, false, false, true, true, false, true, false, false])
     expect(headers.filter((cell) => cell.find('button').exists()).map((cell) => cell.find('button').attributes('type')))
       .toEqual(['button', 'button', 'button', 'button'])
     expect(headers.map((cell) => cell.find('.visually-hidden').exists() ? cell.find('.visually-hidden').text() : ''))
-      .toEqual([', sort ascending', '', '', '', ', sort ascending', ', sort ascending', '', ', sort oldest first', '', ''])
+      .toEqual(['', ', sort ascending', '', '', ', sort ascending', ', sort ascending', '', ', sort oldest first', '', ''])
     expect(headers.map((cell) => cell.find('.sort-indicator').exists() ? cell.find('.sort-indicator').attributes('aria-hidden') : null))
-      .toEqual(['true', null, null, null, 'true', 'true', null, 'true', null, null])
+      .toEqual([null, 'true', null, null, 'true', 'true', null, 'true', null, null])
   })
 
   it('marks only the sorted column with aria-sort, as the order on screen', async () => {

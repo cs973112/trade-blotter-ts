@@ -104,7 +104,7 @@ quick tooling tests, each a PASS or a FAIL, with logs in `.run/check-fast/`; exi
 failed. It starts no application, browser or benchmark and leaves failure detection out:
 `check:all` below is the acceptance. See README.md, "Development feedback: check:fast".
 
-`npm run check:ui` (after `npm run build`) runs 65 checks of the page in a real headless browser,
+`npm run check:ui` (after `npm run build`) runs 64 checks of the page in a real headless browser,
 on throwaway databases of its own, and saves screenshots: `npm run check:ui -- --out <folder>`.
 
 For acceptance, everything at once, including the reviewer workflow, the benchmarks, the failure-detection checks
@@ -128,7 +128,7 @@ npm run lint               # ESLint over the repository
 npm run typecheck          # API and frontend, no output files
 npm run build              # API to server/dist/, frontend to client/dist/
 npm test -w server         # API and tool tests (1,909 on 2026-11-22: 1,908 run, 1 Linux-only test skipped elsewhere)
-npm test -w client         # frontend tests (441 on 2026-11-22)
+npm test -w client         # frontend tests (457 on 2026-11-22)
 npm run db:check -w server # the migrations folder has no conflicts (drift is a test: schema-drift.test.ts)
 ```
 

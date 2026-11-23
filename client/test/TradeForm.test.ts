@@ -122,9 +122,9 @@ describe('trade form: validation before sending', () => {
   })
 
   it.each([
-    ['1,000', 'Enter the quantity as a number such as 100 or 101.25, without spaces or separators.'],
-    ['-5', 'Enter the quantity as a number such as 100 or 101.25, without spaces or separators.'],
-    ['1e3', 'Enter the quantity as a number such as 100 or 101.25, without spaces or separators.'],
+    ['007', 'Enter the quantity as a number such as 100 or 101.25, without spaces or separators.'],
+    ['1.', 'Enter the quantity as a number such as 100 or 101.25, without spaces or separators.'],
+    ['.5', 'Enter the quantity as a number such as 100 or 101.25, without spaces or separators.'],
     ['0', 'Quantity must be greater than zero.'],
   ])('refuses quantity %j', async (quantity, message) => {
     const form = mountForm()
@@ -134,6 +134,27 @@ describe('trade form: validation before sending', () => {
 
     expect(errorText(form, 'trade-quantity')).toBe(message)
     expect(posted()).toEqual([])
+  })
+
+  it.each([
+    ['1,000', '1000'], ['-5', '5'], ['1e3', '13'], ['abc', ''], ['1.2.3', '1.23'], [' 12 ', '12'], ['$10.50', '10.50'], ['１２', ''],
+  ])('accepts only digits and one decimal point in quantity and price: %j keeps %j', async (typed, kept) => {
+    const form = mountForm()
+
+    await fill(form, { quantity: typed, price: typed })
+
+    expect((form.find('#trade-quantity').element as HTMLInputElement).value).toBe(kept)
+    expect((form.find('#trade-price').element as HTMLInputElement).value).toBe(kept)
+  })
+
+  it('sends what is kept of a quantity typed with separators, once it is a valid number', async () => {
+    const form = mountForm()
+
+    await fill(form, { symbol: 'MSFT', side: 'Buy', quantity: '1,000', price: '12.5x' })
+    await submit(form)
+
+    expect(form.find('.field-error').exists()).toBe(false)
+    expect(posted()).toEqual([{ symbol: 'MSFT', side: 'Buy', quantity: '1000', price: '12.5' }])
   })
 
   it('updates messages as the user corrects a field after submitting', async () => {

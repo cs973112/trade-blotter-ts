@@ -6,17 +6,20 @@ import ExecuteTradeDialog from './components/ExecuteTradeDialog.vue'
 import PositionDetails from './components/PositionDetails.vue'
 import PositionsPanel from './components/PositionsPanel.vue'
 import TradeBlotter from './components/TradeBlotter.vue'
+import TradeDialog from './components/TradeDialog.vue'
 import TradeForm from './components/TradeForm.vue'
 import { tabAfterKey, TABS, type TabId } from './lib/tabs.ts'
 import { useBlotterStore } from './stores/blotter.ts'
 import { useCancellationStore } from './stores/cancellation.ts'
 import { useExecutionStore } from './stores/execution.ts'
+import { useTradeDialogStore } from './stores/trade-dialog.ts'
 
 const store = useBlotterStore()
-/** While the cancellation or execution dialog is open, the page behind it is inert: not focusable, not clickable, not read out. */
+/** While a dialog is open (cancellation, execution, or Trade History's trade dialog), the page behind it is inert: not focusable, not clickable, not read out. */
 const cancellation = useCancellationStore()
 const execution = useExecutionStore()
-const modal = computed(() => cancellation.open || execution.open)
+const tradeDialog = useTradeDialogStore()
+const modal = computed(() => cancellation.open || execution.open || tradeDialog.open)
 
 /**
  * Three tabs. Every panel stays in the page while another is shown (v-show), so what was typed in
@@ -81,4 +84,5 @@ onMounted(() => {
   </main>
   <CancelTradeDialog />
   <ExecuteTradeDialog />
+  <TradeDialog />
 </template>

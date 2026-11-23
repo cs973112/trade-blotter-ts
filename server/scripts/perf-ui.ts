@@ -296,7 +296,8 @@ const PAGE_HELPERS = String.raw`(() => {
   perf.signature = async () => {
     const body = blotter()?.querySelector('table tbody')
     const rows = body ? [...body.rows] : []
-    const text = rows.map((row) => row.cells[0].textContent.trim() + '|' + row.cells[1].textContent.trim() + '|' +
+    // Cells 1 and 2 are the symbol and the side: cell 0 is the Actions column's details button.
+    const text = rows.map((row) => row.cells[1].textContent.trim() + '|' + row.cells[2].textContent.trim() + '|' +
       (row.querySelector('td.executed time')?.getAttribute('datetime') ?? '')).join('\n')
     const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))
     return { rows: rows.length, sha256: [...digest].map((byte) => byte.toString(16).padStart(2, '0')).join('') }
@@ -435,8 +436,8 @@ interface Controls {
   readonly toDate?: string
 }
 
-/** Each sortable column header's position among the table's columns, counting from 1. */
-const COLUMN = { symbol: 1, quantity: 5, price: 6, executedAt: 8 } as const
+/** Each sortable column header's position among the table's columns, counting from 1 (Actions is first). */
+const COLUMN = { symbol: 2, quantity: 5, price: 6, executedAt: 8 } as const
 
 /**
  * A scenario; id is how --scenarios names it. `filter` names the perf:api scenario with the same

@@ -24,8 +24,26 @@ export interface ExecutionProblem {
   readonly final: boolean
 }
 
+/** What an execution that succeeded reports. */
+export function executedMessage(trade: Trade): string {
+  return `Executed: ${describeTrade(trade)}, recorded by ${trade.updatedBy}. It now counts in the Executed net and average cost.`
+}
+
+/** What a refused execution of a trade of `symbol` reports, and whether only closing is left. */
+export function executionProblem(error: unknown, symbol: string): ExecutionProblem {
+  const kind = error instanceof ApiError ? error.kind : undefined
+  if (error instanceof ApiError && error.problem === 'position-limit') {
+    // Its message already says the trade was not executed and stays Pending.
+    return { message: `${error.message} Executing other trades of ${symbol} first may make room for it. The lists have been refreshed.`, final: true }
+  }
+  if (kind === 'conflict' || kind === 'not-found') {
+    return { message: `The trade was not executed. ${messageFor(error)} The lists have been refreshed.`, final: true }
+  }
+  return { message: `The trade was not executed. ${messageFor(error)}`, final: false }
+}
+
 /**
- * The one execution dialog, opened for a Pending trade from a row's Execute button. Each opening is
+ * The one execution dialog, opened for a Pending trade from a row's Execute button (Trade Details). Each opening is
  * a session: an answer that arrives for an earlier session (the dialog was closed or opened again
  * meanwhile) is dropped, so it never changes what is shown. While an execution is being sent the
  * dialog cannot be closed and a second one is not sent.
@@ -81,25 +99,13 @@ export const useExecutionStore = defineStore('execution', () => {
     try {
       const result = await useBlotterStore().executeTrade(chosen.id, chosen.symbol)
       if (mine !== session) return false
-      outcome.value = {
-        context: context.value,
-        trade: result,
-        message: `Executed: ${describeTrade(result)}, recorded by ${result.updatedBy}. It now counts in the Executed net and average cost.`,
-      }
+      outcome.value = { context: context.value, trade: result, message: executedMessage(result) }
       submitting.value = false
       close()
       return true
     } catch (error) {
       if (mine !== session) return false
-      const kind = error instanceof ApiError ? error.kind : undefined
-      if (error instanceof ApiError && error.problem === 'position-limit') {
-        // Its message already says the trade was not executed and stays Pending.
-        problem.value = { message: `${error.message} Executing other trades of ${chosen.symbol} first may make room for it. The lists have been refreshed.`, final: true }
-      } else if (kind === 'conflict' || kind === 'not-found') {
-        problem.value = { message: `The trade was not executed. ${messageFor(error)} The lists have been refreshed.`, final: true }
-      } else {
-        problem.value = { message: `The trade was not executed. ${messageFor(error)}`, final: false }
-      }
+      problem.value = executionProblem(error, chosen.symbol)
       return false
     } finally {
       if (mine === session) submitting.value = false

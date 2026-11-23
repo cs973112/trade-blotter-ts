@@ -48,13 +48,13 @@ describe('trade blotter', () => {
 
     // Four headers sort: each shows its state with an arrow, and says what choosing it does.
     expect(table.findAll('thead th').map((cell) => cell.text())).toEqual([
-      'Symbol↕, sort ascending', 'Side', 'Status', 'Actions', 'Quantity↕, sort ascending', 'Price↕, sort ascending', 'Notional',
+      'Actions', 'Symbol↕, sort ascending', 'Side', 'Status', 'Quantity↕, sort ascending', 'Price↕, sort ascending', 'Notional',
       'Executed at↓, sort oldest first', 'Created at', 'Updated at',
     ])
     expect(rows(table)).toEqual([
-      ['MSFT', 'Sell', 'Executed', '', '123,456,789,012,345.1234567891', '0.00, exactly 0.0000000001', '12,345.68, exactly 12,345.67890123451234567891',
+      ['', 'MSFT', 'Sell', 'Executed', '123,456,789,012,345.1234567891', '0.00, exactly 0.0000000001', '12,345.68, exactly 12,345.67890123451234567891',
         '2026-07-01 09:30:15.250 UTC−04:00', '2026-07-02 04:00:00.000 UTC−04:00', '2026-07-02 04:00:00.000 UTC−04:00'],
-      ['AAPL', 'Buy', 'Executed', '', '1,000', '187.50', '187,500.00',
+      ['', 'AAPL', 'Buy', 'Executed', '1,000', '187.50', '187,500.00',
         '2026-01-02 09:30:00.123 UTC−05:00', '2026-01-02 09:30:01.000 UTC−05:00', '2026-01-02 09:30:01.000 UTC−05:00'],
     ])
   })

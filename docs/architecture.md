@@ -1208,7 +1208,6 @@ flowchart LR
     CANCEL -->|"cancelTrade(id, reason)"| STORE
     LIST & GRIDS -->|"openFor(trade)"| EXECUTE
     EXECUTE -->|"executeTrade(id)"| STORE
-    DETAILS -->|"tradeAudit(id, scope=logical)"| CLIENT
     STORE -->|"calls"| CLIENT
     DETAILS -->|"listTradePage(symbol, symbolMatch=exact)"| CLIENT
     CLIENT -->|"fetch, relative URLs"| VITE
@@ -1332,7 +1331,23 @@ flowchart LR
   answer that is not a Pending trade without an execution time. The confirmation says the trade is
   Pending and where to execute it; a position-limit refusal adds that the Executed and Pending
   trades were checked together. (M5's Status radio group and M1's execution time field are gone.)
-- **Executing (M7).** **Execute…** on a Pending row, in Trade History and in Trade Details,
+- **The booking form's numbers.** Quantity and Price keep only digits and the first decimal point
+  of what is typed or pasted (`numericOnly` in `lib/decimal-text.ts`); the checks before sending
+  (required, a plain decimal, greater than zero) apply to what is kept.
+- **Trade History's trade dialog.** Every row's first cell holds a details button (an inline SVG
+  icon, labelled with the trade and its status), which opens `TradeDialog.vue`
+  (`stores/trade-dialog.ts`) for any trade: a modal dialog (`aria-modal`, labelled and described)
+  with every field of the trade, a close button, focus on **Keep Pending** (or **Close**) so Enter
+  never changes a trade by accident, Tab kept inside and the page behind inert. For a Pending trade
+  it offers **Execute** (`POST /trades/{id}/execution`, no body), **Keep Pending**, and a reason
+  (checked as below) with **Cancel trade** (`POST /trades/{id}/cancellation`, the reason only),
+  through the same blotter actions as the dialogs below, with the same messages
+  (`executedMessage`, `executionProblem`, `cancelledMessage`, `cancellationProblem`, shared with
+  their stores); outcomes are reported above Trade History as before, and focus returns to the
+  details button. While an action is on its way nothing else can be pressed and the dialog cannot
+  be closed; each opening is a session, and a late answer is dropped. An Executed or Cancelled
+  trade's dialog is read only. The rows themselves have no Execute or Cancel.
+- **Executing (M7).** **Execute…** on a Pending row in Trade Details
   opens `ExecuteTradeDialog.vue` (`stores/execution.ts`): a modal dialog (`aria-modal`, labelled and
   described) that shows the trade, with focus on **Keep Pending** so Enter never executes by
   accident, Tab kept inside, and the page behind inert. **Confirm execution** sends
@@ -1346,12 +1361,15 @@ flowchart LR
 - **Statuses in the lists (M5).** Trade History and Trade Details have a Status column
   (`StatusBadge.vue`): the status written out, drawn differently for each (a dashed outline for
   Pending, filled for Executed, struck through for Cancelled, whose reason is the tooltip and is read
-  after the status). Trade History has a Status filter (All, Pending, Executed, Cancelled), sent as
-  `status`, and counts as narrowing the list. The lists hold one entry per logical trade, as the API
-  sends them; a missing execution time is a dash, read as "Not executed". An Actions column beside
-  Status holds **Execute…** and **Cancel…** on Pending trades only (`isExecutable` and
-  `isCancellable`: Pending, not a cancellation record) and, in Trade Details, **History**; beside Status, it is in view at 1280 and 768 px
-  without scrolling sideways.
+  after the status). Trade History has no status filter (each row shows its status); the API's
+  `status` parameter remains, used by **Cancel a Pending trade in …**. The lists hold one entry per logical trade, as the API
+  sends them; a missing execution time is a dash, read as "Not executed". In Trade History the
+  Actions column is first, with each row's details button, so it is always in view. In Trade
+  Details the Actions column is first too, with an **Edit** icon, which opens the same trade dialog
+  in the Trade Details context (outcomes reported there; Execute and Cancel offered only for a
+  Pending trade: `isExecutable` and `isCancellable`, Pending and not a cancellation record), and a
+  **History** icon. In both tabs the **History** icon opens the trade dialog with the trade's audit
+  history (logical scope, first 25 entries), read only; there is no audit panel below the grid.
 - **Cancellation (M5).** One dialog (`CancelTradeDialog.vue`, mounted once in `App.vue`) and its
   store (`stores/cancellation.ts`). `openFor(trade)` shows that trade; `openForSymbol(symbol)` (Trade
   Details' **Cancel a Pending trade in …**) loads `GET /trades/page?symbol=…&symbolMatch=exact&status=Pending&pageSize=100`
@@ -1371,15 +1389,16 @@ flowchart LR
   (the attribute is removed, not set to "false", when the dialog closes); focus starts in the first
   choice or Reason, Tab wraps inside, Escape and Keep trade close it, and focus returns to the button
   that opened it, or to the outcome when that button is gone.
-- **Audit history (M5).** **History** on a Trade Details row calls `details.showAudit(id)`, which
-  asks `GET /trades/{id}/audit?scope=logical&page=1&pageSize=25`; `AuditHistory.vue` shows the
-  entries below the grid, oldest first, one row each: what happened in words (`lib/audit.ts`:
+- **Audit history (M5).** **History** on a row, in Trade History or Trade Details, opens the trade
+  dialog (`stores/trade-dialog.ts`, `openFor(trade, opener, context, true)`), which asks
+  `GET /trades/{id}/audit?scope=logical&page=1&pageSize=25` and shows the entries in the dialog,
+  oldest first, one row each: what happened in words (`lib/audit.ts`:
   "Trade booked by User as Pending", "Trade cancelled by Admin", "Cancellation record created by
   Admin, for trade …"), the audit action, when, by whom (System), the trade id, the original's id,
-  the status, created and updated by, side, quantity, price, execution time and reason. Its own
-  request numbering drops a late answer for another trade; choosing another position closes it.
-  The page is accepted only if it is the trade, scope and page asked for and every entry is of one
-  of `tradeIds`. Only Refresh and Close are offered: nothing writes an entry.
+  the status, created and updated by, side, quantity, price, execution time and reason. Each
+  opening is a session, so a late answer for another trade is dropped; a failed load offers Try
+  again. The page is accepted only if it is the trade, scope and page asked for and every entry is
+  of one of `tradeIds`. Nothing in it writes an entry.
 - **Client checks are for usability.** Before sending, the form requires a symbol, a side, and a
   quantity and price that are plain positive numbers. The input range, decimal places and every
   other rule are the server's: its field errors are shown next to the matching fields.

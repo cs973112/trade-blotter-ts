@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
 import { api, ApiError } from '../api/client.ts'
-import type { Trade } from '../api/contracts.ts'
+import type { Cancellation, Trade } from '../api/contracts.ts'
 import { describeTrade, isCancellable } from '../lib/cancellation.ts'
 import { useBlotterStore } from './blotter.ts'
 import { messageFor } from './list-state.ts'
@@ -28,9 +28,25 @@ export interface CancellationProblem {
   readonly final: boolean
 }
 
+/** What a cancellation that succeeded reports. */
+export function cancelledMessage(result: Cancellation, reason: string): string {
+  return `Cancelled: ${describeTrade(result.trade)}. Reason: ${result.trade.cancellationReason ?? reason}. ` +
+    `Cancellation record ${result.cancellationRecord.id}, recorded by ${result.cancellationRecord.createdBy}.`
+}
+
+/** What a refused cancellation reports: by the reason, or for the request, and whether only closing is left. */
+export function cancellationProblem(error: unknown): CancellationProblem {
+  const kind = error instanceof ApiError ? error.kind : undefined
+  if (kind === 'invalid-cancellation') return { message: messageFor(error), reason: true, final: false }
+  if (kind === 'conflict' || kind === 'not-found') {
+    return { message: `The trade was not cancelled. ${messageFor(error)} The lists have been refreshed.`, reason: false, final: true }
+  }
+  return { message: `The trade was not cancelled. ${messageFor(error)}`, reason: false, final: false }
+}
+
 /**
- * The one cancellation dialog: opened for a trade (a row's Cancel button), or for a symbol (Trade
- * Details), when the Pending trades of that symbol are loaded to choose from. Each opening is a
+ * The one cancellation dialog: opened for a trade (a row's Cancel button in Trade Details), or for a
+ * symbol (Trade Details), when the Pending trades of that symbol are loaded to choose from. Each opening is a
  * session: an answer that arrives for an earlier session (the dialog was closed or opened again
  * meanwhile) is dropped, so it never changes what is shown. While a cancellation is being sent the
  * dialog cannot be closed and a second one is not sent.
@@ -120,25 +136,13 @@ export const useCancellationStore = defineStore('cancellation', () => {
     try {
       const result = await useBlotterStore().cancelTrade(trade.id, reason, trade.symbol)
       if (mine !== session) return false
-      outcome.value = {
-        context: context.value,
-        trade: result.trade,
-        message: `Cancelled: ${describeTrade(result.trade)}. Reason: ${result.trade.cancellationReason ?? reason}. ` +
-          `Cancellation record ${result.cancellationRecord.id}, recorded by ${result.cancellationRecord.createdBy}.`,
-      }
+      outcome.value = { context: context.value, trade: result.trade, message: cancelledMessage(result, reason) }
       submitting.value = false
       close()
       return true
     } catch (error) {
       if (mine !== session) return false
-      const kind = error instanceof ApiError ? error.kind : undefined
-      if (kind === 'invalid-cancellation') {
-        problem.value = { message: messageFor(error), reason: true, final: false }
-      } else if (kind === 'conflict' || kind === 'not-found') {
-        problem.value = { message: `The trade was not cancelled. ${messageFor(error)} The lists have been refreshed.`, reason: false, final: true }
-      } else {
-        problem.value = { message: `The trade was not cancelled. ${messageFor(error)}`, reason: false, final: false }
-      }
+      problem.value = cancellationProblem(error)
       return false
     } finally {
       if (mine === session) submitting.value = false

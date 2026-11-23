@@ -1,4 +1,4 @@
-import type { Side, SortDirection, SortField, Trade, TradeQuery, TradeStatus } from '../api/contracts.ts'
+import type { Side, SortDirection, SortField, Trade, TradeQuery } from '../api/contracts.ts'
 import { localDayEnd, localDayStart } from './local-dates.ts'
 import { browserOffsetAt, type OffsetAt } from './timestamps.ts'
 
@@ -11,21 +11,16 @@ export interface TradeFilters {
   symbol: string
   /** Empty: both sides. */
   side: Side | ''
-  /** Empty: every status. */
-  status: TradeStatus | ''
   /** Local calendar dates from <input type="date">, such as "2026-03-08"; empty for no bound. */
   fromDate: string
   toDate: string
 }
 
 /** No filter: every trade. */
-export const DEFAULT_TRADE_FILTERS: Readonly<TradeFilters> = Object.freeze({ symbol: '', side: '', status: '', fromDate: '', toDate: '' })
+export const DEFAULT_TRADE_FILTERS: Readonly<TradeFilters> = Object.freeze({ symbol: '', side: '', fromDate: '', toDate: '' })
 
-/** The statuses the list can be filtered by, in lifecycle order. */
-export const TRADE_STATUSES: readonly TradeStatus[] = ['Pending', 'Executed', 'Cancelled']
-
-/** The filter members of a query: what narrows the list. */
-export type TradeFilterQuery = Pick<TradeQuery, 'symbol' | 'side' | 'status' | 'executedFrom' | 'executedTo'>
+/** The filter members of a query: what narrows the list. The list has no status filter: each trade's status is shown in its row. */
+export type TradeFilterQuery = Pick<TradeQuery, 'symbol' | 'side' | 'executedFrom' | 'executedTo'>
 
 export interface TradeSort {
   readonly sortBy: SortField
@@ -107,7 +102,6 @@ export function toTradeQuery(filters: TradeFilters, offsetAt: OffsetAt = browser
     query: {
       ...(symbol === '' ? {} : { symbol }),
       ...(filters.side === '' ? {} : { side: filters.side }),
-      ...(filters.status === '' ? {} : { status: filters.status }),
       ...(executedFrom === undefined ? {} : { executedFrom }),
       ...(executedTo === undefined ? {} : { executedTo }),
     },
