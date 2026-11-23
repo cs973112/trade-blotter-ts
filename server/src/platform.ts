@@ -12,8 +12,16 @@ export interface PlatformFeatures {
   readonly jsonSourceText: boolean
 }
 
-/** The supported runtime: the same range as `engines` in every package.json and `.nvmrc`. */
-export const SUPPORTED_NODE_VERSIONS = '^22.23.1'
+/**
+ * The supported runtime: exactly Node.js 22.21.0 (with its npm 10.9.4 and SQLite 3.50.4). The same
+ * version as `engines` in every package.json and package-lock.json, and as `.nvmrc`. Startup checks
+ * the features above, not this version; the reviewer workflow (review:01) checks the version.
+ */
+export const SUPPORTED_NODE_VERSIONS = '22.21.0'
+
+/** The npm and SQLite that Node.js 22.21.0 bundles: the supported environment, as documented. */
+export const SUPPORTED_NPM_VERSION = '10.9.4'
+export const SUPPORTED_SQLITE_VERSION = '3.50.4'
 
 export function detectPlatformFeatures(): PlatformFeatures {
   // Typed as always present, but undefined on Node versions without the module.

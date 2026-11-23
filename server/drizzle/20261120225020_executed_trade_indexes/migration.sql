@@ -1,0 +1,4 @@
+CREATE INDEX `trades_executed_trade_order` ON `trades` (`executed_at`,`booking_sequence`) WHERE "trades"."status" = 'Executed';--> statement-breakpoint
+CREATE INDEX `trades_executed_symbol_trade_order` ON `trades` (`symbol`,`executed_at`,`booking_sequence`) WHERE "trades"."status" = 'Executed';--> statement-breakpoint
+CREATE INDEX `trades_executed_quantity_order` ON `trades` (`quantity_key`,`executed_at`,`booking_sequence`) WHERE "trades"."status" = 'Executed';--> statement-breakpoint
+CREATE INDEX `trades_executed_price_order` ON `trades` (`price_key`,`executed_at`,`booking_sequence`) WHERE "trades"."status" = 'Executed';

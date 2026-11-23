@@ -130,11 +130,14 @@ describe('scripts: the seeded database in the application', () => {
 })
 
 describe('scripts: clearing', () => {
-  it('removes every trade and nothing else, keeping the file, schema, migrations and booking-sequence record', async () => {
+  it('removes every trade and nothing else, keeping the file, schema, migrations and booking-sequence record, and audits each removal', async () => {
     await seedDatabase({ path: target(), count: 500, protection })
-    const before = inspectDatabase(target(), (db) => ({
-      schema: schemaObjects(db), migrations: rawRows(db, '__drizzle_migrations'), sequence: rawRows(db, 'sqlite_sequence'),
-    }))
+    const state = (db: Parameters<Parameters<typeof inspectDatabase>[1]>[0]) => ({
+      schema: schemaObjects(db), migrations: rawRows(db, '__drizzle_migrations'),
+      tradeSequence: (rawRows(db, 'sqlite_sequence') as { name: string }[]).filter((row) => row.name === 'trades'),
+      audit: db.$client.prepare('select audit_action, count(*) as n from trade_audit group by audit_action order by audit_action').all(),
+    })
+    const before = inspectDatabase(target(), state)
     const file = statSync(target(), { bigint: true }).ino
 
     const report = clearDatabase({ path: target(), confirm: true, protection })
@@ -142,9 +145,11 @@ describe('scripts: clearing', () => {
     expect(report).toMatchObject({ removed: 500, remaining: 0 })
     expect(tradeTotal(target())).toBe(0)
     expect(statSync(target(), { bigint: true }).ino).toBe(file)
-    expect(inspectDatabase(target(), (db) => ({
-      schema: schemaObjects(db), migrations: rawRows(db, '__drizzle_migrations'), sequence: rawRows(db, 'sqlite_sequence'),
-    }))).toEqual(before)
+    const after = inspectDatabase(target(), state)
+    expect({ ...after, audit: undefined }).toEqual({ ...before, audit: undefined })
+    // Every removal is a physical delete, so the audit trail keeps each removed trade as it was.
+    expect(before.audit).toEqual([{ audit_action: 'Inserted', n: 500 }])
+    expect(after.audit).toEqual([{ audit_action: 'Deleted', n: 500 }, { audit_action: 'Inserted', n: 500 }])
   })
 
   it('can be repeated, removing nothing the second time', async () => {

@@ -51,7 +51,7 @@ describe('a money value', () => {
   })
 })
 
-const POSITIONS = '[{"symbol":"MS","netQuantity":3,"averageCost":90.125},{"symbol":"MSFT","netQuantity":-2,"averageCost":187.5}]'
+const POSITIONS = '[{"symbol":"MS","netQuantity":3,"averageCost":90.125,"executedNetQuantity":3,"pendingNetQuantity":0,"projectedNetQuantity":3},{"symbol":"MSFT","netQuantity":-2,"averageCost":187.5,"executedNetQuantity":-2,"pendingNetQuantity":0,"projectedNetQuantity":-2}]'
 const TRADE = tradeJson({
   id: 't1', bookingSequence: 1, symbol: 'MS', side: 'Buy', quantity: '3', price: '90.125', notional: '270.375',
   executedAt: '2026-03-01T15:00:00.000Z',

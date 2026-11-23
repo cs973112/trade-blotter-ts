@@ -39,8 +39,11 @@ describe('client boundaries', () => {
 
   it('calls only the documented endpoints', () => {
     const client = readFileSync(join(SOURCE_ROOT, 'api', 'client.ts'), 'utf8')
-    const paths = [...client.matchAll(/request\('([^']+)'/g)].map((match) => match[1])
+    // Fixed paths in quotes, and paths with a trade id as template literals: the id becomes {id}, the query is left out.
+    const paths = [...client.matchAll(/request\((?:'([^']+)'|`([^`]+)`)/g)]
+      .map((match) => (match[1] ?? match[2] ?? '').replace(/\$\{encodeURIComponent\(id\)\}/g, '{id}').replace(/\?.*$/, ''))
+      .filter((path) => !path.startsWith('${'))
 
-    expect([...new Set(paths)].sort()).toEqual(['/positions', '/trades'])
+    expect([...new Set(paths)].sort()).toEqual(['/positions', '/trades', '/trades/page', '/trades/{id}/audit', '/trades/{id}/cancellation', '/trades/{id}/execution'])
   })
 })

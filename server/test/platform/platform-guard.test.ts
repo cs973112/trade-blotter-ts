@@ -19,7 +19,7 @@ describe('platform: startup guard', () => {
       'JSON.rawJSON is not available.',
       'JSON.parse does not expose number source text.',
     ])
-    expect(unsupportedPlatformMessage(problems)).toMatch(/Use Node\.js \^22\.23\.1\.$/)
+    expect(unsupportedPlatformMessage(problems)).toMatch(/Use Node\.js 22\.21\.0\.$/)
   })
 
   it('reports no problems when everything is available', () => {
@@ -41,7 +41,7 @@ describe('platform: declared Node version', () => {
       lockRoot: lock.packages['']?.engines?.node,
       lockServer: lock.packages['server']?.engines?.node,
       lockClient: lock.packages['client']?.engines?.node,
-      nvmrc: `^${read('.nvmrc').trim()}`,
+      nvmrc: read('.nvmrc').trim(),
     }
     expect(declared).toEqual({
       root: SUPPORTED_NODE_VERSIONS,

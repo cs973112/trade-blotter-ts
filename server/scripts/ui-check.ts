@@ -13,8 +13,8 @@ import { createServer } from '../src/server.ts'
 import { defaultRunDir, REPOSITORY_ROOT } from './lifecycle.ts'
 import { Browser, findChrome, Page } from './perf-ui.ts'
 import {
-  UI_DETAIL_COUNTS, UI_OPEN_POSITIONS, uiBenchmarkPositionCount, uiCheckPositions, uiDetailPositions, uiDetailTrades, writeBenchmarkDatabase,
-  writeUiCheckDatabase, writeUiDetailDatabase,
+  UI_LIFECYCLE, UI_LIFECYCLE_LOGICAL_TRADES, UI_OPEN_POSITIONS, uiBenchmarkPositionCount, uiCheckPositions, uiDetailPositions, uiDetailTrades,
+  writeBenchmarkDatabase, writeUiCheckDatabase, writeUiDetailDatabase, writeUiLifecycleDatabase,
 } from './ui-check-data.ts'
 import { BENCHMARK_COUNT, BENCHMARK_SEED } from './review-context.ts'
 import { generateTrades } from './seed-data.ts'
@@ -29,8 +29,11 @@ import { generateTrades } from './seed-data.ts'
  * and 390 pixels wide, booking a trade with exact decimals, and no console errors.
  *
  * Then Positions & Trade Details on a second dataset of overlapping symbols (MS, MSFT, MSTR, AMS),
- * and finally both Positions grids at the benchmark's scale: the seed generator's 25,000 trades
- * (dataset version 2, 167 open positions), generated afresh into a database of the checks' own.
+ * both Positions grids at the benchmark's scale (the seed generator's 25,000 trades, dataset version
+ * 2, 167 open positions, generated afresh into a database of the checks' own), and finally the trade
+ * lifecycle on a third dataset of Executed, Pending and Cancelled trades: booking Pending, the
+ * Status column and filter, cancelling (by keyboard, twice pressed, refused with 409, chosen among
+ * several Pending trades), executing a Pending trade (M7), the actual position, and the audit history.
  *
  * It needs the built frontend (npm run build). Each part runs on a database of its own, made from
  * fixed trades (ui-check-data.ts); the first has 40 open positions. The API runs in this process, with a small
@@ -78,7 +81,7 @@ async function body(request: IncomingMessage): Promise<Buffer> {
 
 export interface FrontendServerOptions {
   /** Milliseconds to hold an API request before forwarding it: how a check makes one answer arrive late. */
-  readonly delayFor?: (url: URL) => number
+  readonly delayFor?: (url: URL, method: string) => number
 }
 
 /** Serves `dist` (index.html for any other path) and forwards the API's paths to `api`. */
@@ -87,7 +90,7 @@ export async function frontendServer(dist: string, api: string, options: Fronten
   const handle = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const url = new URL(request.url ?? '/', 'http://localhost')
     if (API_PATH.test(url.pathname)) {
-      const delay = options.delayFor?.(url) ?? 0
+      const delay = options.delayFor?.(url, request.method ?? 'GET') ?? 0
       if (delay > 0) await sleep(delay)
       const sent = request.method === 'GET' || request.method === 'HEAD' ? undefined : await body(request)
       const answer = await fetch(`${api}${url.pathname}${url.search}`, {
@@ -152,7 +155,7 @@ const PAGE_READERS = String.raw`(() => {
     size: ui.details().querySelector('nav.pager select')?.value ?? '',
     selected: ui.masterRows().filter((row) => row.getAttribute('aria-selected') === 'true').map((row) => row.cells[0].textContent.trim()),
   })
-  /** The API requests the page made whose path and query match: the details' requests carry symbolMatch=exact. */
+  /** The API requests the page made whose path and query match: the details' requests start with ?symbol= (page[?]symbol=) and carry symbolMatch=exact. */
   ui.requests = (pattern) => performance.getEntriesByType('resource').filter((e) => e.initiatorType === 'fetch').map((e) => { const u = new URL(e.name); return u.pathname + u.search }).filter((path) => new RegExp(pattern).test(path))
   /** The rows wholly visible in the grid's box, below its header. */
   ui.fullyVisibleRows = () => {
@@ -209,7 +212,7 @@ const PAGE_READERS = String.raw`(() => {
       direction: section.querySelector('th[aria-sort]')?.getAttribute('aria-sort') ?? '',
       position: section.querySelector('nav.pager .pager-position')?.textContent.trim() ?? '',
       size: section.querySelector('nav.pager select')?.value ?? '',
-      rows: [...section.querySelectorAll('tbody tr')].map((row) => row.cells[0].textContent.trim() + ' ' + row.cells[3].textContent.trim()).join('|'),
+      rows: [...section.querySelectorAll('tbody tr')].map((row) => row.cells[1].textContent.trim() + ' ' + row.cells[5].textContent.trim()).join('|'),
     }
   }
 })()`
@@ -399,6 +402,7 @@ function checks(screenshots: string[], outDir: string): Check[] {
       }))`)
       for (const [index, position] of expected.entries()) {
         const net = position.netQuantity.toFixed()
+        // The actual position: Executed net and average cost; the deferred Pending and Projected net are never shown.
         const want = [position.symbol, net.startsWith('-') ? 'Short' : 'Long', group(net), money(position.averageCost)]
         const row = rows[index]
         if (row?.seen.join('|') !== want.join('|')) return `row ${String(index + 1)}: ${row?.seen.join(' | ') ?? 'missing'}, expected ${want.join(' | ')}`
@@ -454,7 +458,7 @@ function checks(screenshots: string[], outDir: string): Check[] {
       await ui.press('Tab')
       await ui.press('Tab')
       const focused = await ui.value<string>('document.activeElement.getAttribute("aria-label") ?? document.activeElement.tagName')
-      if (focused !== 'Resize the Net quantity column') return `Tab reached ${focused}`
+      if (focused !== 'Resize the Executed net column') return `Tab reached ${focused}`
       const focus = await ui.value<string | undefined>('__ui.focusShown()')
       if (focus !== undefined) return `the handle's focus: ${focus}`
       const start = (await ui.value<number[]>('__ui.columnWidths()'))[2] ?? 0
@@ -462,7 +466,7 @@ function checks(screenshots: string[], outDir: string): Check[] {
       await ui.press('ArrowRight')
       await ui.press('ArrowRight', true)
       const wider = (await ui.value<number[]>('__ui.columnWidths()'))[2] ?? 0
-      if (!near(wider, start + 70)) return `Net quantity ${String(start)} px to ${String(wider)} px after two arrows and Shift+arrow, expected ${String(start + 70)}`
+      if (!near(wider, start + 70)) return `Executed net ${String(start)} px to ${String(wider)} px after two arrows and Shift+arrow, expected ${String(start + 70)}`
       await ui.press('ArrowLeft')
       if (!near((await ui.value<number[]>('__ui.columnWidths()'))[2] ?? 0, start + 60)) return 'Left arrow did not narrow the column by 10 px'
       await ui.press('Home')
@@ -544,7 +548,7 @@ function checks(screenshots: string[], outDir: string): Check[] {
       await ui.type('#filter-symbol', 'pos0')
       await ui.click('.trade-filters button[type="submit"]')
       await ui.until('__ui.historyState().position === "Page 1 of 1" || /Page 1 of/.test(__ui.historyState().position)', 'the filtered list')
-      await ui.click('section[aria-labelledby="blotter-heading"] thead th:nth-child(4) button')
+      await ui.click('section[aria-labelledby="blotter-heading"] thead th:nth-child(6) button')
       await ui.until('__ui.historyState().sorted === "Price"', 'the list sorted by price')
       await ui.value(`(() => { const s = document.querySelector('nav.pager select'); s.value = '25'; s.dispatchEvent(new Event('change', { bubbles: true })); return true })()`)
       await ui.until('__ui.historyState().size === "25" && /^Page 1 of/.test(__ui.historyState().position) && !document.querySelector(".table-scroll[aria-busy=true]")', '25 trades a page')
@@ -595,20 +599,33 @@ function checks(screenshots: string[], outDir: string): Check[] {
       if (focus !== undefined) problems.push(`keyboard focus: ${focus}`)
       return problems.length === 0 ? undefined : problems.join('\n')
     }]),
-    ['Booking a trade with exact decimals: the new position and the trade list keep every digit of the quantity, and show money to 2 places with the exact value as tooltip', async (ui) => {
+    ['Booking a trade with exact decimals, then executing it: booked, it is Pending with no actual position; executed, the new position and the trade list keep every digit of the quantity, and show money to 2 places with the exact value as tooltip', async (ui) => {
       await ui.viewport(1280)
       await ui.click('#tab-trading')
       await ui.click('section[aria-labelledby="trade-form-heading"] button[type="submit"]')
       await ui.until('document.querySelector(\'section[aria-labelledby="trade-form-heading"] .alert-success\')', 'the booking to be confirmed')
-      await ui.until(`[...__ui.gridTable().tBodies[0].rows].length === ${String(UI_OPEN_POSITIONS + 1)}`, 'the new position')
-      const row = await ui.value<string[] | undefined>(`(() => { const row = [...__ui.gridTable().tBodies[0].rows].find((r) => r.cells[0].textContent.trim() === 'ZZEXACT'); return row && [...row.cells].map((c) => __ui.seen(c)).concat(row.cells[3].querySelector('.money').title) })()`)
-      if (row?.join('|') !== 'ZZEXACT|Long|0.0000000001|1,000,000,000,000,000.00|Exactly 999,999,999,999,999.9999999999') return `the position shows ${row?.join(' | ') ?? 'nothing'}`
+      await ui.until(`[...__ui.gridTable().tBodies[0].rows].length === ${String(UI_OPEN_POSITIONS + 1)}`, 'the new symbol in the positions')
+      const position = `(() => { const row = [...__ui.gridTable().tBodies[0].rows].find((r) => r.cells[0].textContent.trim() === 'ZZEXACT'); return row && [...row.cells].map((c) => __ui.seen(c)).concat(row.cells[3].querySelector('.money').title).join('|') })()`
+      const booked = await ui.value<string | undefined>(position)
+      if (booked !== 'ZZEXACT|Flat|0|0.00|') return `booked Pending, the position shows ${booked ?? 'nothing'}`
       await ui.click('#tab-history')
+      await ui.type('#filter-symbol', 'zzexact')
+      await ui.click('.trade-filters button[type="submit"]')
+      const listed = '!document.querySelector(".table-scroll[aria-busy=true]") && document.querySelector(\'section[aria-labelledby="blotter-heading"] tbody th\')?.textContent.trim() === "ZZEXACT"'
+      await ui.until(`${listed} && document.querySelectorAll('section[aria-labelledby="blotter-heading"] tbody tr').length === 1`, 'the booked trade alone in the list')
+      const pending = await ui.value<{ status: string; executed: string }>(`(() => { const row = document.querySelector('section[aria-labelledby="blotter-heading"] tbody tr'); return { status: __ui.seen(row.querySelector('td.status')), executed: row.querySelector('td.executed').textContent.trim() } })()`)
+      if (pending.status !== 'Pending' || pending.executed !== '—') return `booked, the list shows status ${pending.status}, execution time ${pending.executed}`
+      await ui.click('section[aria-labelledby="blotter-heading"] tbody tr button.trade-details')
+      await ui.until('document.querySelector(\'[role="dialog"] button.confirm-execution\')', 'the trade dialog')
+      await ui.click('[role="dialog"] button.confirm-execution')
+      await ui.until('!document.querySelector(\'[role="dialog"]\') && document.getElementById("history-execution-outcome")', 'the execution to finish')
       await ui.click('.trade-filters button[type="button"]')
-      await ui.until('__ui.historyState().symbol === "" && /^Page 1 of/.test(__ui.historyState().position) && !document.querySelector(".table-scroll[aria-busy=true]") && document.querySelector(\'section[aria-labelledby="blotter-heading"] tbody th\')?.textContent.trim() === "ZZEXACT"', 'the trade at the top of the list')
-      const trade = await ui.value<string[]>(`(() => { const cells = [...document.querySelector('section[aria-labelledby="blotter-heading"] tbody tr').cells]; return cells.slice(0, 5).map((c) => __ui.seen(c)).concat(cells.slice(3, 5).map((c) => c.querySelector('.money').title)) })()`)
-      return trade.join('|') === 'ZZEXACT|Buy|0.0000000001|1,000,000,000,000,000.00|100,000.00|Exactly 999,999,999,999,999.9999999999|Exactly 99,999.99999999999999999999'
-        ? undefined : `the list shows ${trade.join(' | ')}`
+      await ui.until(`__ui.historyState().symbol === "" && /^Page 1 of/.test(__ui.historyState().position) && ${listed}`, 'the executed trade at the top of the list')
+      const trade = await ui.value<string[]>(`(() => { const cells = [...document.querySelector('section[aria-labelledby="blotter-heading"] tbody tr').cells]; return cells.slice(0, 7).map((c) => __ui.seen(c)).concat(cells.slice(5, 7).map((c) => c.querySelector('.money').title)) })()`)
+      if (trade.join('|') !== '|ZZEXACT|Buy|Executed|0.0000000001|1,000,000,000,000,000.00|100,000.00|Exactly 999,999,999,999,999.9999999999|Exactly 99,999.99999999999999999999') return `the list shows ${trade.join(' | ')}`
+      await ui.click('#tab-trading')
+      await ui.until(`${position} === 'ZZEXACT|Long|0.0000000001|1,000,000,000,000,000.00|Exactly 999,999,999,999,999.9999999999'`, 'the executed position with every digit')
+      return undefined
     }],
   ]
 }
@@ -626,7 +643,7 @@ const DETAILS = 'section[aria-labelledby="details-heading"]'
 const DETAIL_NEXT = `${DETAILS} nav.pager .pager-controls > button:nth-of-type(2)`
 const SLOW_MS = 1500
 
-/** The request the details make for a page of a symbol's trades, as the page should send it. */
+/** The request the details make for a page of a symbol's trades, as the page should send it: exactly that symbol. */
 function detailRequest(symbol: string, page: number, pageSize: number, sort = ''): string {
   return `/trades/page?symbol=${encodeURIComponent(symbol)}&symbolMatch=exact${sort}&page=${String(page)}&pageSize=${String(pageSize)}`
 }
@@ -635,13 +652,16 @@ function detailChecks(screenshots: string[], outDir: string, control: DetailCont
   const positions = uiDetailPositions()
   const symbols = positions.map((position) => position.symbol)
   const trades = uiDetailTrades()
+  /** The trades a position lists: exactly its own (MS never lists AMS, MSFT, MSTR or MSXLONG…). */
+  const listed = (symbol: string): typeof trades => trades.filter((trade) => trade.symbol === symbol)
+  const countFor = (symbol: string): number => listed(symbol).length
   const rowOf = (symbol: string): string => `${MASTER} tbody tr:nth-child(${String(symbols.indexOf(symbol) + 1)}) th`
   const plural = (count: number): string => `${String(count)} ${count === 1 ? 'trade' : 'trades'}`
 
   /** Chooses a position by clicking its row, and waits for its first page. */
   const choose = async (ui: Driver, symbol: string): Promise<void> => {
     await ui.click(rowOf(symbol))
-    await ui.until(`__ui.detailsIdle() && __ui.detailState().heading === ${JSON.stringify(`Trade Details: ${symbol}`)} && __ui.detailState().count === ${JSON.stringify(plural(UI_DETAIL_COUNTS[symbol] ?? 0))}`, `${symbol}'s trades`)
+    await ui.until(`__ui.detailsIdle() && __ui.detailState().heading === ${JSON.stringify(`Trade Details: ${symbol}`)} && __ui.detailState().count === ${JSON.stringify(plural(countFor(symbol)))}`, `${symbol}'s trades`)
   }
   const setPageSize = async (ui: Driver, size: number): Promise<void> => {
     await ui.value(`(() => { const s = __ui.details().querySelector('nav.pager select'); s.value = '${String(size)}'; s.dispatchEvent(new Event('change', { bubbles: true })); return true })()`)
@@ -663,7 +683,7 @@ function detailChecks(screenshots: string[], outDir: string, control: DetailCont
       await ui.click('#tab-details')
       const state = await ui.value<{ symbols: string[]; selected: string[]; role: string | null; requests: string[]; prompt: string; cells: { seen: string; title: string | null; heard: string }[] }>(`({
         symbols: __ui.masterRows().map((row) => row.cells[0].textContent.trim()), selected: __ui.masterRows().map((row) => row.getAttribute('aria-selected')),
-        role: __ui.masterTable().getAttribute('role'), requests: __ui.requests('symbolMatch'), prompt: __ui.details().textContent,
+        role: __ui.masterTable().getAttribute('role'), requests: __ui.requests('page[?]symbol='), prompt: __ui.details().textContent,
         cells: __ui.masterRows().map((row) => ({ seen: __ui.seen(row.cells[3]), title: row.cells[3].querySelector('.money').getAttribute('title'), heard: __ui.heard(row.cells[3]) })),
       })`)
       if (state.symbols.join() !== symbols.join()) return `rows ${state.symbols.join(', ')}, expected ${symbols.join(', ')}`
@@ -681,7 +701,7 @@ function detailChecks(screenshots: string[], outDir: string, control: DetailCont
     ['Choosing MS with the pointer marks its row and loads page 1 of exactly MS\'s trades from the server (symbolMatch=exact): 25 rows of 60, newest first', async (ui) => {
       await choose(ui, 'MS')
       const state = await ui.value<{ detail: Record<string, unknown>; requests: string[]; marked: boolean; times: string[]; range: string }>(`({
-        detail: __ui.detailState(), requests: __ui.requests('symbolMatch'),
+        detail: __ui.detailState(), requests: __ui.requests('page[?]symbol='),
         marked: (() => { const rows = __ui.masterRows(); const chosen = rows.find((r) => r.getAttribute('aria-selected') === 'true'); const other = rows.find((r) => r.getAttribute('aria-selected') === 'false');
           return getComputedStyle(chosen.cells[1]).backgroundColor !== getComputedStyle(other.cells[1]).backgroundColor && getComputedStyle(chosen.cells[0]).boxShadow !== 'none' })(),
         times: __ui.detailRows().map((row) => row.querySelector('time').getAttribute('datetime')),
@@ -692,10 +712,11 @@ function detailChecks(screenshots: string[], outDir: string, control: DetailCont
       if (detail['rows'] !== 25 || detail['position'] !== 'Page 1 of 3' || state.range !== '1–25 of 60 trades') return `${JSON.stringify(detail)} ${state.range}`
       if (JSON.stringify(detail['selected']) !== '["MS"]') return `rows marked chosen: ${JSON.stringify(detail['selected'])}`
       if (!state.marked) return 'the chosen row does not look different from the others'
-      const newest = trades.filter((trade) => trade.symbol === 'MS').map((trade) => trade.executedAt).sort().reverse().slice(0, 25)
+      const newest = listed('MS').map((trade) => trade.executedAt).sort().reverse().slice(0, 25)
       return state.times.join() === newest.join() ? undefined : `the first page is not MS's 25 newest trades: ${state.times.slice(0, 3).join(', ')}…`
     }],
-    ['Exact matching: shown with the Symbol column, MS lists only its own 60 trades (never MSFT, MSTR, AMS or MSXLONG…), and every other position lists exactly its own', async (ui) => {
+    ['Exact matching: shown with the Symbol column (hidden by default), MS lists only its own 60 trades (never MSFT, MSTR, AMS or MSXLONG…), and every other position lists exactly its own', async (ui) => {
+      if ((await ui.value<string[]>('__ui.detailHeaders()')).includes('Symbol')) return 'the Symbol column is shown by default'
       await openColumns(ui)
       await ui.click(`${DETAILS} input[data-column="symbol"]`)
       await closeColumns(ui)
@@ -703,14 +724,14 @@ function detailChecks(screenshots: string[], outDir: string, control: DetailCont
       for (const symbol of ['MS', ...symbols.filter((candidate) => candidate !== 'MS'), 'MS']) {
         if (symbol !== 'MS' || (await ui.value<string>('__ui.detailState().heading')) !== 'Trade Details: MS') await choose(ui, symbol)
         const shown = await ui.value<string[]>(`__ui.detailRows().map((row) => row.querySelector('td.cell-symbol').textContent.trim())`)
-        const want = UI_DETAIL_COUNTS[symbol] ?? 0
-        if (shown.length !== want || shown.some((text) => text !== symbol)) return `${symbol}: ${String(shown.length)} rows, symbols ${[...new Set(shown)].join(', ')}; expected ${String(want)} of ${symbol}`
+        const want = listed(symbol)
+        const wantSymbols = [...new Set(want.map((trade) => trade.symbol))].sort().join(', ')
+        if (shown.length !== want.length || [...new Set(shown)].sort().join(', ') !== wantSymbols) return `${symbol}: ${String(shown.length)} rows, symbols ${[...new Set(shown)].sort().join(', ')}; expected ${String(want.length)} of ${wantSymbols}`
       }
-      const requests = await ui.value<string[]>('__ui.requests("symbolMatch")')
+      if (countFor('MS') !== 60) return `the fixture gives MS ${String(countFor('MS'))} trades, not 60`
+      const requests = await ui.value<string[]>('__ui.requests("page[?]symbol=")')
       const bad = requests.filter((request) => !/^\/trades\/page\?symbol=[^&]+&symbolMatch=exact&/.test(request))
-      if (bad.length > 0) return `requests without an exact symbol: ${bad.join(', ')}`
-      const contains = await ui.value<string[]>('__ui.requests("^/trades/page\\\\?symbol=").filter((r) => !r.includes("symbolMatch=exact"))')
-      return contains.length === 0 ? undefined : `details asked for a search within symbols: ${contains.join(', ')}`
+      return bad.length === 0 ? undefined : `details asked for a search within symbols: ${bad.join(', ')}`
     }],
     ['Paging on the server: Next shows pages 2 and 3 of MS\'s trades, 60 different trades in all, newest first; page size 50; another position starts at page 1, keeping the size', async (ui) => {
       await setPageSize(ui, 25)
@@ -724,7 +745,7 @@ function detailChecks(screenshots: string[], outDir: string, control: DetailCont
         if (times.length !== rows) return `page ${String(page)} has ${String(times.length)} rows, expected ${String(rows)}`
         seen.push(...times)
       }
-      const all = trades.filter((trade) => trade.symbol === 'MS').map((trade) => trade.executedAt).sort().reverse()
+      const all = listed('MS').map((trade) => trade.executedAt).sort().reverse()
       if (seen.join() !== all.join()) return `the three pages together are not MS's 60 trades, newest first (${String(new Set(seen).size)} different)`
       const range = await ui.value<string>(`__ui.details().querySelector('nav.pager .pager-range').textContent.trim()`)
       if (range !== '51–60 of 60 trades') return `page 3 says ${range}`
@@ -736,7 +757,7 @@ function detailChecks(screenshots: string[], outDir: string, control: DetailCont
       const after = await ui.value<{ position: string; size: string }>('__ui.detailState()')
       if (after.position !== 'Page 1 of 1' || after.size !== '50') return `MSFT shows ${after.position} at ${after.size} a page`
       await choose(ui, 'MS')
-      const requests = await ui.value<string[]>('__ui.requests("symbolMatch")')
+      const requests = await ui.value<string[]>('__ui.requests("page[?]symbol=")')
       const want = [detailRequest('MS', 1, 25), detailRequest('MS', 2, 25), detailRequest('MS', 3, 25), detailRequest('MS', 1, 50), detailRequest('MS', 2, 50), detailRequest('MSFT', 1, 50), detailRequest('MS', 1, 50)]
       const last = requests.slice(-want.length)
       return last.join() === want.join() ? undefined : `requests ${last.join(', ')}`
@@ -750,7 +771,7 @@ function detailChecks(screenshots: string[], outDir: string, control: DetailCont
         const values = shown.map((text) => new Dec(text))
         const ordered = values.every((value, index) => index === 0 || (sort === 'asc' ? value.gte(values[index - 1] ?? value) : value.lte(values[index - 1] ?? value)))
         if (!ordered || values.length !== 50) return `${direction}: ${shown.slice(0, 5).join(', ')}…`
-        const request = (await ui.value<string[]>('__ui.requests("symbolMatch")')).at(-1)
+        const request = (await ui.value<string[]>('__ui.requests("page[?]symbol=")')).at(-1)
         if (request !== detailRequest('MS', 1, 50, `&sortBy=price&sortDirection=${sort}`)) return `request ${String(request)}`
       }
       await ui.click(`${DETAILS} thead th.column-executedAt .sort-button`)
@@ -763,7 +784,7 @@ function detailChecks(screenshots: string[], outDir: string, control: DetailCont
         const read = (cell) => ({ seen: __ui.seen(cell), title: cell.querySelector('.money').getAttribute('title'), heard: __ui.heard(cell) })
         return { time: row.querySelector('time').getAttribute('datetime'), quantity: __ui.seen(row.querySelector('td.cell-quantity')), price: read(row.querySelector('td.price')), notional: read(row.querySelector('td.notional')) }
       })`)
-      const byTime = new Map(trades.filter((trade) => trade.symbol === 'MS').map((trade) => [String(trade.executedAt), trade]))
+      const byTime = new Map(listed('MS').map((trade) => [String(trade.executedAt), trade]))
       if (rows.length !== 60) return `${String(rows.length)} rows`
       const checked = new Set<string>()
       for (const row of rows) {
@@ -798,7 +819,7 @@ function detailChecks(screenshots: string[], outDir: string, control: DetailCont
         return { time: row.querySelector('time').getAttribute('datetime'), price: __ui.seen(price), notional: __ui.seen(total),
           clipped: [price, total].filter((cell) => cell.scrollWidth > cell.clientWidth + 1).length }
       })`)
-      const byTime = new Map(trades.filter((trade) => trade.symbol === 'MS').map((trade) => [String(trade.executedAt), trade]))
+      const byTime = new Map(listed('MS').map((trade) => [String(trade.executedAt), trade]))
       if (rows.length !== 60) return `${String(rows.length)} rows`
       for (const row of rows) {
         const trade = byTime.get(row.time)
@@ -826,7 +847,7 @@ function detailChecks(screenshots: string[], outDir: string, control: DetailCont
       const start = await ui.value<{ symbol: string | undefined; focus: string | undefined }>(`({ symbol: document.activeElement.dataset.symbol, focus: __ui.focusShown() })`)
       if (start.symbol !== 'MS') return `Tab reached ${String(start.symbol)}, not the chosen position MS`
       if (start.focus !== undefined) return `the row's focus: ${start.focus}`
-      const before = (await ui.value<string[]>('__ui.requests("symbolMatch")')).length
+      const before = (await ui.value<string[]>('__ui.requests("page[?]symbol=")')).length
       const steps: [string, string][] = [['ArrowDown', 'MSFT'], ['ArrowDown', 'MSTR'], ['ArrowUp', 'MSFT'], ['End', symbols.at(-1) ?? ''], ['Home', symbols[0] ?? ''], ['ArrowDown', 'MS'], ['ArrowDown', 'MSFT']]
       for (const [key, symbol] of steps) {
         await ui.press(key)
@@ -836,16 +857,16 @@ function detailChecks(screenshots: string[], outDir: string, control: DetailCont
         if (focused.focus !== undefined) return `after ${key}: ${focused.focus}`
         if (!focused.inView) return `after ${key}: the focused row is out of view`
       }
-      if ((await ui.value<string[]>('__ui.requests("symbolMatch")')).length !== before) return 'moving between rows loaded trades'
+      if ((await ui.value<string[]>('__ui.requests("page[?]symbol=")')).length !== before) return 'moving between rows loaded trades'
       await ui.press('Enter')
-      await ui.until(`__ui.detailsIdle() && __ui.detailState().count === '${plural(UI_DETAIL_COUNTS['MSFT'] ?? 0)}'`, 'MSFT chosen with Enter')
+      await ui.until(`__ui.detailsIdle() && __ui.detailState().count === '${plural(countFor('MSFT'))}'`, 'MSFT chosen with Enter')
       await ui.press('Enter')
       await ui.press('ArrowDown')
       await ui.press(' ')
-      await ui.until(`__ui.detailsIdle() && __ui.detailState().count === '${plural(UI_DETAIL_COUNTS['MSTR'] ?? 0)}'`, 'MSTR chosen with Space')
+      await ui.until(`__ui.detailsIdle() && __ui.detailState().count === '${plural(countFor('MSTR'))}'`, 'MSTR chosen with Space')
       await ui.press(' ')
       await ui.frame()
-      const requests = await ui.value<string[]>('__ui.requests("symbolMatch")')
+      const requests = await ui.value<string[]>('__ui.requests("page[?]symbol=")')
       const added = requests.slice(before)
       if (added.join() !== [detailRequest('MSFT', 1, 25), detailRequest('MSTR', 1, 25)].join()) return `requests ${added.join(', ')} (choosing a position again must load nothing)`
       const state = await ui.value<{ selected: string[] }>('__ui.detailState()')
@@ -867,7 +888,7 @@ function detailChecks(screenshots: string[], outDir: string, control: DetailCont
       const tableBefore = await ui.value<number>('__ui.detailsTable().getBoundingClientRect().width')
       await ui.press(' ')
       const hidden = await ui.value<string[]>('__ui.detailHeaders()')
-      if (hidden.join('|') !== 'Executed at|Quantity|Price|Notional|Symbol') return `after hiding Side: ${hidden.join(', ')}`
+      if (hidden.join('|') !== 'Actions|Executed at|Status|Quantity|Price|Notional|Symbol') return `after hiding Side: ${hidden.join(', ')}`
       const gap = await ui.value<{ table: number; columns: number }>(`({ table: __ui.detailsTable().getBoundingClientRect().width, columns: __ui.columnWidths(__ui.detailsTable()).reduce((a, b) => a + b, 0) })`)
       if (!near(gap.table, gap.columns, 2) || gap.table >= tableBefore - 10) return `the table is ${String(gap.table)} px for ${String(gap.columns)} px of columns (before: ${String(tableBefore)} px)`
       await ui.press('Escape')
@@ -882,10 +903,10 @@ function detailChecks(screenshots: string[], outDir: string, control: DetailCont
       await openColumns(ui)
       await ui.click(`${DETAILS} input[data-column="side"]`)
       await ui.click(`${DETAILS} input[data-column="price"]`)
-      if ((await ui.value<string[]>('__ui.detailHeaders()')).join('|') !== 'Executed at|Side|Quantity|Notional|Symbol') return 'Side did not come back in its place, or Price did not hide'
+      if ((await ui.value<string[]>('__ui.detailHeaders()')).join('|') !== 'Actions|Executed at|Side|Status|Quantity|Notional|Symbol') return 'Side did not come back in its place, or Price did not hide'
       await ui.click(`${DETAILS} input[data-column="price"]`)
       const back = await detailWidths(ui)
-      if ((await ui.value<string[]>('__ui.detailHeaders()')).join('|') !== 'Executed at|Side|Quantity|Price|Notional|Symbol') return 'columns came back out of order'
+      if ((await ui.value<string[]>('__ui.detailHeaders()')).join('|') !== 'Actions|Executed at|Side|Status|Quantity|Price|Notional|Symbol') return 'columns came back out of order'
       for (const label of ['Executed at', 'Quantity', 'Price', 'Notional']) {
         if (!near(back[label] ?? 0, resized[label] ?? 0)) return `${label} was ${String(resized[label])} px and is ${String(back[label])} px after hiding and showing`
       }
@@ -894,7 +915,7 @@ function detailChecks(screenshots: string[], outDir: string, control: DetailCont
       if (await ui.value<number>('__ui.misalignment(__ui.detailsTable())') > 1) return 'headers and cells are not aligned after hiding and showing'
       await ui.click(`${DETAILS} .column-chooser-panel .restore-columns`)
       const restored = await ui.value<{ headers: string[]; disabled: boolean }>(`({ headers: __ui.detailHeaders(), disabled: __ui.details().querySelector('.column-chooser-panel .restore-columns').getAttribute('aria-disabled') === 'true' })`)
-      if (restored.headers.join('|') !== 'Executed at|Side|Quantity|Price|Notional' || !restored.disabled) return `after Restore: ${restored.headers.join(', ')}`
+      if (restored.headers.join('|') !== 'Actions|Executed at|Side|Status|Quantity|Price|Notional' || !restored.disabled) return `after Restore: ${restored.headers.join(', ')}`
       await closeColumns(ui)
       return undefined
     }],
@@ -902,7 +923,8 @@ function detailChecks(screenshots: string[], outDir: string, control: DetailCont
       const before = await ui.value<number[]>('__ui.columnWidths(__ui.detailsTable())')
       await ui.drag(`${DETAILS} [role="separator"][aria-label="Resize the Notional column"]`, 60)
       const after = await ui.value<number[]>('__ui.columnWidths(__ui.detailsTable())')
-      const index = 4
+      const index = (await ui.value<string[]>('__ui.detailHeaders()')).indexOf('Notional')
+      if (index < 0) return 'no Notional column'
       if (!near(after[index] ?? 0, (before[index] ?? 0) + 60)) return `Notional ${String(before[index])} px to ${String(after[index])} px`
       if (after.some((width, at) => at !== index && !near(width, before[at] ?? 0))) return `other columns changed: ${before.join(', ')} to ${after.join(', ')}`
       if (await ui.value<number>('__ui.misalignment(__ui.detailsTable())') > 1) return 'headers and cells are not aligned'
@@ -934,7 +956,7 @@ function detailChecks(screenshots: string[], outDir: string, control: DetailCont
         await ui.frame()
         const state = await ui.value<{ heading: string; count: string; selected: string[]; rows: number }>('__ui.detailState()')
         const times = await ui.value<string[]>(`__ui.detailRows().map((row) => row.querySelector('time').getAttribute('datetime'))`)
-        const ms = new Set(trades.filter((trade) => trade.symbol === 'MS').map((trade) => String(trade.executedAt)))
+        const ms = new Set(listed('MS').map((trade) => String(trade.executedAt)))
         if (state.heading !== 'Trade Details: MS' || state.count !== '60 trades' || state.selected.join() !== 'MS') return `after MSFT's answer: ${JSON.stringify(state)}`
         return times.length === 25 && times.every((time) => ms.has(time)) ? undefined : 'rows other than MS\'s are shown'
       } finally {
@@ -1184,6 +1206,8 @@ function benchmarkChecks(screenshots: string[], outDir: string): Check[] {
   const symbols = positions.map((position) => position.symbol)
   const perSymbol = new Map<string, number>()
   for (const trade of trades) perSymbol.set(trade.symbol, (perSymbol.get(trade.symbol) ?? 0) + 1)
+  /** The trades a position lists in Trade Details: exactly its own. */
+  const listedCount = (symbol: string): number => perSymbol.get(symbol) ?? 0
   const middle = Math.floor(symbols.length / 2)
   const plural = (count: number): string => `${count.toLocaleString('en-US')} ${count === 1 ? 'trade' : 'trades'}`
   /** The rows wholly in view in a grid's box, under its header: their symbols. */
@@ -1202,7 +1226,7 @@ function benchmarkChecks(screenshots: string[], outDir: string): Check[] {
     await ui.frame()
   }
   const chooseDetails = async (ui: Driver, symbol: string): Promise<void> => {
-    await ui.until(`__ui.detailsIdle() && __ui.detailState().heading === ${JSON.stringify(`Trade Details: ${symbol}`)} && __ui.detailState().count === ${JSON.stringify(plural(perSymbol.get(symbol) ?? 0))}`, `${symbol}'s trades`)
+    await ui.until(`__ui.detailsIdle() && __ui.detailState().heading === ${JSON.stringify(`Trade Details: ${symbol}`)} && __ui.detailState().count === ${JSON.stringify(plural(listedCount(symbol)))}`, `the trades ${symbol} lists`)
   }
 
   return [
@@ -1220,6 +1244,7 @@ function benchmarkChecks(screenshots: string[], outDir: string): Check[] {
       const cells = await ui.value<string[][]>(`[...document.querySelectorAll('#panel-trading .positions-table tbody tr')].map((row) => [...row.cells].map((cell) => __ui.seen(cell)))`)
       for (const [index, position] of positions.entries()) {
         const net = position.netQuantity.toFixed()
+        // The actual position: Executed net and average cost; the deferred Pending and Projected net are never shown.
         const want = [position.symbol, net.startsWith('-') ? 'Short' : 'Long', group(net), money(position.averageCost)]
         if (cells[index]?.join('|') !== want.join('|')) return `${position.symbol}: ${String(cells[index]?.join(' | '))}, expected ${want.join(' | ')}`
       }
@@ -1265,14 +1290,25 @@ function benchmarkChecks(screenshots: string[], outDir: string): Check[] {
       await settle(ui, TRADING_GRID)
       return undefined
     }],
-    [`Benchmark data at 768 px: the Trading grid, given the page's width below the form, fits it with every column, so it scrolls only up and down; nothing is widened to make it scroll sideways`, async (ui) => {
+    [`Benchmark data at 768 px: the Trading grid shows all four of its columns within the page; the page never scrolls sideways, and the grid scrolls up and down, and sideways inside its own box only as far as its columns' contents need; nothing is widened`, async (ui) => {
       await ui.viewport(768)
       await ui.click('#tab-trading')
-      const box = await ui.value<{ wider: number; taller: number; overflow: number; columns: number }>(`(() => { const b = document.querySelector('${TRADING_GRID}'); return { wider: b.scrollWidth - b.clientWidth, taller: b.scrollHeight - b.clientHeight, overflow: __ui.pageOverflow(), columns: b.querySelector('thead tr').cells.length } })()`)
-      if (box.columns !== 4) return `${String(box.columns)} columns shown`
-      if (box.wider > 0) return `the grid is ${String(box.wider)} px wider than its box at 768 px`
+      const box = await ui.value<{ wider: number; taller: number; overflow: number; columns: number; table: number; needed: number; layout: string }>(`(() => {
+        const b = document.querySelector('${TRADING_GRID}'), t = b.querySelector('table')
+        // What each column needs: its least width, or the widest of its cells' contents with the cell's padding and border.
+        const need = (cell) => { const r = document.createRange(); r.selectNodeContents(cell.querySelector('.column-label') ?? cell); const s = getComputedStyle(cell)
+          return r.getBoundingClientRect().width + parseFloat(s.paddingLeft) + parseFloat(s.paddingRight) + parseFloat(s.borderLeftWidth) + parseFloat(s.borderRightWidth) }
+        const heads = [...t.tHead.rows[0].cells]
+        const needed = heads.reduce((sum, head, index) => sum + Math.max(Number(head.querySelector('[role="separator"]').getAttribute('aria-valuemin')), need(head),
+          ...[...t.tBodies[0].rows].map((row) => need(row.cells[index]))), 0)
+        return { wider: b.scrollWidth - b.clientWidth, taller: b.scrollHeight - b.clientHeight, overflow: __ui.pageOverflow(), columns: heads.length,
+          table: t.getBoundingClientRect().width, needed, layout: t.style.tableLayout }
+      })()`)
+      if (box.columns !== 4) return `${String(box.columns)} columns shown, expected the grid's four`
+      if (box.overflow > 0) return `the page scrolls sideways by ${String(box.overflow)} px`
       if (box.taller <= 0) return 'the grid does not scroll up and down'
-      return box.overflow > 0 ? `the page scrolls sideways by ${String(box.overflow)} px` : undefined
+      if (box.layout !== '') return 'the columns have fixed widths before any was resized'
+      return box.table <= box.needed + 2 * box.columns ? undefined : `the table is ${String(Math.round(box.table))} px for ${String(Math.round(box.needed))} px its columns need`
     }],
     ...([390] as const).map((width): Check => [`Benchmark data at ${String(width)} px: the grid is wider than its box with real values, so it scrolls sideways and up and down, each without moving the other; the header stays pinned and aligned`, async (ui) => {
       await ui.viewport(width)
@@ -1317,10 +1353,10 @@ function benchmarkChecks(screenshots: string[], outDir: string): Check[] {
       if (back.headers.join('|') !== before.headers.join('|') || !near(back.table, before.table, 2)) return `after Restore: ${back.headers.join(', ')}, ${String(back.table)} px`
       await ui.wheel(TRADING_GRID, 0, 34 * middle)
       await settle(ui, TRADING_GRID)
-      await ui.drag(`#panel-trading ${HANDLE('Net quantity')}`, -900)
-      const least = await ui.value<number>(`Number(document.querySelector('#panel-trading ${HANDLE('Net quantity')}').getAttribute('aria-valuemin'))`)
+      await ui.drag(`#panel-trading ${HANDLE('Executed net')}`, -900)
+      const least = await ui.value<number>(`Number(document.querySelector('#panel-trading ${HANDLE('Executed net')}').getAttribute('aria-valuemin'))`)
       const widths = await ui.value<number[]>(`__ui.columnWidths(document.querySelector('${TRADING_GRID} table'))`)
-      if (!near(widths[2] ?? 0, least)) return `Net quantity is ${String(widths[2])} px; its least width is ${String(least)} px`
+      if (!near(widths[2] ?? 0, least)) return `Executed net is ${String(widths[2])} px; its least width is ${String(least)} px`
       if (await ui.value<number>(`__ui.misalignment(document.querySelector('${TRADING_GRID} table'))`) > 1) return 'headers and cells are not aligned after resizing'
       await ui.click('#panel-trading .panel-actions > button')
       await ui.value(`document.querySelector('${TRADING_GRID}').scrollTop = 0`)
@@ -1355,7 +1391,7 @@ function benchmarkChecks(screenshots: string[], outDir: string): Check[] {
       await ui.page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 })
       await ui.page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 })
       await chooseDetails(ui, target)
-      const requests = (await ui.value<string[]>('__ui.requests("symbolMatch")')).slice(-3)
+      const requests = (await ui.value<string[]>('__ui.requests("page[?]symbol=")')).slice(-3)
       const want = [last, focused, target].map((symbol) => detailRequest(symbol, 1, 25))
       return requests.join() === want.join() ? undefined : `requests ${requests.join(', ')}`
     }],
@@ -1364,7 +1400,7 @@ function benchmarkChecks(screenshots: string[], outDir: string): Check[] {
       await settle(ui, MASTER_GRID)
       await ui.click(`${MASTER} tbody tr:nth-child(${String(symbols.indexOf('MSFT') + 1)}) th`)
       await chooseDetails(ui, 'MSFT')
-      const count = perSymbol.get('MSFT') ?? 0
+      const count = listedCount('MSFT')
       const pages = Math.ceil(count / 25)
       if (count <= 100) return `MSFT has only ${String(count)} trades in the benchmark`
       await openDetailsColumn(ui, 'symbol')
@@ -1385,7 +1421,7 @@ function benchmarkChecks(screenshots: string[], outDir: string): Check[] {
       const prices = (await ui.value<string[]>(`__ui.detailRows().map((row) => row.querySelector('td.price .money').dataset.exact.replace(/,/g, ''))`)).map((text) => new Dec(text))
       const lowest = trades.filter((trade) => trade.symbol === 'MSFT').map((trade) => trade.price).sort((a, b) => a.comparedTo(b)).slice(0, 25)
       if (prices.map((price) => price.toFixed()).join() !== lowest.map((price) => price.toFixed()).join()) return `the first page by price is not MSFT's 25 lowest prices: ${prices.slice(0, 3).map((price) => price.toFixed()).join(', ')}…`
-      const request = (await ui.value<string[]>('__ui.requests("symbolMatch")')).at(-1)
+      const request = (await ui.value<string[]>('__ui.requests("page[?]symbol=")')).at(-1)
       return request === detailRequest('MSFT', 1, 25, '&sortBy=price&sortDirection=asc') ? undefined : `request ${String(request)}`
     }],
     ...([1280, 768, 390] as const).map((width): Check => [`Benchmark data at ${String(width)} px: both Positions grids read "Total: ${String(symbols.length)} positions", every open position however many rows are in view, readable just above the grid`, async (ui) => {
@@ -1414,34 +1450,37 @@ function benchmarkChecks(screenshots: string[], outDir: string): Check[] {
     ['Benchmark data: Show all columns, by keyboard, in the Trading Positions grid, the Open positions grid and Trade Details: every column back in its place with its width, boxes and count updated, the list open with focus kept, then unavailable; Restore default columns hides Trade Details\' default-hidden columns again', async (ui) => {
       await ui.viewport(1280)
       await ui.click('#tab-trading')
-      const all = ['Symbol', 'Direction', 'Net quantity', 'Average cost']
-      const trading = await showAllIn(ui, '#panel-trading section.positions-panel', { widen: 'Direction', hide: ['direction', 'netQuantity'], all, defaults: all })
+      // The Positions grids have four columns, all shown by default: Show all brings back only those hidden by hand,
+      // never the deferred Pending or Projected net.
+      const all = ['Symbol', 'Direction', 'Executed net', 'Average cost']
+      const defaults = all
+      const trading = await showAllIn(ui, '#panel-trading section.positions-panel', { widen: 'Direction', hide: ['direction', 'netQuantity'], all, defaults })
       if (trading !== undefined) return `Trading: ${trading}`
       await ui.click('#tab-details')
-      const master = await showAllIn(ui, MASTER, { widen: 'Average cost', hide: ['averageCost', 'direction'], all, defaults: all })
+      const master = await showAllIn(ui, MASTER, { widen: 'Average cost', hide: ['averageCost', 'direction'], all, defaults })
       if (master !== undefined) return `Open positions: ${master}`
       if (await ui.value<string>('__ui.detailState().heading') !== 'Trade Details: MSFT') return 'MSFT is no longer chosen'
       const details = await showAllIn(ui, DETAILS, {
         widen: 'Price', hide: ['side'],
-        all: ['Executed at', 'Side', 'Quantity', 'Price', 'Notional', 'Symbol', 'Created at', 'Updated at', 'Booking sequence', 'Trade ID'],
-        defaults: ['Executed at', 'Side', 'Quantity', 'Price', 'Notional'],
+        all: ['Actions', 'Executed at', 'Side', 'Status', 'Quantity', 'Price', 'Notional', 'Symbol', 'Created at', 'Updated at', 'Booking sequence', 'Trade ID'],
+        defaults: ['Actions', 'Executed at', 'Side', 'Status', 'Quantity', 'Price', 'Notional'],
         picture: join(outDir, 'ui-1280-benchmark-show-all-columns.png'),
       })
       if (details !== undefined) return `Trade Details: ${details}`
       screenshots.push(join(outDir, 'ui-1280-benchmark-show-all-columns.png'))
-      const requests = await ui.value<string[]>('__ui.requests("symbolMatch")')
+      const requests = await ui.value<string[]>('__ui.requests("page[?]symbol=")')
       return requests.at(-1) === detailRequest('MSFT', 1, 25, '&sortBy=price&sortDirection=asc') ? undefined : `showing columns sent ${String(requests.at(-1))}`
     }],
     ['Benchmark data: Restore default columns, by keyboard, in the Trading Positions grid, the Open positions grid and Trade Details: aria-disabled at the defaults and still focusable, Enter and Space then do nothing; Space restores the defaults (Trade Details\' hidden ones hidden again) and focus stays on it; Escape then closes the list and returns to Columns', async (ui) => {
       await ui.viewport(1280)
       await ui.click('#tab-trading')
-      const positions = ['Symbol', 'Direction', 'Net quantity', 'Average cost']
+      const positions = ['Symbol', 'Direction', 'Executed net', 'Average cost']
       const trading = await restoreIn(ui, '#panel-trading section.positions-panel', { change: ['direction', 'averageCost'], defaults: positions })
       if (trading !== undefined) return `Trading: ${trading}`
       await ui.click('#tab-details')
       const master = await restoreIn(ui, MASTER, { change: ['netQuantity'], defaults: positions })
       if (master !== undefined) return `Open positions: ${master}`
-      const details = await restoreIn(ui, DETAILS, { change: ['side'], showAll: true, defaults: ['Executed at', 'Side', 'Quantity', 'Price', 'Notional'] })
+      const details = await restoreIn(ui, DETAILS, { change: ['side'], showAll: true, defaults: ['Actions', 'Executed at', 'Side', 'Status', 'Quantity', 'Price', 'Notional'] })
       if (details !== undefined) return `Trade Details: ${details}`
       return (await ui.value<string>('__ui.detailState().heading')) === 'Trade Details: MSFT' ? undefined : 'MSFT is no longer chosen'
     }],
@@ -1474,7 +1513,7 @@ function benchmarkChecks(screenshots: string[], outDir: string): Check[] {
           headers: __ui.detailHeaders(),
         })`)
         if (fit.open) problems.push('the Columns list did not close')
-        if (fit.headers.join('|') !== 'Executed at|Side|Quantity|Price|Notional') problems.push(`details columns ${fit.headers.join(', ')}`)
+        if (fit.headers.join('|') !== 'Actions|Executed at|Side|Status|Quantity|Price|Notional') problems.push(`details columns ${fit.headers.join(', ')}`)
         // The panel's padding (2 × 18 px) and border, around the grid's box.
         if (fit.master > fit.masterGrid + 40) problems.push(`the master panel is ${String(Math.round(fit.master))} px wide for a ${String(Math.round(fit.masterGrid))} px grid`)
         if (!near(fit.detailsRight, fit.row, 1)) problems.push('the details do not reach the end of the row')
@@ -1509,6 +1548,377 @@ async function openDetailsColumn(ui: Driver, key: string): Promise<void> {
 }
 
 /** Runs every check in one page; a check that fails is reported and the next one runs. */
+// ---------------------------------------------------------------------------------------------
+// The trade lifecycle (M5): booking Pending, statuses, cancelling, the nets and the audit history
+
+/** Lets the lifecycle checks hold back chosen API answers, and reach the API behind the page's back. */
+export interface LifecycleControl {
+  delayFor: (url: URL, method: string) => number
+  /** The frontend's address, which forwards the API's paths. */
+  url: string
+}
+
+const HISTORY = 'section[aria-labelledby="blotter-heading"]'
+const DIALOG = '[role="dialog"]'
+const historyRow = (id: string): string => `${HISTORY} tbody tr[data-trade-id="${id}"]`
+const detailRow = (id: string): string => `${DETAILS} tbody tr[data-trade-id="${id}"]`
+/** The page's own requests, recorded with their bodies (performance entries have no body). */
+const RECORD_REQUESTS = `(() => { if (!window.__sent) { window.__sent = []; const send = window.fetch.bind(window)
+  window.fetch = (url, options) => { window.__sent.push({ url: String(url), method: (options && options.method) || 'GET', body: options && options.body }); return send(url, options) } } return true })()`
+const sent = (ui: Driver, pattern: string): Promise<{ url: string; method: string; body?: string }[]> =>
+  ui.value(`window.__sent.filter((request) => new RegExp(${JSON.stringify(pattern)}).test(request.method + ' ' + request.url))`)
+const positionCells = (symbol: string): string => `(() => { const row = [...document.querySelectorAll('#panel-trading .positions-table tbody tr')].find((r) => r.cells[0].textContent.trim() === ${JSON.stringify(symbol)})
+  return row ? [...row.cells].map((cell) => __ui.seen(cell)).join('|') : undefined })()`
+const historyIdle = `!document.querySelector('${HISTORY} [aria-busy="true"]') && !/Loading trades|Updating trades/.test(document.querySelector('${HISTORY} .list-status')?.textContent ?? '')`
+const dialogOpen = `!!document.querySelector('${DIALOG}')`
+
+/**
+ * Waits for a condition like Driver.until, but without its rule that any alert on the page is a
+ * failure: for a check that expects the dialog's own alert (a refused cancellation).
+ */
+async function poll(ui: Driver, expression: string, what: string): Promise<void> {
+  const deadline = Date.now() + TIMEOUT_MS
+  while (!(await ui.value<boolean>(`!!(${expression})`))) {
+    if (Date.now() > deadline) throw new Error(`waited for ${what}: timed out`)
+    await sleep(50)
+  }
+  await ui.frame()
+}
+
+function lifecycleChecks(screenshots: string[], outDir: string, control: LifecycleControl): Check[] {
+  const ids = UI_LIFECYCLE
+  return [
+    ['Lifecycle: booking is always Pending: the form offers no status and no execution time, the booking is sent with neither, and the new symbol appears in the positions as Flat, with no actual position', async (ui) => {
+      await ui.viewport(1280)
+      await ui.value(RECORD_REQUESTS)
+      await ui.click('#tab-trading')
+      const form = await ui.value<{ status: boolean; time: boolean; hint: string }>(`({ status: !!document.querySelector('input[name="status"]'), time: !!document.getElementById('trade-executed-at'),
+        hint: document.getElementById('trade-booking-hint')?.textContent.trim() ?? '' })`)
+      if (form.status || form.time) return `the form offers a status ${String(form.status)}, an execution time ${String(form.time)}`
+      if (!form.hint.startsWith('Every trade is booked as Pending, with no execution time.')) return `the form's hint: ${form.hint}`
+      await ui.type('#trade-symbol', 'newp')
+      await ui.click('#trade-side-buy')
+      await ui.type('#trade-quantity', '10')
+      await ui.type('#trade-price', '5.505')
+      await ui.click('section[aria-labelledby="trade-form-heading"] button[type="submit"]')
+      await ui.until(`document.querySelector('section[aria-labelledby="trade-form-heading"] .alert-success')`, 'the booking to be confirmed')
+      const message = await ui.value<string>(`document.querySelector('section[aria-labelledby="trade-form-heading"] .alert-success').textContent.trim()`)
+      if (!message.startsWith('Booked as Pending: Buy 10 NEWP at 5.505. Execute it from Trade History or Trade Details;')) return `the confirmation says: ${message}`
+      const posts = await sent(ui, '^POST /trades$')
+      if (posts.length !== 1 || posts[0]?.body !== '{"symbol":"newp","side":"Buy","quantity":"10","price":"5.505"}') return `sent ${JSON.stringify(posts)}`
+      await ui.until(`${positionCells('NEWP')} !== undefined`, 'the new position')
+      const row = await ui.value<string>(positionCells('NEWP'))
+      return row === 'NEWP|Flat|0|0.00' ? undefined : `the position shows ${row}`
+    }],
+    ['Lifecycle: the Positions grid shows the actual position of each symbol, the Executed net and the average cost from Executed trades only (to 2 places, half to even), and a symbol with only Pending trades as Flat; Pending and Cancelled trades count in neither; the Pending and Projected net appear nowhere, not even in Columns', async (ui) => {
+      const rows = await ui.value<(string | undefined)[]>(`[${['LIFE', 'PEND', 'EXEC'].map(positionCells).join(', ')}]`)
+      // LIFE: Executed 100 at 10.125; its Pending and cancelled trades count for nothing here.
+      const want = ['LIFE|Long|100|10.12', 'PEND|Flat|0|0.00', 'EXEC|Short|-50|30.33']
+      if (rows.join() !== want.join()) return `rows ${rows.join(', ')}, expected ${want.join(', ')}`
+      // The deferred Pending and Projected net: in no grid, Columns list, caption, tooltip or hint on any tab.
+      await ui.click('#panel-trading .column-chooser > button')
+      const offered = await ui.value<string[]>(`[...document.querySelectorAll('#panel-trading .column-chooser-panel input[type="checkbox"]')].map((box) => box.dataset.column)`)
+      await ui.press('Escape')
+      if (offered.join() !== 'symbol,direction,netQuantity,averageCost') return `Columns offers ${offered.join(', ')}`
+      const named = await ui.value<boolean>(`/Pending net|Projected net|pending-net|projected-net/i.test(document.body.innerHTML)`)
+      return named ? 'the page names the Pending or Projected net' : undefined
+    }],
+    ['Lifecycle: Trade History lists each logical trade once with its status in words, a dash for no execution time and the reason of a cancelled trade; every row has only its details and History buttons, first, and only a Pending trade\'s dialog offers Execute and Cancel', async (ui) => {
+      await ui.click('#tab-history')
+      await ui.click('.trade-filters button[type="button"]')
+      await ui.until(historyIdle, 'the trade list')
+      const state = await ui.value<{ total: string; rows: { id: string; status: string; executed: string; buttons: string[]; first: boolean; title: string | null; shape: string }[] }>(`({
+        total: document.querySelector('${HISTORY} nav.pager .pager-range')?.textContent.trim() ?? '',
+        rows: [...document.querySelectorAll('${HISTORY} tbody tr')].map((row) => ({ id: row.dataset.tradeId, status: __ui.seen(row.querySelector('td.status')),
+          executed: row.querySelector('td.executed').textContent.trim(), buttons: [...row.querySelectorAll('button')].map((b) => b.className), first: row.cells[0].querySelectorAll('button.trade-details, button.show-history').length === 2,
+          title: row.querySelector('.status-badge').getAttribute('title'), shape: getComputedStyle(row.querySelector('.status-badge')).borderStyle + ' ' + getComputedStyle(row.querySelector('.status-badge')).textDecorationLine })),
+      })`)
+      const total = UI_LIFECYCLE_LOGICAL_TRADES + 1
+      if (state.total !== `1–${String(total)} of ${String(total)} trades`) return `the list counts "${state.total}"`
+      if (state.rows.some((row) => row.id === ids.lifeCancellationRecord)) return 'the cancellation record is listed as a trade'
+      for (const row of state.rows) {
+        const executed = row.id === ids.lifeExecuted || row.id === ids.execOnly
+        const want = executed ? 'Executed' : row.id === ids.lifeCancelled ? 'Cancelled' : 'Pending'
+        if (row.status !== want) return `${row.id}: status ${row.status}, expected ${want}`
+        if (!executed && row.executed !== '—') return `${row.id}: execution time "${row.executed}", expected a dash`
+        if (row.buttons.length !== 2 || !row.buttons[0]?.split(' ').includes('trade-details') || !row.buttons[1]?.split(' ').includes('show-history') || !row.first) return `${row.id}: the row's buttons are ${row.buttons.join(', ')} (both in the first cell: ${String(row.first)})`
+      }
+      const cancelled = state.rows.find((row) => row.id === ids.lifeCancelled)
+      if (cancelled?.title !== 'Reason: Booked in error') return `the cancelled trade's tooltip: ${String(cancelled?.title)}`
+      const shapes = new Set(state.rows.map((row) => `${row.status}: ${row.shape}`))
+      if (shapes.size !== 3) return `the three statuses are not drawn apart: ${[...shapes].join('; ')}`
+      // Execute and Cancel are offered in the dialog of a Pending trade only.
+      for (const [id, offered] of [[ids.lifePending3, true], [ids.lifeExecuted, false], [ids.lifeCancelled, false]] as const) {
+        await ui.click(`${historyRow(id)} button.trade-details`)
+        await ui.until(dialogOpen, 'the trade dialog')
+        const dialog = await ui.value<{ execute: boolean; cancel: boolean; reason: boolean; buttons: string[] }>(`({ execute: !!document.querySelector('${DIALOG} button.confirm-execution'),
+          cancel: !!document.querySelector('${DIALOG} button.confirm-cancellation'), reason: !!document.getElementById('trade-reason'), buttons: [...document.querySelectorAll('${DIALOG} .dialog-actions button')].map((b) => b.textContent.trim()) })`)
+        await ui.press('Escape')
+        await ui.until(`!${dialogOpen}`, 'the dialog to close')
+        const want = offered ? 'Execute,Cancel trade,Keep Pending' : 'Close'
+        if (dialog.execute !== offered || dialog.cancel !== offered || dialog.reason !== offered || dialog.buttons.join() !== want) return `${id}: the dialog offers ${dialog.buttons.join(', ')} (reason field ${String(dialog.reason)})`
+      }
+      return (await sent(ui, '/(execution|cancellation)$')).length === 0 ? undefined : 'opening a dialog sent an action'
+    }],
+    ['Lifecycle: the details button, by keyboard, opens a modal trade dialog with focus on Keep Pending and the page behind inert; Cancel trade without a reason sends nothing and says why; Tab stays in the dialog; Escape closes it, sends nothing, and focus returns to the details button', async (ui) => {
+      await ui.value(`document.querySelector('${historyRow(ids.lifePending3)} button.trade-details').focus()`)
+      await ui.press('Enter')
+      await ui.until(dialogOpen, 'the dialog')
+      const open = await ui.value<{ modal: string | null; heading: string; keep: boolean; inert: boolean; focus: string | undefined; text: string }>(`({
+        modal: document.querySelector('${DIALOG}').getAttribute('aria-modal'), heading: document.getElementById('trade-dialog-heading')?.textContent.trim() ?? '',
+        keep: document.activeElement?.classList.contains('keep-pending') === true, inert: document.querySelector('main').inert,
+        focus: __ui.focusShown(), text: document.querySelector('${DIALOG} .trade-dialog-summary').textContent })`)
+      if (open.modal !== 'true' || open.heading !== 'Trade details' || !open.keep || !open.inert) return `dialog: aria-modal ${String(open.modal)}, heading "${open.heading}", focus on Keep Pending ${String(open.keep)}, page inert ${String(open.inert)}`
+      if (open.focus !== undefined) return `Keep Pending's focus: ${open.focus}`
+      if (!open.text.includes('Buy 2 LIFE at 10.00') || !open.text.includes(ids.lifePending3)) return `the dialog describes ${open.text}`
+      await ui.value(`document.getElementById('trade-reason').focus()`)
+      await ui.press('Enter')
+      const error = await ui.value<{ text: string | undefined; focused: string }>(`({ text: document.getElementById('trade-reason-error')?.textContent.trim(), focused: document.activeElement.id })`)
+      if (error.text !== 'Enter a reason for the cancellation.' || error.focused !== 'trade-reason') return `without a reason: ${String(error.text)}, focus on ${error.focused}`
+      // Tab moves through the dialog's controls and wraps, never reaching the page behind.
+      for (let press = 0; press < 6; press++) {
+        await ui.press('Tab')
+        if (!(await ui.value<boolean>(`document.querySelector('${DIALOG}').contains(document.activeElement)`))) return `Tab ${String(press + 1)} left the dialog`
+      }
+      await ui.press('Escape')
+      const closed = await ui.value<{ open: boolean; focused: boolean; inert: boolean }>(`({ open: ${dialogOpen}, focused: document.activeElement === document.querySelector('${historyRow(ids.lifePending3)} button.trade-details'), inert: document.querySelector('main').inert })`)
+      if (closed.open || !closed.focused || closed.inert) return `after Escape: open ${String(closed.open)}, focus back ${String(closed.focused)}, page inert ${String(closed.inert)}`
+      return (await sent(ui, '/cancellation')).length === 0 ? undefined : 'a cancellation was sent'
+    }],
+    ['Lifecycle: cancelling with a reason in the trade dialog sends one request with only the reason, even when Cancel trade is pressed twice while it is on its way; the trade shows Cancelled, the outcome names the cancellation record and Admin, and a symbol with only that Pending trade leaves the positions', async (ui) => {
+      control.delayFor = (url, method) => method === 'POST' && url.pathname.endsWith('/cancellation') ? 1200 : 0
+      await ui.click(`${historyRow(ids.pendOnly)} button.trade-details`)
+      await ui.until(dialogOpen, 'the dialog')
+      await ui.type('#trade-reason', '  Client withdrew  ')
+      await ui.press('Enter')
+      await ui.press('Enter')
+      const busy = await ui.value<{ disabled: boolean; text: string; others: boolean }>(`({ disabled: document.querySelector('${DIALOG} button.confirm-cancellation').disabled, text: document.querySelector('${DIALOG} button.confirm-cancellation').textContent.trim(),
+        others: document.querySelector('${DIALOG} button.confirm-execution').disabled && document.querySelector('${DIALOG} button.keep-pending').disabled && document.querySelector('${DIALOG} button.dialog-close').disabled })`)
+      control.delayFor = () => 0
+      if (!busy.disabled || busy.text !== 'Cancelling…' || !busy.others) return `while sending, Cancel trade is ${busy.disabled ? 'disabled' : 'enabled'} and reads "${busy.text}"; the other buttons disabled ${String(busy.others)}`
+      await ui.until(`!${dialogOpen} && document.getElementById('history-cancellation-outcome')`, 'the cancellation to finish')
+      const posts = await sent(ui, '^POST .*/cancellation$')
+      if (posts.length !== 1 || posts[0]?.url !== `/trades/${ids.pendOnly}/cancellation` || posts[0].body !== '{"reason":"Client withdrew"}') return `sent ${JSON.stringify(posts)}`
+      const outcome = await ui.value<{ text: string; focused: boolean }>(`({ text: document.getElementById('history-cancellation-outcome').textContent.trim(), focused: document.activeElement === document.querySelector('${historyRow(ids.pendOnly)} button.trade-details') })`)
+      if (!/^Cancelled: Buy 7 PEND at 20\.00\. Reason: Client withdrew\. Cancellation record [0-9a-f-]{36}, recorded by Admin\.$/.test(outcome.text)) return `the outcome says: ${outcome.text}`
+      if (!outcome.focused) return 'focus did not return to the trade\'s details button'
+      await ui.until(`${historyIdle} && __ui.seen(document.querySelector('${historyRow(ids.pendOnly)} td.status')) === 'Cancelled'`, 'the trade shown as Cancelled')
+      await ui.click('#tab-trading')
+      await ui.until(`${positionCells('PEND')} === undefined`, 'PEND to leave the positions')
+      return undefined
+    }],
+    ['Lifecycle: a trade cancelled elsewhere meanwhile (409): the trade dialog says it is already cancelled, offers only Close, and the trade list is refreshed to show it Cancelled (the browser\'s own log line for that 409 response is expected, and set aside)', async (ui) => {
+      const behind = await fetch(new URL(`trades/${ids.lifePending2}/cancellation`, control.url), { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"reason":"Cancelled elsewhere"}' })
+      if (behind.status !== 201) return `the cancellation behind the page's back answered ${String(behind.status)}`
+      await ui.click('#tab-history')
+      if (await ui.value<string>(`__ui.seen(document.querySelector('${historyRow(ids.lifePending2)} td.status'))`) !== 'Pending') return 'the list already showed the trade cancelled'
+      await ui.click(`${historyRow(ids.lifePending2)} button.trade-details`)
+      await ui.until(dialogOpen, 'the dialog')
+      await ui.type('#trade-reason', 'Too late')
+      await ui.press('Enter')
+      await poll(ui, `document.querySelector('${DIALOG} [role="alert"]')`, 'the refusal')
+      // Chrome logs every 4xx response as a console error; this one was provoked on purpose. Only it is removed.
+      const expected = ui.page.consoleErrors.findIndex((line) => line.includes('409') && line.includes(`/trades/${ids.lifePending2}/cancellation`))
+      if (expected < 0) return 'the browser did not log the 409 response, so the request may not have been sent'
+      ui.page.consoleErrors.splice(expected, 1)
+      const state = await ui.value<{ alert: string; confirm: boolean; buttons: string[] }>(`({ alert: document.querySelector('${DIALOG} [role="alert"]').textContent.trim(),
+        confirm: !!document.querySelector('${DIALOG} button[type="submit"]'), buttons: [...document.querySelectorAll('${DIALOG} .dialog-actions button')].map((b) => b.textContent.trim()) })`)
+      if (state.alert !== `The trade was not cancelled. Trade ${ids.lifePending2} is already cancelled. The lists have been refreshed.`) return `the dialog says: ${state.alert}`
+      if (state.confirm || state.buttons.join() !== 'Close') return `buttons ${state.buttons.join(', ')}`
+      await poll(ui, `${historyIdle} && __ui.seen(document.querySelector('${historyRow(ids.lifePending2)} td.status')) === 'Cancelled'`, 'the list to show the trade Cancelled')
+      await ui.press('Escape')
+      return (await ui.value<boolean>(dialogOpen)) ? 'the dialog did not close' : undefined
+    }],
+    ['Lifecycle: the trade dialog of a Pending trade, by keyboard, describes the trade with focus on Keep Pending and the page behind inert; Tab stays in the dialog; the close button closes it, sends nothing, and focus returns to the details button', async (ui) => {
+      await ui.click('#tab-history')
+      await ui.until(historyIdle, 'the trade list')
+      await ui.value(`document.querySelector('${historyRow(ids.lifeToExecute)} button.trade-details').focus()`)
+      await ui.press('Enter')
+      await ui.until(dialogOpen, 'the dialog')
+      const open = await ui.value<{ modal: string | null; heading: string; keep: boolean; inert: boolean; focus: string | undefined; text: string; intro: string }>(`({
+        modal: document.querySelector('${DIALOG}').getAttribute('aria-modal'), heading: document.getElementById('trade-dialog-heading')?.textContent.trim() ?? '',
+        keep: document.activeElement?.classList.contains('keep-pending') === true, inert: document.querySelector('main').inert,
+        focus: __ui.focusShown(), text: document.querySelector('${DIALOG} .trade-dialog-summary').textContent, intro: document.getElementById('trade-dialog-intro').textContent })`)
+      if (open.modal !== 'true' || open.heading !== 'Trade details' || !open.keep || !open.inert) return `dialog: aria-modal ${String(open.modal)}, heading "${open.heading}", focus on Keep Pending ${String(open.keep)}, page inert ${String(open.inert)}`
+      if (open.focus !== undefined) return `Keep Pending's focus: ${open.focus}`
+      if (!open.text.includes('Buy 4 LIFE at 10.50') || !open.text.includes(ids.lifeToExecute) || !open.intro.includes('recorded by User')) return `the dialog describes ${open.text}; ${open.intro}`
+      for (let press = 0; press < 3; press++) {
+        await ui.press('Tab')
+        if (!(await ui.value<boolean>(`document.querySelector('${DIALOG}').contains(document.activeElement)`))) return `Tab ${String(press + 1)} left the dialog`
+      }
+      await ui.click(`${DIALOG} button.dialog-close`)
+      await ui.until(`!${dialogOpen}`, 'the dialog to close')
+      const closed = await ui.value<{ open: boolean; focused: boolean; inert: boolean }>(`({ open: ${dialogOpen}, focused: document.activeElement === document.querySelector('${historyRow(ids.lifeToExecute)} button.trade-details'), inert: document.querySelector('main').inert })`)
+      if (closed.open || !closed.focused || closed.inert) return `after the close button: open ${String(closed.open)}, focus back ${String(closed.focused)}, page inert ${String(closed.inert)}`
+      return (await sent(ui, '/execution')).length === 0 ? undefined : 'an execution was sent'
+    }],
+    ['Lifecycle: Execute in the trade dialog sends one request with no body, even when pressed twice while it is on its way; the trade shows Executed with its execution time, its dialog offers no Execute or Cancel, the outcome says so, and the Executed net and average cost of LIFE change in the positions', async (ui) => {
+      control.delayFor = (url, method) => method === 'POST' && url.pathname.endsWith('/execution') ? 1200 : 0
+      await ui.value(`document.querySelector('${historyRow(ids.lifeToExecute)} button.trade-details').focus()`)
+      await ui.press('Enter')
+      await ui.until(dialogOpen, 'the dialog')
+      await ui.value(`document.querySelector('${DIALOG} button.confirm-execution').focus()`)
+      await ui.press('Enter')
+      await ui.press('Enter')
+      const busy = await ui.value<{ disabled: boolean; text: string; keep: boolean }>(`({ disabled: document.querySelector('${DIALOG} button.confirm-execution').disabled, text: document.querySelector('${DIALOG} button.confirm-execution').textContent.trim(), keep: document.querySelector('${DIALOG} button.keep-pending').disabled })`)
+      control.delayFor = () => 0
+      if (!busy.disabled || busy.text !== 'Executing…' || !busy.keep) return `while sending, Execute is ${busy.disabled ? 'disabled' : 'enabled'} and reads "${busy.text}"; Keep Pending disabled ${String(busy.keep)}`
+      await ui.until(`!${dialogOpen} && document.getElementById('history-execution-outcome')`, 'the execution to finish')
+      const posts = await sent(ui, '^POST .*/execution$')
+      if (posts.length !== 1 || posts[0]?.url !== `/trades/${ids.lifeToExecute}/execution` || (posts[0].body ?? '') !== '') return `sent ${JSON.stringify(posts)}`
+      const outcome = await ui.value<{ text: string; focused: boolean }>(`({ text: document.getElementById('history-execution-outcome').textContent.trim(), focused: document.activeElement === document.querySelector('${historyRow(ids.lifeToExecute)} button.trade-details') })`)
+      if (outcome.text !== 'Executed: Buy 4 LIFE at 10.50, recorded by User. It now counts in the Executed net and average cost.') return `the outcome says: ${outcome.text}`
+      if (!outcome.focused) return 'focus did not return to the trade\'s details button'
+      await ui.until(`${historyIdle} && __ui.seen(document.querySelector('${historyRow(ids.lifeToExecute)} td.status')) === 'Executed'`, 'the trade shown as Executed')
+      const row = await ui.value<{ executed: string; buttons: number }>(`({ executed: document.querySelector('${historyRow(ids.lifeToExecute)} td.executed').textContent.trim(), buttons: document.querySelectorAll('${historyRow(ids.lifeToExecute)} td.actions button:not(.trade-details):not(.show-history)').length })`)
+      if (row.executed === '—' || !/^\d{4}-\d{2}-\d{2} \d\d:\d\d:\d\d/.test(row.executed)) return `the execution time shows "${row.executed}"`
+      if (row.buttons !== 0) return `the Executed trade's row offers ${String(row.buttons)} action(s) besides its details and History buttons`
+      await ui.click(`${historyRow(ids.lifeToExecute)} button.trade-details`)
+      await ui.until(dialogOpen, 'its trade dialog')
+      const offered = await ui.value<string[]>(`[...document.querySelectorAll('${DIALOG} .dialog-actions button')].map((b) => b.textContent.trim())`)
+      await ui.press('Escape')
+      if (offered.join() !== 'Close') return `the Executed trade's dialog offers ${offered.join(', ')}`
+      await ui.click('#tab-trading')
+      // 100 at 10.125 and 4 at 10.5: 104 at 10.1394…, 10.14 to 2 places.
+      await ui.until(`${positionCells('LIFE')} === 'LIFE|Long|104|10.14'`, 'LIFE at 104')
+      return undefined
+    }],
+    ['Lifecycle: a trade executed elsewhere meanwhile (409): the trade dialog says it is already executed, offers only Close, and the trade list is refreshed to show it Executed (the browser\'s own log line for that 409 response is expected, and set aside)', async (ui) => {
+      const behind = await fetch(new URL(`trades/${ids.lifeRace}/execution`, control.url), { method: 'POST' })
+      if (behind.status !== 200) return `the execution behind the page's back answered ${String(behind.status)}`
+      await ui.click('#tab-history')
+      if (await ui.value<string>(`__ui.seen(document.querySelector('${historyRow(ids.lifeRace)} td.status'))`) !== 'Pending') return 'the list already showed the trade executed'
+      await ui.click(`${historyRow(ids.lifeRace)} button.trade-details`)
+      await ui.until(dialogOpen, 'the dialog')
+      await ui.click(`${DIALOG} button.confirm-execution`)
+      await poll(ui, `document.querySelector('${DIALOG} [role="alert"]')`, 'the refusal')
+      const expected = ui.page.consoleErrors.findIndex((line) => line.includes('409') && line.includes(`/trades/${ids.lifeRace}/execution`))
+      if (expected < 0) return 'the browser did not log the 409 response, so the request may not have been sent'
+      ui.page.consoleErrors.splice(expected, 1)
+      const state = await ui.value<{ alert: string; confirm: boolean; buttons: string[] }>(`({ alert: document.querySelector('${DIALOG} [role="alert"]').textContent.trim(),
+        confirm: !!document.querySelector('${DIALOG} button.confirm-execution'), buttons: [...document.querySelectorAll('${DIALOG} .dialog-actions button')].map((b) => b.textContent.trim()) })`)
+      if (state.alert !== `The trade was not executed. Trade ${ids.lifeRace} is already executed. The lists have been refreshed.`) return `the dialog says: ${state.alert}`
+      if (state.confirm || state.buttons.join() !== 'Close') return `buttons ${state.buttons.join(', ')}`
+      await poll(ui, `${historyIdle} && __ui.seen(document.querySelector('${historyRow(ids.lifeRace)} td.status')) === 'Executed'`, 'the list to show the trade Executed')
+      await ui.press('Escape')
+      return (await ui.value<boolean>(dialogOpen)) ? 'the dialog did not close' : undefined
+    }],
+    ['Lifecycle: Positions & Trade Details: the chosen symbol shows its actual position; every row has only an edit and a History button, first, and the edit dialog offers Execute and Cancel only for a Pending trade; Cancel a Pending trade lists each of its Pending trades with side, quantity, price, time booked and id; the one chosen is cancelled, the actual position is unchanged, and the grid and the positions are refreshed', async (ui) => {
+      await ui.click('#tab-details')
+      await ui.click(`${MASTER} tbody tr:nth-child(${String(1 + (await ui.value<number>(`__ui.masterRows().findIndex((row) => row.cells[0].textContent.trim() === 'LIFE')`)))}) th`)
+      await ui.until(`__ui.detailsIdle() && __ui.detailState().heading === 'Trade Details: LIFE'`, 'LIFE chosen')
+      const nets = () => ui.value<string>(`[...document.querySelectorAll('${DETAILS} .position-summary > div')].map((d) => d.querySelector('dt').textContent.trim() + ' ' + __ui.seen(d.querySelector('dd'))).join('|')`)
+      const before = await nets()
+      // 104 after the execution above, less the 1 sold behind the page's back: 103, still at 10.14.
+      if (!before.includes('Executed net 103|Average cost 10.14') || before.includes('Pending net') || before.includes('Projected net')) return `the summary shows ${before}`
+      const rows = await ui.value<{ id: string; status: string; buttons: string[] }[]>(`__ui.detailRows().map((row) => ({ id: row.dataset.tradeId, status: __ui.seen(row.querySelector('td.status')).split(',')[0],
+        buttons: [...row.cells[0].querySelectorAll('button')].map((b) => b.getAttribute('title')).concat([...row.querySelectorAll('button')].length === 2 ? [] : ['(more buttons in the row)']) }))`)
+      const extra = rows.find((row) => row.buttons.join() !== 'Edit,History')
+      if (extra !== undefined) return `a ${extra.status} trade's row offers ${extra.buttons.join(', ')}`
+      for (const status of ['Pending', 'Executed'] as const) {
+        const row = rows.find((candidate) => candidate.status === status)
+        if (row === undefined) return `LIFE has no ${status} trade`
+        await ui.click(`${detailRow(row.id)} button.trade-edit`)
+        await ui.until(dialogOpen, `the ${status} trade's dialog`)
+        const offered = await ui.value<string[]>(`[...document.querySelectorAll('${DIALOG} .dialog-actions button')].map((b) => b.textContent.trim())`)
+        await ui.press('Escape')
+        await ui.until(`!${dialogOpen}`, 'the dialog to close')
+        const want = status === 'Pending' ? 'Execute,Cancel trade,Keep Pending' : 'Close'
+        if (offered.join() !== want) return `the ${status} trade's dialog offers ${offered.join(', ')}`
+      }
+      await ui.click(`${DETAILS} button.cancel-pending`)
+      await ui.until(`document.querySelectorAll('${DIALOG} .cancel-choice').length > 0`, 'the Pending trades to choose from')
+      const choices = await ui.value<{ value: string; text: string }[]>(`[...document.querySelectorAll('${DIALOG} .cancel-choice')].map((c) => ({ value: c.querySelector('input').value, text: c.textContent.replace(/\\s+/g, ' ').trim() }))`)
+      if (choices.map((c) => c.value).sort().join() !== [ids.lifePending1, ids.lifePending3].sort().join()) return `choices ${choices.map((c) => c.value).join(', ')}`
+      const first = choices.find((c) => c.value === ids.lifePending1)
+      if (!first || !/^Buy 5 at 11\.26, exactly 11\.255, booked 2026-03-02 \d\d:\d\d:00\.000 UTC[−+]\d\d:\d\d, ID /.test(first.text)) return `the choice reads: ${String(first?.text)}`
+      await ui.type('#cancel-reason', 'Duplicate')
+      await ui.press('Enter')
+      const refused = await ui.value<string | undefined>(`document.getElementById('cancel-choice-error')?.textContent.trim()`)
+      if (refused !== 'Choose the trade to cancel.') return `with no trade chosen: ${String(refused)}`
+      await ui.click(`${DIALOG} input[value="${ids.lifePending1}"]`)
+      await ui.value(`document.querySelector('${DIALOG} button[type="submit"]').click()`)
+      await ui.until(`!${dialogOpen} && document.getElementById('details-cancellation-outcome') && __ui.detailsIdle()`, 'the cancellation to finish')
+      await ui.until(`__ui.seen(document.querySelector('${detailRow(ids.lifePending1)} td.status')) === 'Cancelled'`, 'the grid to show it Cancelled')
+      const after = await nets()
+      if (after !== before) return `after cancelling, the summary shows ${after}; before, ${before}`
+      await ui.click('#tab-trading')
+      const row = await ui.value<string>(positionCells('LIFE'))
+      await ui.click('#tab-details')
+      return row === 'LIFE|Long|103|10.14' ? undefined : `the Trading positions show ${row}`
+    }],
+    ['Lifecycle: the History button in Trade Details opens the trade dialog with the audit history of a cancelled trade: the original\'s entries and its cancellation record\'s in one timeline, oldest first: booked by User, cancelled by Admin, record created by Admin, every entry recorded by System; nothing offers to change an entry; Escape closes it and focus returns to the History button', async (ui) => {
+      await ui.click(`${detailRow(ids.lifePending1)} button.show-history`)
+      await ui.until(`${dialogOpen} && document.querySelectorAll('${DIALOG} .audit-table tbody tr').length === 3`, 'the audit history in the dialog')
+      const audit = await ui.value<{ what: string[]; by: string[]; ids: string[]; originals: string[]; statuses: string[]; created: string[]; updated: string[]; buttons: string[]; focused: string; requests: string[] }>(`(() => {
+        const rows = [...document.querySelectorAll('.audit-table tbody tr')], col = (cls) => rows.map((r) => __ui.seen(r.querySelector(cls)))
+        const cells = (i) => rows.map((r) => __ui.seen(r.cells[i]))
+        return { what: col('.audit-what'), by: col('.audit-by'), ids: cells(4), originals: cells(5), statuses: cells(6), created: col('.audit-created-by'), updated: col('.audit-updated-by'),
+          buttons: [...document.querySelectorAll('${DIALOG} .trade-dialog-audit button, ${DIALOG} .dialog-actions button')].map((b) => b.textContent.trim()), focused: document.activeElement.id, requests: __ui.requests('/audit') }
+      })()`)
+      const want = ['Trade booked by User as Pending', 'Trade cancelled by Admin', `Cancellation record created by Admin, for trade ${ids.lifePending1}`]
+      if (audit.what.join('|') !== want.join('|')) return `entries: ${audit.what.join(' | ')}`
+      if (audit.by.some((by) => by !== 'System')) return `recorded by ${audit.by.join(', ')}`
+      if (audit.ids[0] !== ids.lifePending1 || audit.ids[1] !== ids.lifePending1 || audit.ids[2] === ids.lifePending1 || audit.originals.join() !== `—,—,${ids.lifePending1}`) return `trade ids ${audit.ids.join(', ')}; originals ${audit.originals.join(', ')}`
+      if (audit.statuses.join() !== 'Pending,Cancelled,Cancelled' || audit.created.join() !== 'User,User,Admin' || audit.updated.join() !== 'User,Admin,Admin') return `statuses ${audit.statuses.join()}, created by ${audit.created.join()}, updated by ${audit.updated.join()}`
+      if (audit.buttons.join() !== 'Close') return `the dialog of a cancelled trade, with its audit history, offers ${audit.buttons.join(', ')}`
+      if (audit.focused !== 'trade-dialog-audit-heading') return `focus is on ${audit.focused}, not the audit history's heading`
+      if (audit.requests.at(-1) !== `/trades/${ids.lifePending1}/audit?scope=logical&page=1&pageSize=25`) return `asked ${String(audit.requests.at(-1))}`
+      if (await ui.value<boolean>(`!!document.querySelector('${DETAILS} .audit-history')`)) return 'an audit history is shown below the grid as well'
+      await ui.press('Escape')
+      await ui.until(`!${dialogOpen}`, 'the dialog to close')
+      return (await ui.value<boolean>(`document.activeElement === document.querySelector('${detailRow(ids.lifePending1)} button.show-history')`)) ? undefined : 'focus did not return to the History button'
+    }],
+    ['Lifecycle: a late audit answer for an earlier trade is dropped: the newest trade asked for is the one shown', async (ui) => {
+      control.delayFor = (url) => url.pathname === `/trades/${ids.lifePending3}/audit` ? 1500 : 0
+      await ui.click(`${detailRow(ids.lifePending3)} button.show-history`)
+      await ui.until(dialogOpen, 'the first trade\'s dialog')
+      await ui.press('Escape')
+      await ui.until(`!${dialogOpen}`, 'the dialog to close')
+      await ui.click(`${detailRow(ids.lifeExecuted)} button.show-history`)
+      await ui.until(`${dialogOpen} && document.querySelectorAll('${DIALOG} .audit-table tbody tr').length === 1`, 'the second trade\'s history')
+      await sleep(1700)
+      control.delayFor = () => 0
+      const shown = await ui.value<{ id: string; what: string[] }>(`({ id: [...document.querySelectorAll('${DIALOG} .trade-dialog-summary .trade-id')].at(-1)?.textContent.trim() ?? '', what: [...document.querySelectorAll('${DIALOG} .audit-table .audit-what')].map((c) => c.textContent.trim()) })`)
+      await ui.press('Escape')
+      if (!shown.id.endsWith(ids.lifeExecuted)) return `after the late answer, the dialog shows trade ${shown.id}`
+      return shown.what.join() === 'Trade booked by User as Executed' ? undefined : `entries ${shown.what.join(', ')}`
+    }],
+    ...UI_CHECK_WIDTHS.map((width): Check => [`Lifecycle at ${String(width)} px: the trade dialog, for a Pending trade and for an Executed one, fits the screen with no sideways page scrolling, its focus visible; Trade History's details button and Status are in view without scrolling the table sideways (a picture of each dialog)`, async (ui) => {
+      await ui.viewport(width)
+      await ui.click('#tab-history')
+      await ui.value('window.scrollTo(0, 0)')
+      const reach = await ui.value<{ statusRight: number; detailsRight: number; boxRight: number }>(`(() => { const row = document.querySelector('${historyRow(ids.lifePending3)}'), box = row.closest('.table-scroll').getBoundingClientRect()
+        return { statusRight: row.querySelector('td.status').getBoundingClientRect().right, detailsRight: row.querySelector('button.trade-details').getBoundingClientRect().right, boxRight: box.right } })()`)
+      // The details button is first, so it is in view at every size; at the wider sizes Status is too, as the page opens (at 390 px the table scrolls sideways in its own box).
+      if (reach.detailsRight > reach.boxRight + 0.5) return `the details button is past the table's edge: ${String(Math.round(reach.detailsRight))} > ${String(Math.round(reach.boxRight))}`
+      if (width > 390 && reach.statusRight > reach.boxRight + 0.5) return `Status is past the table's edge: ${String(Math.round(reach.statusRight))} > ${String(Math.round(reach.boxRight))}`
+      const fitOf = `(() => { const r = document.querySelector('${DIALOG}').getBoundingClientRect(); return { left: r.left, right: r.right, overflow: __ui.pageOverflow(), focus: __ui.focusShown() } })()`
+      const shots: { readonly id: string; readonly label: string; readonly file: string }[] = [
+        { id: ids.lifePending3, label: 'Pending', file: `ui-${String(width)}-lifecycle-dialog.png` },
+        { id: ids.lifeExecuted, label: 'Executed', file: `ui-${String(width)}-lifecycle-final-dialog.png` },
+      ]
+      const problems: string[] = []
+      for (const shot of shots) {
+        await ui.value(`document.querySelector('${historyRow(shot.id)} button.trade-details').focus()`)
+        await ui.press('Enter')
+        await ui.until(dialogOpen, `the ${shot.label} trade's dialog`)
+        const fit = await ui.value<{ left: number; right: number; overflow: number; focus: string | undefined }>(fitOf)
+        const file = join(outDir, shot.file)
+        await ui.screenshot(file, width)
+        screenshots.push(file)
+        await ui.press('Escape')
+        await ui.until(`!${dialogOpen}`, 'the dialog to close')
+        if (fit.left < 0 || fit.right > width) problems.push(`the ${shot.label} trade's dialog spans ${String(Math.round(fit.left))} to ${String(Math.round(fit.right))} px of ${String(width)}`)
+        if (fit.overflow > 0) problems.push(`with the ${shot.label} trade's dialog, the page scrolls sideways by ${String(fit.overflow)} px`)
+        if (fit.focus !== undefined) problems.push(`the ${shot.label} trade's dialog, focus: ${fit.focus}`)
+      }
+      if ((await sent(ui, '/execution')).length !== 2) problems.push('opening a trade dialog sent an execution')
+      return problems.length === 0 ? undefined : problems.join('\n')
+    }]),
+  ]
+}
+
 export async function runUiChecks(options: { readonly chrome: string; readonly outDir: string; readonly clientDist?: string; readonly onCheck?: (result: UiCheckResult) => void }): Promise<UiCheckRun> {
   const dist = options.clientDist ?? join(REPOSITORY_ROOT, 'client', 'dist')
   if (!existsSync(join(dist, 'index.html'))) throw new Error(`The built frontend is missing (${join(dist, 'index.html')}); run npm run build first.`)
@@ -1517,9 +1927,9 @@ export async function runUiChecks(options: { readonly chrome: string; readonly o
   const apps: { close(): Promise<void> }[] = []
   let browser: Browser | undefined
   /** The API on a database of its own, and the built frontend in front of it; both closed at the end. */
-  const serve = async (write: (path: string) => void, name: string, delayFor?: (url: URL) => number): Promise<string> => {
+  const serve = async (write: (path: string) => void | Promise<void>, name: string, delayFor?: (url: URL, method: string) => number): Promise<string> => {
     const databasePath = join(work, `${name}.db`)
-    write(databasePath)
+    await write(databasePath)
     const api = await createServer(loadConfig({ DATABASE_PATH: databasePath, LOG_LEVEL: 'fatal' }), { logger: false })
     apps.push({ close: () => api.close() })
     await api.listen({ host: '127.0.0.1', port: 0 })
@@ -1562,6 +1972,13 @@ export async function runUiChecks(options: { readonly chrome: string; readonly o
     await ui.viewport(1280)
     await open(page, ui, await serve(writeBenchmarkDatabase, 'ui-benchmark'), '#panel-trading .positions-table tbody tr', uiBenchmarkPositionCount())
     await run(benchmarkChecks(screenshots, options.outDir))
+
+    // The trade lifecycle: on its own dataset, with a server that can hold back chosen answers.
+    const lifecycle: LifecycleControl = { delayFor: () => 0, url: '' }
+    await ui.viewport(1280)
+    lifecycle.url = await serve(writeUiLifecycleDatabase, 'ui-lifecycle', (url, method) => lifecycle.delayFor(url, method))
+    await open(page, ui, lifecycle.url, '#panel-trading .positions-table tbody tr', 3)
+    await run(lifecycleChecks(screenshots, options.outDir, lifecycle))
 
     return { browser: options.chrome, product: browser.product, results, screenshots, consoleErrors: [...page.consoleErrors] }
   } finally {

@@ -8,12 +8,12 @@ import { createTradeService } from '../../src/application/trade-service.ts'
 import { loadConfig, type Config } from '../../src/config.ts'
 import { createServer } from '../../src/server.ts'
 import { createFixedClock, createSequentialIds } from './fixed-clock.ts'
-import { createInMemoryTradeRepository } from './in-memory-trade-repository.ts'
+import { createInMemoryLifecycleRepository } from './in-memory-lifecycle-repository.ts'
 import { createTempDir, removeTempDir } from './temp-dir.ts'
 
 /** Services over an in-memory repository, for platform tests that only need an app to exist. */
 export function inMemoryServices(): AppServices {
-  const trades = createInMemoryTradeRepository()
+  const trades = createInMemoryLifecycleRepository()
   return {
     tradeService: createTradeService({ trades, clock: createFixedClock('2026-03-01T12:00:00.000Z'), ids: createSequentialIds() }),
     positionService: createPositionService({ trades }),

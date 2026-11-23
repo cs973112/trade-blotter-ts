@@ -17,6 +17,7 @@ the JSON request to the database and back.
 - [Database](#database)
 - [Running the application](#running-the-application)
 - [Reviewer workflow: review:01 to review:07](#reviewer-workflow-review01-to-review07)
+- [Complete verification: check:all](#complete-verification-checkall)
 - [Test-drive search, filters and sorting](#test-drive-search-filters-and-sorting)
 - [Browser checklist](#browser-checklist)
 - [Build and test](#build-and-test)
@@ -34,36 +35,90 @@ the JSON request to the database and back.
 The page has three tabs; each keeps what you typed, chose and loaded while another is shown, and
 changing tab sends no request.
 
-- **Trading:** book a trade with a symbol, a side (Buy or Sell), a quantity, a price and an
-  optional execution time. Invalid input is reported field by field, every problem at once, and
-  the confirmation says where the trade went (on the trade list's page, on another page, or left
-  out by its filters). Beside the form, the **Positions** grid: every open position (long or short,
-  net quantity, average cost), 25 rows in view under a header that stays put, the rest scrolling
-  inside the grid. Above it, the number of open positions ("Total: 167 positions"), counted from
+- **Trading:** book a trade with a symbol, a side (Buy or Sell), a quantity and a price. Every
+  trade is booked **Pending**, with no execution time: the form has no status and no execution
+  time, and the API refuses a booking as Executed or Cancelled and any execution time. The trade is
+  then executed, separately, from Trade History or Trade Details (M7). Quantity and Price accept
+  numbers only: anything but digits and one decimal point is dropped as it is typed or pasted (no
+  letters, spaces, separators, signs or exponents). Invalid input is reported
+  field by field, every problem at once; a booking refused at the position limit says it was
+  checked against the Executed and Pending trades together; and the confirmation says where the
+  trade went (on the trade list's page, on another page, or left out by its filters). Beside the
+  form, the **Positions** grid: the actual position of every symbol, its **Executed net** (Executed
+  trades only) and **Average cost** (from the same trades), Long, Short, or Flat for a symbol with
+  only Pending trades. Pending and Cancelled trades count in neither. The page shows no Pending or
+  Projected net anywhere: the API still calculates and sends them, but Pending exposure is a
+  deferred feature, with no column, Columns choice or summary for it. 25 rows in view under a
+  header that stays put, the rest scrolling inside the grid. Above it, the number of open positions ("Total: 167 positions"), counted from
   the loaded list rather than the rows in view; the master grid on the next tab shows the same
   total from the same list.
 - **Positions & Trade Details:** the open positions as a master grid; choose one (click it, or
   move with the arrow keys and press Enter) to see its trades, a page at a time from the server,
   matched on the exact symbol (`symbolMatch=exact`, so MS never lists MSFT or MSTR), with the
-  position's summary and trade count, Previous and Next, 25/50/100 a page and sorting by Executed
-  at, Quantity or Price. Side by side on a wide screen, stacked (with a button that moves to the
+  position's summary (its Executed net, average cost and trade count), each trade's status, Previous
+  and Next, 25/50/100 a page and sorting by Executed at, Quantity or Price. The first column,
+  **Actions**, has two icon buttons on every row: **Edit** (a pencil) opens the **Trade details**
+  dialog, which offers **Execute**, **Keep Pending** and **Cancel trade** with a reason for a Pending
+  trade (an Executed or Cancelled trade is shown read only); **History** (a clock) opens the same
+  dialog with the trade's audit history, read only. **Cancel a Pending trade in …**
+  lists the symbol's Pending trades (side, quantity, price, when booked and id) to choose one. Side by side on a wide screen, stacked (with a button that moves to the
   trades) on a narrow one.
 - **Trade History:** every trade, newest execution first, 50 a page (25 or 100 on request), with
-  Previous and Next above and below the table and the range ("51–100 of 25,000 trades").
-  Search by all or part of a symbol, filter by side and by execution dates in your time zone
-  (daylight-saving days included exactly), and sort by the Executed at, Symbol, Quantity or Price
-  header. The API filters, sorts (decimals by exact value), counts and pages; the page never loads
+  Previous and Next above and below the table and the range ("51–100 of 25,000 trades"). Each
+  logical trade is listed once with its **Status** (Pending, Executed or Cancelled, each written out
+  and drawn differently: an outline for Pending, struck through for Cancelled, whose reason is the
+  tooltip); a cancellation record is never listed as a trade, and a Pending trade shows a dash for
+  its execution time. The first column, **Actions**, holds each row's details button (an
+  information icon, "Trade details" as its tooltip), on every trade: it opens the **Trade details**
+  dialog with every field of the trade (status, quantity, price, notional, execution time, who
+  booked and last updated it and when, booking sequence and id, and a cancelled trade's reason and
+  cancellation record). For a Pending trade the dialog offers **Execute**, **Keep Pending**, and a
+  reason with **Cancel trade**; an Executed or Cancelled trade is final, shown read only with
+  **Close**. A close button (×) and Escape also close it. Beside it, the **History** button (a
+  clock) opens the same dialog with the trade's audit history, read only. Search by all or part of a
+  symbol, filter by side and by execution dates in your time zone (daylight-saving days
+  included exactly), and sort by the Executed at, Symbol, Quantity or Price header. The API filters, sorts (decimals by exact value), counts and pages; the page never loads
   the whole history.
 - **Grids you can arrange:** in both Positions grids and the Trade Details, drag a column's
   header edge to resize it (or focus the edge and use the arrow keys; Enter fits the contents),
   down to a least width that keeps the header readable; **Columns** shows and hides optional
-  columns (the identifying one always stays) and says how many are shown ("4 of 4 columns shown");
+  columns (the identifying one, and Trade Details' Actions, always stay) and says how many are shown ("4 of 4 columns shown" in a Positions grid);
   **Show all columns** shows every column, those hidden by default included, each in its place
   and with the width it had, and is marked unavailable once all are shown; **Restore default
   columns** puts back the grid's own choice (in Trade Details, five columns hidden by default
   again), and is likewise marked unavailable, keeping focus, once the defaults are shown; **Reset
   column widths** sizes the columns by their contents again. Hidden columns leave no gap; tables
   scroll sideways inside their own box, never the page.
+- **Executing a Pending trade:** **Execute** in Trade History's **Trade details** dialog, or, in
+  Trade Details, **Execute…** and **Confirm execution** in a dialog that shows the trade; either
+  way focus starts on **Keep Pending**. Nothing is typed and nothing but the trade's id is
+  sent: the server executes it in one transaction, with its own clock as the execution time, and
+  records it as User. The same trade becomes Executed (no record is added) and counts in the
+  Executed net and average cost from then on. Confirm can be pressed once (it shows "Executing…"
+  until the answer); a refusal is explained (a trade already executed or cancelled elsewhere, one
+  that no longer exists, an execution the position limit refuses), and the trade list, the
+  positions and the Trade Details are loaded again after it, or after a successful execution. The
+  page behind is inert while the dialog is open; Escape or **Keep Pending** closes it, and focus
+  returns to what opened it.
+- **Cancelling a Pending trade:** in Trade History, the **Trade details** dialog has the reason and
+  **Cancel trade**; in Trade Details, a dialog shows the trade (or lets you choose among the
+  symbol's Pending trades). Either asks for a reason (required, up to 500 characters, no line
+  breaks or other control characters) and for confirmation. It sends only the reason: the server
+  records the cancellation as Admin, with its own time and a cancellation record. Confirm can be
+  pressed once (it shows "Cancelling…" until the answer); a refusal is explained (a reason the API
+  did not accept, a trade already cancelled, one that no longer exists), and after a successful,
+  or a refused because out of date, cancellation the trade list, the positions and the Trade
+  Details are loaded again. The page behind is inert while the dialog is open; Escape, **Keep
+  Pending** (Trade History) or **Keep trade** (Trade Details) closes it, and focus returns to what
+  opened it.
+- **Audit history:** a trade's **History** button, in Trade History or Trade Details, opens the
+  **Trade details** dialog with its history from the database's audit trail
+  (`scope=logical`): the original's entries and its cancellation record's in one timeline, oldest
+  first, each with what happened ("Trade booked by User as Pending", "Trade executed by User",
+  "Trade cancelled by Admin", "Cancellation record created by Admin"), the audit action, when and by whom it was recorded
+  (System, the database), the trade id, the original's id on a record, the status, created and
+  updated by, side, quantity, price (to 2 places), execution time and reason. Nothing on the page
+  changes or removes an entry.
 - **Money to two places, exactly:** prices, notionals and average costs are shown to 2 decimal
   places, rounded half to even on the decimal text itself. The exact value is in the tooltip, read
   out to screen readers after the rounded one, and shown beside it when the grid's **Exact values**
@@ -73,15 +128,15 @@ changing tab sends no request.
   display is rounded: the API, the database and the accounting keep every digit.
 - **Exact decimals:** values are read from the JSON source text, calculated with `decimal.js`,
   stored as text and written back without passing through a binary floating-point number.
-- **Times** are shown in your time zone with their UTC offset (the UTC value in the tooltip). A
-  skipped local execution time is refused, and one that happens twice asks which you mean.
+- **Times** are shown in your time zone with their UTC offset (the UTC value in the tooltip).
+  Execution times are set by the server when a trade is executed, in canonical UTC.
 - **Keyboard and screen readers:** tabs, grids, resize handles, Columns and Exact values work from
   the keyboard with a visible focus; the master grid is an ARIA grid with the chosen row
   `aria-selected`; every table has a caption.
 - **Safe persistence:** one SQLite file, migrated automatically at startup or with a command.
   A failed migration stops startup and changes nothing; the application never deletes or
-  recreates a database. A trade that would breach the position limit is refused inside the same
-  transaction that would store it.
+  recreates a database. A booking or an execution that would breach the position limit is refused
+  inside the same transaction that would store it.
 - **Documented API:** OpenAPI 3.1 with Swagger UI, and RFC 9457 problem details for errors.
 - **Reviewer workflow:** seven short commands set up, seed, start, check, test, benchmark and stop
   an isolated copy of the application on a deterministic 25,000-trade benchmark, never touching
@@ -93,7 +148,7 @@ changing tab sends no request.
 
 | Part | Technology |
 | --- | --- |
-| Runtime | Node.js 22.23.1 |
+| Runtime | Node.js 22.21.0 exactly, with npm 10.9.4 and SQLite 3.50.4 |
 | API | TypeScript, Fastify 5, TypeBox schemas, `@fastify/swagger` and Swagger UI |
 | Persistence | SQLite through Node's built-in `node:sqlite`, Drizzle ORM and drizzle-kit (`1.0.0-rc.5-5935859`) |
 | Decimals | `decimal.js` |
@@ -108,7 +163,9 @@ There is no database server, Docker image or external service. npm workspaces ho
 ## Screenshots
 
 The three tabs on the reviewer's benchmark (25,000 trades, 167 open positions), taken by
-`npm run check:ui` in headless Chrome 157 on 2026-11-13, dark theme.
+`npm run check:ui` in headless Chrome 157 on 2026-11-22, after Trade History's details dialog was added, dark theme.
+The Positions grids show the actual position only (Executed net and average cost): since M6 Phase 2
+the page offers no Pending or Projected net.
 
 | | Desktop (1280 px) | Tablet (768 px) | Phone (390 px) |
 | --- | --- | --- | --- |
@@ -118,7 +175,16 @@ The three tabs on the reviewer's benchmark (25,000 trades, 167 open positions), 
 
 Show all columns in Trade Details at 1280 px, with the list still open, every column shown and
 focus kept on the button:
-![Trade Details with all 10 columns shown and the Columns list open](docs/screenshots/ui-1280-benchmark-show-all-columns.png)
+![Trade Details with all 12 columns shown and the Columns list open](docs/screenshots/ui-1280-benchmark-show-all-columns.png)
+
+A Pending trade's **Trade details** dialog, opened from its details button in Trade History at
+1280 px (the lifecycle fixture of `check:ui`): every field of the trade, the reason needed only to
+cancel, **Execute**, **Cancel trade** and **Keep Pending** (focused), the close button, and the
+page behind made inert:
+![The Trade details dialog of a Pending trade over Trade History, Keep Pending focused](docs/screenshots/ui-1280-lifecycle-dialog.png)
+
+An Executed trade's dialog, from the same list: final, shown read only, with only **Close**:
+![The Trade details dialog of an Executed trade, read only](docs/screenshots/ui-1280-lifecycle-final-dialog.png)
 
 Earlier screenshots (before the tabs), including the form asking which occurrence of a repeated
 local time is meant and the page while the API is unavailable, are in
@@ -128,29 +194,57 @@ local time is meant and the page while the API is unavailable, are in
 
 | Tool | Required | Notes |
 | --- | --- | --- |
-| Node.js 22.23.1 | Yes | The supported and verified version, recorded in `.nvmrc` |
-| npm 12.0.1 | Yes | Bundled with Node.js 22.23.1 |
+| Node.js 22.21.0 | Yes | Exactly this version: `22.21.0` in every `engines` field and in `.nvmrc` (see [Node.js versions](#nodejs-versions)) |
+| npm 10.9.4 | Yes | The npm bundled with Node.js 22.21.0 |
 | Git | Yes | To clone the repository |
 | A web browser | For the frontend | Any current Chrome, Edge, Firefox or Safari |
 
 Nothing else needs installing: SQLite is built into Node.js, Drizzle is an npm dependency, and no
 package compiles native code or runs an install script.
 
-**Node.js 22.23.1 is the only supported version.** The `engines` range is `^22.23.1`: later 22.x
-releases are accepted but have not been verified, and other major versions are not supported.
-`npm ci` warns `EBADENGINE` on another version, and the server refuses to start if a runtime
-feature it needs is missing.
+### Node.js versions
 
-Install it from <https://nodejs.org/dist/v22.23.1/>, or with a version manager that reads
-`.nvmrc`: `nvm install` with [nvm](https://github.com/nvm-sh/nvm) or
-`fnm install` with [fnm](https://github.com/Schniz/fnm); on Windows,
-`nvm install 22.23.1` with [nvm-windows](https://github.com/coreybutler/nvm-windows). Check with:
+**Supported and verified: Node.js 22.21.0 only** (`22.21.0` in every `engines` field and in
+`.nvmrc`), with the npm and SQLite it bundles:
+
+| Node.js | npm | SQLite (`node:sqlite`) |
+| --- | --- | --- |
+| 22.21.0 | 10.9.4 | 3.50.4 |
+
+`review:01` (and so `check:all`) reports 22.21.0 as PASS and every other version, newer or older,
+as FAIL. The server itself checks features, not the version: it refuses to start if `node:sqlite`,
+`JSON.rawJSON` or JSON source text is missing. Until 2026-11-20 the policy was `^22.21.0`, and
+Node.js 22.23.1 was verified as well (the results are kept in [Platform support](#platform-support));
+22.23.1 is no longer supported or verified.
+
+**Expected `npm ci` warnings.** Six development-only packages in the locked versions declare
+`^22.22.2 || ^24.15.0 || >=26.0.0`, so npm prints `EBADENGINE` for each on 22.21.0:
+
+| Package | Used through |
+| --- | --- |
+| `jsdom` 30.1.3 | The frontend test environment (`client` devDependency) |
+| `@asamuzakjp/css-color` 7.1.9, `@asamuzakjp/dom-selector` 10.0.5, `w3c-xmlserializer` 6.0.0 | `jsdom` |
+| `nopt` 10.0.1, `abbrev` 5.0.0 | `@vue/test-utils` → `js-beautify` |
+
+The warnings are not resolved; they are accepted, and not suppressed. None of these packages is
+part of the application or its build: they run only in the frontend tests. On 22.21.0 every check
+passed with them, the complete frontend test suite included, but they are used outside the range
+their authors support, so a behaviour the tests do not exercise could differ. Versions that
+declare support for 22.21.0 exist (`jsdom` 29.1.1, and `@vue/test-utils` 2.4.x or an npm override
+for `nopt`); changing them has not been approved or tested.
+
+On Windows, a portable Node.js 22.21.0 (the `node-v22.21.0-win-x64.zip` from
+<https://nodejs.org/dist/v22.21.0/>, checked against its `SHASUMS256.txt`) can be used per shell
+without changing the installed Node.js or `PATH` for anything else: put its folder first in that
+shell's `PATH` (PowerShell: `$env:PATH = "<folder>;$env:PATH"`). Elsewhere, a version manager that
+reads `.nvmrc` installs 22.21.0: `nvm install` with [nvm](https://github.com/nvm-sh/nvm) or
+`fnm install` with [fnm](https://github.com/Schniz/fnm); on Windows also `nvm install 22.21.0`
+with [nvm-windows](https://github.com/coreybutler/nvm-windows). Check with:
 
 ```bash
-node --version   # v22.23.1
-npm --version    # 12.0.1
+node --version   # v22.21.0
+npm --version    # 10.9.4
 ```
-
 ## Getting started
 
 ```bash
@@ -176,6 +270,21 @@ npm run db:migrate -w server
 It prints `Database is up to date: <path>`; running it again changes nothing. If a migration
 fails, every pending migration is rolled back, the command prints
 `Database migration failed; no migration was applied.` with the reason, and it exits with code 1.
+
+**Trade lifecycle and audit (M3 in the database, M4 in the API).** The third migration,
+`20261120220032_trade_lifecycle_audit`, rebuilds `trades` with a status (Pending, Executed or
+Cancelled), the actors who created and last changed each row (User or Admin), an execution time
+only on Executed trades, and, on a cancellation row, the original it cancels and the reason. Every
+existing trade is kept with its id, booking sequence and values, as Executed by User, and the
+booking sequence never goes back. It also creates `trade_audit`, which SQLite triggers fill with a
+snapshot of every column of a trade at each insert, update and delete (`Inserted`, `Updated`,
+`Deleted`, by `System`, at SQLite's UTC time); its entries can never be changed or removed, and
+no entry is invented for trades that existed before. The API serves all of it (see [API](#api));
+the page does not show it yet. Later migrations add partial indexes on Executed trades and on
+logical trades (no rebuild, no row changed). **Back up an
+existing database before the API or `db:migrate` upgrades it** (see the
+[setup guide](docs/setup.md#database)); the upgrade is one transaction, applied completely or not
+at all.
 
 Set `DATABASE_PATH` to use another file; an absolute path is recommended. The
 [setup guide](docs/setup.md#database) covers other files, backups, starting afresh and schema
@@ -450,13 +559,13 @@ npm run review:06   # performance
 npm run review:07   # stop
 ```
 
-| Command | What it does | Expected (Windows 11, from a clean `.run/review/`) |
+| Command | What it does | Result and observed time (Windows 11, from a clean `.run/review/`; times are observations, not guarantees, and vary with the machine and its load) |
 | --- | --- | --- |
-| `review:01` | Checks Node.js 22.23.1, npm, every installed package against `package-lock.json`, SQLite and the four ports; looks for Chrome or Chromium; creates and migrates `benchmark.db` and `scratch.db`, or preserves and replaces one holding other trades (see Data below); fingerprints the development database | 13 PASS, 4 s (the first run after the dataset changed: 11 PASS and 2 WARN, one for each database preserved and replaced) |
+| `review:01` | Checks the Node.js version (PASS on a verified version, WARN on another 22.x from 22.21.0, FAIL otherwise; see [Node.js versions](#nodejs-versions)), npm, every installed package against `package-lock.json`, SQLite and the four ports; looks for Chrome or Chromium; creates and migrates `benchmark.db` and `scratch.db`, or preserves and replaces one holding other trades (see Data below); fingerprints the development database | 13 PASS, 4 s (the first run after the dataset changed: 11 PASS and 2 WARN, one for each database preserved and replaced) |
 | `review:02` | Seeds 25,000 benchmark trades and 120 scratch trades (dataset version 2), or recognises them by their fingerprint | 2 PASS, 13 s |
 | `review:03` | Builds if anything is missing or older than its sources; starts the benchmark pair (API 5391, frontend 4191) and the scratch pair (API 5392, frontend 4192) and confirms both | 3 PASS, 19 s |
-| `review:04` | 52 functional checks against the running applications, each compared with the database: `GET /trades` unchanged, pages, sizes, sorts, exact decimals, ties, filters, invalid parameters, positions, the frontends, bookings on a throwaway database | 52 PASS, 23 s |
-| `review:05` | `lint`, `typecheck`, `build`, both test suites and `db:check`, each with a log in `.run/review/logs/`; then the 49 UI checks (`check:ui`) in a real browser, with screenshots in `.run/review/ui-check/<time>/`. Without a browser the UI checks are SKIPPED and the result is INCOMPLETE | 56 PASS (6 commands, 49 UI checks, no console errors) and 1 WARN (one Linux-only test skipped on Windows), 2.5 min |
+| `review:04` | 56 functional checks against the running applications, each compared with the database: `GET /trades` unchanged, pages, sizes, sorts, exact decimals, ties, filters, invalid parameters, positions, the frontends, and on a throwaway database bookings (Pending, no actual position, Executed bookings refused) and executions (in place at the server clock, a second execution and a cancellation of it refused, then listed and in the positions) | 56 PASS, 10 s |
+| `review:05` | `lint`, `typecheck`, `build`, both test suites and `db:check`, each with a log in `.run/review/logs/`; then the 64 UI checks (`check:ui`) in a real browser, with screenshots in `.run/review/ui-check/<time>/`. Without a browser the UI checks are SKIPPED and the result is INCOMPLETE | 72 PASS (6 commands, 65 UI checks, no console errors) and 1 WARN (one Linux-only test skipped on Windows); observed 437 s, about 7.3 min, in `check:all` run `20261122T011915.335Z-3961c7` (the server tests alone 310 s) |
 | `review:06` | The API benchmark (62 scenarios) and the UI benchmark (17 scenarios) on 25,000 trades; results in `.run/review/perf/` | 2 PASS, 3 min |
 | `review:07` | Stops the reviewer's applications after confirming they are its own; compares the development database with step 01 | 3 PASS, 17 s |
 
@@ -525,6 +634,183 @@ Under WSL the tools run as Linux processes, which cannot drive a Windows browser
 programs are never chosen there. `review:01` reports which browser it found; without one, steps
 05 and 06 report their browser parts SKIPPED and end INCOMPLETE (exit code 3), never as passed.
 
+## Development feedback: check:fast
+
+```powershell
+npm run check:fast                 # development feedback in about two minutes; never acceptance
+```
+
+`check:fast` is for the edit, test, edit loop: the project's own npm scripts, each a PASS or a FAIL
+with its log in `.run/check-fast/<run id>/` and a `summary.json`. It never starts an application,
+a browser or a benchmark, uses no port of its own and touches no development or reviewer database
+(the tests make their own in the temp folder, as `npm test` always does). **`npm run check:all`
+remains the comprehensive acceptance**: a passing `check:fast` is never reported as complete
+verification, and its last line says so.
+
+The checks run in four groups, one after another:
+
+| Group | Checks | Run |
+| --- | --- | --- |
+| 1 | `lint`, `typecheck`, `build`, `db:check -w server`, `check:docs` | at once: only `build` writes (`server/dist/`, `client/dist/`), and none of the others reads what it writes |
+| 2 | Server application tests: the Vitest project `app` (`npm test -w server -- --project app`), every test outside `server/test/scripts/`: domain, application, infrastructure (repositories and the database), API, platform, scenarios, architecture, isolation and tooling configuration | alone |
+| 3 | Client tests (`npm test -w client`) | alone |
+| 4 | The quick tooling tests in `server/test/scripts/`, by file (`FAST_TOOLING_TESTS` in `server/scripts/check-fast.ts`) | alone |
+
+Left to `check:all`: the reviewer workflow and its applications, the UI checks in a browser, both
+benchmarks, failure detection, and the tooling tests that exercise them or take minutes:
+`check-all-supervisor`, `check-all-main`, `check-all-failures`, `failure-detection`, `perf-api`,
+`perf-ui`, `review`, `lifecycle` and `ui-check` (`CHECK_ALL_ONLY_TESTS`, each with the reason). A
+test names every file in `server/test/scripts/` exactly once, in one list or the other, so a new
+tooling test cannot be left out of both unnoticed.
+
+The server and client tests could run at once without conflict (each Vitest run names its
+temporary folders and databases by a run id of its own), but measured together they saved little:
+52 s against 29 s and 29 s apart, each nearly twice as slow, so they run one after the other. A
+failed check fails the run (exit code 1) once its group has finished; every later check is listed
+`NOT RUN`, with the end of the failed check's log. Each check has a 15-minute deadline, after
+which it and its own child processes are stopped; nothing else is ever signalled. Exit code 2 is
+an unknown argument.
+
+Observed on 2026-11-22 on Windows 11 (run `20261122T020315465Z`, not a guarantee): 8 PASS in 121 s; lint,
+typecheck, build, schema and documentation checks together 41 s, the server application tests 29 s,
+the client tests 29 s and the quick tooling tests 22 s. `check:all` took 1,051 s the same day
+(run `20261122T020547.013Z-5fa17b`).
+
+## Complete verification: check:all
+
+One command runs every verification, each run in a folder of its own. It is the acceptance;
+`check:fast` above is development feedback only:
+
+```powershell
+npm run check:all                  # complete verification
+npm run check:all -- --quick       # everything except the benchmarks; never complete verification
+npm run check:all -- --verbose     # every check, command, test and detail as it runs
+```
+
+It is the reviewer workflow (the same seven steps, with every check they make) on reviewer
+databases and ports of its own (APIs 5491 and 5492, frontends 4291 and 4292), followed by the
+failure-detection checks and the documentation checks. The steps run in the order 01, 05, 02,
+03, 04, 06, 07, so the build and the tests come first and nothing is built or tested twice; a step
+whose prerequisite failed is not run and says why, and step 07 always runs, so nothing it started
+is left running, even after an unexpected error (see below). `review:01` to `review:07` remain
+available on their own, in `.run/review/`.
+
+| Category | What it is |
+| --- | --- |
+| Environment | `review:01`: Node.js against the policy, npm, packages, SQLite, the browser, the ports |
+| Lint, typecheck, build | `review:05`'s first three commands |
+| Server tests, Client tests | Every test, counted one by one from vitest's JSON results |
+| Schema check | `db:check` |
+| UI checks in a browser | `check:ui`'s 64 checks and the console |
+| Seed and start | `review:02` and `review:03` |
+| Functional checks | `review:04` |
+| Performance benchmarks | `review:06`; left out by `--quick` |
+| Stop and data protection | `review:07`, including the development database's fingerprint |
+| Failure detection | Thirty-seven deliberate breaks of a rule, 31 in the server and 6 in the client, each on a temporary copy of its workspace: a test must catch each with a failed assertion (see below) |
+| Documentation consistency | These documents against the code: endpoints, OpenAPI against the frontend's contracts, `npm run` commands, UI labels, business rules, linked files and screenshots, test counts, benchmark provenance |
+
+The output ends with a table, one row per category with its PASS, FAIL, WARN and SKIPPED counts
+and time, then the total and the duration, every failure with its message and log, every warning,
+what was not run and why, and where everything is kept:
+
+```text
+Category                                  PASS  FAIL  WARN  SKIP
+Environment (review:01)                     13     0     0     0  checks  0.1 s
+...
+RESULT: PASSED: complete verification passed (exit code 0)
+```
+
+**Exit codes:** `0` passed (a quick run that passed ends `QUICK PASSED`, which is not complete
+verification); `1` something failed; `3` a required part could not run, such as the UI checks
+without a browser (`INCOMPLETE`); `2` an unknown option.
+
+**Unexpected errors, deadlines and clean-up.** Nothing ends a run without a summary, and nothing
+unexpected is reported as passed. `check:all` runs in two processes: `check-all-main.ts` starts
+the supervisor (`check-all-supervisor.ts`), which runs none of the verification; it starts the
+worker (`check-all-worker.ts`), which runs everything described above, and watches it.
+
+- A step that throws is a FAIL of that step, with the error's message.
+- An unhandled rejection (a promise rejected that nothing awaited, as when a benchmark's connection
+  to Chrome closed in M5) is recorded instead of ending the worker: a FAIL of whatever was running,
+  which then counts as failed, with the full stack in `unexpected-errors.log` and in the step's
+  log. The run goes on to step 07, failure detection, the documentation checks and the summary, and
+  its result is `FAILED`: nothing is concluded about the state the rejection left, only that the
+  run failed.
+- An uncaught exception is not handled in the worker: Node.js ends it, as it always does, so no code
+  goes on after it. Just before, the worker records the stack and the phase in `worker-fatal.json`
+  and `unexpected-errors.log`.
+- Each step has a deadline, several times the longest it has taken (45 minutes for `review:05`
+  and `review:06`, 10 or 15 for the others): a step still running then is a FAIL and is no
+  longer waited for; whatever it records later is dropped.
+- A worker that cannot act on its own deadline (its event loop blocked, or stuck outside a step) is
+  ended by the supervisor at a hard deadline: the phase's own limit plus five minutes' grace.
+- An error in `check:all`'s own bookkeeping, in failure detection or in the documentation checks is
+  a FAIL too.
+
+In the worker's cases the steps that need the failed one are left out and listed under "Not run",
+step 07 still stops this run's applications (only those whose process still holds the token it was
+started with and is the only listener on its port, with bounded waits, each port checked released
+afterwards; never a process found only by its id or port), and the summary lists every failure with
+its message and log, then "Unexpected errors" and "Not run". The result is `FAILED`, exit code 1.
+When step 07 did not pass, the pairs' records are read again: any of the run's applications still
+running is a further FAIL that names its process and port and how to stop it (`npm run app:stop`
+with `TRADE_BLOTTER_RUN_DIR` set to the pair's folder, which checks the token again first).
+
+The supervisor accepts the worker's result only when the worker ended by itself with exit code 0, 1
+or 3, recorded no fatal error, and left a finished record and a complete `summary.json` that are
+this run's and this worker's and agree with its exit code; that result, output and exit code are
+then the run's, unchanged. Anything else (an uncaught exception, the worker killed or ending
+without such a summary, a hard deadline, Ctrl+C or SIGTERM) is a run that did not complete. The
+supervisor makes sure the worker has exited (ending it, if need be, through its own process
+handle), runs step 07's clean-up with the same checks, lists what is still running, keeps every
+file (the worker's own summary, if it wrote one, as `worker-summary.json`), and writes
+`summary.json` and `summary.txt`: what completed, what was interrupted, what never ran, the
+unexpected errors, the clean-up, the applications, other processes and temporary folders left, and
+how to stop what is left. The result is `FAILED: check:all did not complete`, exit code 1; if no
+summary can be written, a minimal text one or the error output says so, and the exit code is still
+1. A second Ctrl+C ends the supervisor at once and prints how to stop the applications.
+`server/test/scripts/check-all-supervisor.test.ts` covers each case with a real worker process,
+stand-in steps and applications, and the real clean-up; `check-all-failures.test.ts` covers the
+worker's own handling, and `check-all-main.test.ts` the real `npm run check:all` entry point.
+
+**Evidence**, in `.run/check-all/<run id>/` (ignored by Git and ESLint; no run reads or replaces
+another's): `summary.txt` and `summary.json` (start and finish times, every step's exit code, every
+command with its log and duration, the counts), `check-all.log` (every check with its detail, and every command; the individual tests that
+`--verbose` lists are in `tests/`),
+`environment.json` (Node.js, npm, SQLite, platform, browser, Git commit, application source
+fingerprint), `tests/` (vitest's JSON results), `review/` (the reviewer databases, each step's log
+and command logs, screenshots in `ui-check/`, benchmark results in `perf/`), `failure-detection/`
+(for each check: the change, the control and changed runs' logs and JSON, the type-check log) and
+`documentation.json`.
+
+**Failure detection** (`npm run check:failures` on its own) shows that the tests catch a broken
+rule. Each check copies the server to `server/.test-build-check-<run>-<check>/`, or for a client
+check the frontend to `client/.test-build-check-<run>-<check>/`, and works only there: the unmodified copy's tests must pass, the change must apply exactly once, the changed copy
+must type-check, and then a named test must fail on an assertion. A compile error, a missing file,
+a test file that cannot be collected, a timeout or an error of another kind is a FAIL, never a
+detection. The thirty-one server rules: average cost unchanged by a reduction, the position limit at exactly
+10^30, at most 10 decimal places, `pageSize` at most 100, `symbolMatch=exact` matching the whole
+symbol; for the trade lifecycle's domain rules, a cancelled original and a
+cancellation row ignored by positions, average cost from Executed trades only, a booking Pending
+with no execution time, a booking as Executed refused, a booking with an execution time refused, a
+trade executed once, only a Pending trade cancellable, a cancellation row not cancellable, a trade
+cancelled once, and a cancellation made as Admin; for the database, an update audited as Updated,
+the audit trail append-only, the migration keeping the booking sequence's high-water mark, the
+Pending limit applied when storing, the Executed limit applied when executing, and the existing
+repository reading Executed trades only; for
+the API, cancellation records never listed, the status filter, Pending trades counted in positions,
+a logical trade's audit history holding its cancellation record's entries too (which the page's
+audit history shows), the lists never read through the unique index on `original_trade_id`, and
+each logical-trade index holding the logical trades; and, for process clean-up, EPERM neither taken
+as an exit nor as proof that a process has gone, and a process whose command line lacks its token
+never signalled. The six client rules, checked by the frontend's own tests on a copy of the client
+(`client/.test-build-check-<run>-<check>/`, type-checked with `vue-tsc`, Vue templates included):
+the page books without a status (so never as Executed), a successful execution reloads the lists
+and positions, Execute appears only on Pending trades, the Positions grids show the Executed net and
+never count Pending trades, a successful cancellation reloads the lists and positions, and the
+deferred Pending and Projected net are offered nowhere, not even in Columns. Production files are only
+read.
+
 ## Test-drive search, filters and sorting
 
 A walk-through for a reviewer: build, run the compiled API on a throwaway database, open the
@@ -533,13 +819,13 @@ frontend, book a few trades and try the trade-list controls. Your own database
 from the repository root; [Linux and macOS](#on-linux-and-macos) differs only in how variables are
 set.
 
-**1. Check the tools, install and build** (Node.js 22.23.1 and npm 12.0.1; see
-[Prerequisites](#prerequisites)):
+**1. Check the tools, install and build** (Node.js 22 from 22.21.0, with its bundled npm; see
+[Node.js versions](#nodejs-versions)):
 
 ```powershell
-node --version          # v22.23.1
-npm --version           # 12.0.1
-npm ci                  # the exact versions in package-lock.json
+node --version          # v22.21.0, or a later v22
+npm --version           # 10.9.4
+npm ci                  # the exact versions in package-lock.json (EBADENGINE warnings on 22.21.0 are expected)
 npm run build           # the API to server/dist/, the frontend to client/dist/
 ```
 
@@ -568,23 +854,26 @@ If port 5299 or 5173 is already in use, for example by your own running copy, ch
 `$env:PORT = '5399'` before `npm start -w server` in terminal 1, and in terminal 2
 `$env:API_TARGET = 'http://localhost:5399'; npm run dev -w client -- --port 5183`.
 
-**4. Book these trades** with the form on the **Trading** tab (Execution time is your local
-time; type it or pick it):
+**4. Book and execute these trades, one at a time, in this order.** Book each with the form on
+the **Trading** tab (it is booked Pending, with no execution time), then, on the **Trade History**
+tab, choose its details button (the first column) and **Execute**. Its execution time is the
+moment you execute it, so the trades are executed in this order:
 
-| # | Symbol | Side | Quantity | Price | Execution time | What it does to the position |
-| --- | --- | --- | --- | --- | --- | --- |
-| 1 | AAPL | Buy | 100 | 150.25 | 2026-03-02 09:30 | opens long 100 at 150.25 |
-| 2 | AAPL | Buy | 50 | 155.5 | 2026-03-03 10:00 | increases: 150 at 152 |
-| 3 | NVDA | Sell | 0.5 | 1000 | 2026-03-07 23:59:59 | opens short 0.5 at 1,000 |
-| 4 | MSFT | Sell | 20 | 410 | 2026-03-07 15:45 | opens short 20 at 410 |
-| 5 | AAPL | Sell | 30 | 160 | 2026-03-08 12:00 | reduces: 120, still at 152 |
-| 6 | MSFT | Buy | 20 | 400 | 2026-03-09 00:00 | closes: MSFT disappears from Positions |
-| 7 | TSLA | Buy | 10 | 200 | 2026-03-10 09:45 | opens long 10 at 200 |
-| 8 | GOOG | Buy | 10 | 200 | 2026-03-10 09:45 | opens long 10 at 200 |
-| 9 | TSLA | Sell | 25 | 210.75 | 2026-03-11 14:20 | crosses: short 15 at 210.75 |
-| 10 | BRK.B | Buy | 3 | 9.5 | 2026-03-12 16:00 | opens long 3 at 9.5 |
+| # | Symbol | Side | Quantity | Price | What executing it does to the position |
+| --- | --- | --- | --- | --- | --- |
+| 1 | AAPL | Buy | 100 | 150.25 | opens long 100 at 150.25 |
+| 2 | AAPL | Buy | 50 | 155.5 | increases: 150 at 152 |
+| 3 | NVDA | Sell | 0.5 | 1000 | opens short 0.5 at 1,000 |
+| 4 | MSFT | Sell | 20 | 410 | opens short 20 at 410 |
+| 5 | AAPL | Sell | 30 | 160 | reduces: 120, still at 152 |
+| 6 | MSFT | Buy | 20 | 400 | closes: MSFT disappears from Positions |
+| 7 | TSLA | Buy | 10 | 200 | opens long 10 at 200 |
+| 8 | GOOG | Buy | 10 | 200 | opens long 10 at 200 |
+| 9 | TSLA | Sell | 25 | 210.75 | crosses: short 15 at 210.75 |
+| 10 | BRK.B | Buy | 3 | 9.5 | opens long 3 at 9.5 |
 
-Positions then show AAPL long 120 at 152.00, BRK.B long 3 at 9.50, GOOG long 10 at 200.00, NVDA
+Before each execution the trade is Pending and changes no position; the Positions grid shows the
+actual position, from Executed trades only. Positions then show AAPL long 120 at 152.00, BRK.B long 3 at 9.50, GOOG long 10 at 200.00, NVDA
 short 0.5 at 1,000.00 and TSLA short 15 at 210.75 (average costs to 2 places; quantities exact).
 
 **5. Open the Trade History tab and try the controls above and in the trade table.** Filters
@@ -597,18 +886,19 @@ Symbol, Quantity, Price and Executed at sort as soon as you choose them.
 | Symbol `aPl`, Apply | the three AAPL trades (any case, any part of the symbol), "1–3 of 3 matching trades" |
 | Symbol `sf`, Apply | the two MSFT trades |
 | Side Sell, Apply | the four Sell trades |
-| From and To both 2026-03-08, Apply | only trade 5: trade 3 at 23:59:59 on the 7th and trade 6 at midnight on the 9th are outside |
-| Symbol `a`, Side Sell, From 2026-03-01, To 2026-03-31, Apply | trades 9, 5 and 3 |
+| From and To both today, Apply | every executed trade; a Pending trade, which has no execution time, never matches a date range |
+| From and To both yesterday, Apply | "No trades match these filters." |
+| Symbol `a`, Side Sell, From and To today, Apply | trades 9, 5 and 3, newest execution first |
 | Clear, then choose the Price header | BRK.B at 9.50 first and NVDA at 1,000.00 last: numbers, not text; ↑ beside Price |
 | Choose Price again | descending: NVDA first; ↓ |
-| Choose Executed at, then again | oldest first: trade 1 first, trades 7 and 8 (same time) in booking order; then newest first |
+| Choose Executed at, then again | oldest first: trade 1 first, in the order you executed them; then newest first |
 | Symbol `zzz`, Apply | "No trades match these filters.", and no pager |
 | From 2026-03-10, To 2026-03-08, Apply | a message under To; nothing is sent |
-| Side Buy, Apply; then book a Sell | "It is not in the trade list because it does not match the current filters."; Positions include it |
+| Side Buy, Apply; then book a Sell | "It is not in the trade list because it does not match the current filters."; it changes no position until executed |
 | Side Buy applied; type `zzz` in Symbol without Apply; choose Quantity | sorted with the applied Side Buy filter only; "Changes not applied yet." stays |
 | 25 trades per page (either pager) | both pagers change; page 1 |
 | Positions & Trade Details tab: choose AAPL | its 3 trades; MSFT, closed, is not in the list |
-| Book a trade at price 10.125, then check Exact values in Trade History | the price shows 10.12 (half to even), then "10.12 exactly 10.125" |
+| Book a trade at price 10.125, then check Exact values in Trade History | the price shows 10.12 (half to even), then "10.12 exactly 10.125"; it is Pending; its details button's dialog offers **Execute** and **Cancel trade** |
 
 With ten trades everything fits on one page, so Previous and Next stay disabled. To try paging,
 use the scratch applications of the [reviewer workflow](#reviewer-workflow-review01-to-review07)
@@ -620,6 +910,20 @@ the API directly, for example:
 curl.exe "http://localhost:5299/trades?symbol=aPl&side=Buy&sortBy=price&sortDirection=asc"
 curl.exe "http://localhost:5299/trades/page?symbol=aPl&page=1&pageSize=2"
 ```
+
+**5b. Try the trade lifecycle.** Continue with the same trades.
+
+| Do this | Expect |
+| --- | --- |
+| Trading: book AAPL Buy 10 at 151 | "Booked as Pending: Buy 10 AAPL at 151. Execute it from Trade History or Trade Details; …"; Positions: AAPL Executed net 120, Average cost 152.00, unchanged |
+| Book PEND Buy 5 at 20 | PEND appears in Positions as Flat: Executed net 0, Average cost 0.00 |
+| Trade History | the two Pending trades are at the end of the list (no execution time), each with a dash for Executed at; every row has only its details and History buttons; a Pending trade's dialog offers **Execute**, **Keep Pending** and **Cancel trade**, an Executed one's only **Close** |
+| Details button on AAPL 10 at 151; **Execute** | "Executed: Buy 10 AAPL at 151.00, recorded by User. It now counts in the Executed net and average cost."; it shows Executed, with the time you executed it, and its dialog now offers only **Close**; Positions: AAPL 130 at 151.92 |
+| Details button on PEND; **Cancel trade** with no reason | "Enter a reason for the cancellation."; nothing is sent |
+| Type a reason; **Cancel trade** | "Cancelled: Buy 5 PEND at 20.00. Reason: …. Cancellation record …, recorded by Admin."; PEND shows Cancelled (the reason as its tooltip) and leaves Positions |
+| Positions & Trade Details: choose AAPL; the **History** button (clock) on the trade you executed | two entries, oldest first: Trade booked by User as Pending; Trade executed by User; each recorded by System |
+| Execute the same trade again with `curl.exe -X POST http://localhost:5299/trades/<id>/execution` | `409` with `invalid-transition`: a trade is executed once |
+| Book AAPL Sell 5 at 160; in Trade Details **Cancel a Pending trade in AAPL…** | the one Pending trade, with its id; cancel it with a reason: AAPL's Executed net stays 130 |
 
 **6. Finish.** Stop both servers with Ctrl+C, then remove the throwaway database and the setting:
 
@@ -682,14 +986,17 @@ version 2 (see [Sample data](#sample-data-dbseed-and-dbclear)).
 | 11b | 4191 | Narrow the window to 390 px, on Trading | the Positions grid scrolls sideways and up and down inside its box, each on its own; the page does not scroll sideways |
 | 12 | 4191 | Narrow the window to a phone's width (390 px) | the pager wraps, the page never scrolls sideways; the table scrolls within its own box |
 | 13 | 4192 | Open the page | "1–50 of 120 trades", "Page 1 of 3" (more if you have booked already) |
-| 14 | 4192 | Book Buy 2.5 of a new symbol at 10.0000000001, executed now | "It is on this page of the trade list." |
+| 14 | 4192 | Book Buy 2.5 of a new symbol at 10.0000000001 | "Booked as Pending: …"; "It is on another page of the trade list.": trades without an execution time come after every executed one, newest first |
 | 15 | 4192 | Side Sell, Apply; book a Buy | "It is not in the trade list because it does not match the current filters." |
 | 16 | 4192 | With Side Sell applied, choose Symbol; book a Sell of `ZZ…` | "It matches the filters but is on another page of the trade list."; the filter and the sort stay as they were |
-| 17 | 4192 | Positions | include every booking at once, whatever the trade list shows |
+| 17 | 4192 | Clear; Executed at ↑ (oldest first); the details button of the trade from row 14, **Execute** | one execution; the row shows Executed with the time you executed it; Positions list the symbol Long 2.5 at 10.00 at once, whatever the trade list shows |
+| 18 | 4192 | Book a Buy of 3 of a new symbol at 9.995 | it is listed in Positions as Flat (Executed net 0); in Trade History as Pending, Executed at "—"; its details button's dialog offers Execute, Keep Pending and Cancel trade |
+| 19 | 4192 | Its details button, by keyboard: Enter, Tab to the reason, type it, Enter twice | one cancellation; the row shows Cancelled; the symbol leaves Positions; the outcome names the cancellation record and Admin, and focus is back on the details button |
+| 20 | 4192 | Positions & Trade Details: choose a symbol, then History on one of its trades | its audit history, read only, every entry recorded by System |
 
 The values in rows 1 to 11a were read from the running benchmark applications of dataset version 2
 on 2026-11-13; rows 11, 11a and 11b are also checked automatically by `check:ui` on the same 25,000
-trades. The checklist as a whole is a manual check: run it yourself in a desktop browser.
+trades, and rows 17 to 20 on its own lifecycle dataset. The checklist as a whole is a manual check: run it yourself in a desktop browser.
 
 ## Build and test
 
@@ -698,17 +1005,22 @@ trades. The checklist as a whole is a manual check: run it yourself in a desktop
 | `npm run lint` | ESLint over the whole repository |
 | `npm run typecheck` | Type-check the API and the frontend without emitting files |
 | `npm run build` | Build the API to `server/dist/` and the frontend to `client/dist/` |
-| `npm test` | Run every test once (1,572 API and tool tests, one of them Linux-only, and 406 frontend tests, on 2026-11-13) |
+| `npm test` | Run every test once (1,909 API and tool tests, one of them Linux-only, and 457 frontend tests, on 2026-11-22) |
 | `npm test -w server` | API tests only |
 | `npm test -w client` | Frontend tests only |
 | `npm run verify` | Lint, typecheck, build and test, in that order |
+| `npm run check:fast` | Development feedback in about two minutes: static checks, schema, documentation and every application test; see [check:fast](#development-feedback-checkfast). Not acceptance |
+| `npm run check:all` | Comprehensive acceptance: everything, including the reviewer workflow, browser checks, benchmarks and failure detection; see [check:all](#complete-verification-checkall) |
 | `npm run app:start` / `app:status` / `app:stop` | The built applications in the background; see [In the background](#in-the-background-appstart-appstop-appstatus) |
 | `npm run db:seed` / `db:clear` | Sample trades in a separate database; see [Sample data](#sample-data-dbseed-and-dbclear) |
 | `npm run perf:api` / `perf:api:sizes` | API benchmark on a seeded database; see [API performance](#api-performance-perfapi). Not part of `npm test` or `verify` |
 | `npm run perf:ui` / `perf:ui:sizes` | Browser benchmark in headless Chrome; see [Browser performance](#browser-performance-perfui). Not part of `npm test` or `verify` |
-| `npm run check:ui` | The page in a real headless browser, found as for `perf:ui`: 49 checks. The three tabs, the Positions grid (25 rows in view, sticky header, column resizing), layouts at 1280, 768 and 390 px, booking with exact decimals, money to 2 places with the exact value kept; then Positions & Trade Details (choosing by pointer and keyboard, exact-symbol matching against MS, MSFT, MSTR and AMS, server paging and sorting, the Columns chooser, resizing after hiding columns, a late answer dropped, its layouts); then both Positions grids at the benchmark's scale (167 positions: 25 in view, first, middle and last by keyboard and wheel, sticky header, sideways and vertical scrolling apart at 390 px, the positions total in both grids at 1280, 768 and 390 px, Show all columns and Restore default columns by keyboard in all three grids, columns, resizing, choosing positions after scrolling, MSFT's 831 trades paged and sorted on the server); console errors. Uses three throwaway databases of its own (40 open positions; a master-detail set; the benchmark's 25,000 trades, generated afresh) and free ports; needs `npm run build`. `--out <folder>` for the screenshots |
+| `npm run check:ui` | The page in a real headless browser, found as for `perf:ui`: 64 checks. The three tabs, the Positions grid (25 rows in view, sticky header, column resizing), layouts at 1280, 768 and 390 px, booking with exact decimals, money to 2 places with the exact value kept (booked, then executed); then Positions & Trade Details (choosing by pointer and keyboard, exact-symbol matching against MS, MSFT, MSTR and AMS, server paging and sorting, the Columns chooser, resizing after hiding columns, a late answer dropped, its layouts); then both Positions grids at the benchmark's scale (167 positions: 25 in view, first, middle and last by keyboard and wheel, sticky header, sideways and vertical scrolling apart at 390 px, the positions total in both grids at 1280, 768 and 390 px, Show all columns and Restore default columns by keyboard in all three grids, columns, resizing, choosing positions after scrolling, MSFT's 831 trades paged and sorted on the server); then the trade lifecycle (booking always Pending with no status or execution time, the actual position with a Flat Pending-only symbol, the Status column and filter, a Pending trade's dash for its execution time, Execute and Cancel only on Pending trades, executing by keyboard with focus on Keep Pending, Confirm pressed twice sending one request with no body, the Executed net and average cost changing, a 409 for a trade executed meanwhile, cancelling by keyboard with focus kept in the dialog and returned to its button, Confirm pressed twice sending one request with only the reason, a 409 for a trade cancelled meanwhile, choosing among a symbol's Pending trades in Trade Details, the audit timeline by User, Admin and System, a late audit answer dropped, both dialogs at 1280, 768 and 390 px); console errors. Uses four throwaway databases of its own (40 open positions; a master-detail set; the benchmark's 25,000 trades, generated afresh; a lifecycle set booked and cancelled through the lifecycle repository) and free ports; needs `npm run build`. `--out <folder>` for the screenshots |
 | `npm run db:check -w server` | The migrations folder is consistent (`drizzle-kit check`); schema drift is a test |
 | `npm run review:01` ... `review:07` | The reviewer workflow; see [Reviewer workflow](#reviewer-workflow-review01-to-review07) |
+| `npm run check:all` | Every verification in one run of its own: the reviewer workflow, failure detection and the documentation checks; `-- --quick` leaves out the benchmarks, `-- --verbose` prints everything. See [Complete verification](#complete-verification-checkall) |
+| `npm run check:failures` | The failure-detection checks alone: each breaks one rule in a temporary copy of the server and expects a test to catch it |
+| `npm run check:docs` | The documentation checks alone: endpoints, contracts, commands, UI labels, business rules, links, test counts, benchmark provenance |
 
 ```bash
 npm test -w server -- test/domain              # one folder
@@ -731,20 +1043,63 @@ document at <http://localhost:5299/documentation/json>.
 
 | Endpoint | What it does |
 | --- | --- |
-| `POST /trades` | Book a trade. Returns `201` and the stored trade. |
-| `GET /trades` | Every matching trade as a JSON array, newest `executedAt` first; optional parameters search, filter and sort. Unchanged by pagination. |
+| `POST /trades` | Book a trade, always `Pending`. Returns `201` and the stored trade. |
+| `POST /trades/{id}/execution` | Execute a Pending trade, as User, at the server's time. Returns `200` and the trade, now `Executed`. |
+| `GET /trades` | Every matching logical trade as a JSON array, newest `executedAt` first, then those without one; optional parameters search, filter (including `status`) and sort. Unchanged by pagination. |
 | `GET /trades/page` | One page of the same list, with `totalCount` and `totalPages`; the frontend uses this. |
-| `GET /positions` | Every open position, sorted by symbol. |
+| `POST /trades/{id}/cancellation` | Cancel a Pending trade with a `reason`, as Admin. Returns `201`, the cancelled trade and its cancellation record. |
+| `GET /trades/{id}/audit` | Read-only: the database's audit history of a trade, oldest first, a page at a time; `scope=trade` (its own row) or `scope=logical` (the original and its cancellation record). |
+| `GET /positions` | Every position, sorted by symbol: the Executed Net (the actual position) and the average cost of the Executed trades, with the Pending and Projected Net (sent for compatibility; the page shows neither). |
 
-A trade request has `symbol`, `side` (`Buy` or `Sell`, any case), `quantity`, `price`, and
-optionally `executedAt`, an RFC 3339 date-time with an offset (the server clock when omitted).
-Quantity and price may be JSON numbers or numeric strings: greater than zero, less than 10^15,
-with at most 10 decimal places. The server sets `id`, `bookingSequence`, `createdAt` and
-`updatedAt`; the same names in a request are ignored.
+A trade request has `symbol`, `side` (`Buy` or `Sell`, any case), `quantity` and `price`, and
+optionally `status`, which may only be `Pending` (any case; omitted or `null` is Pending too).
+Every trade is booked Pending, with `executedAt` `null`: `status` `Executed` or `Cancelled` is
+refused, and so is any `executedAt` (other than `null`), each with a field error. Quantity and
+price may be JSON numbers or numeric strings: greater than zero, less than 10^15, with at most 10
+decimal places. The server sets `id`, `bookingSequence`, `createdAt` and `updatedAt`, and
+`createdBy` and `updatedBy` (`User` for a booking or an execution, `Admin` once cancelled); the
+same names in a request are ignored. These actors are labels the server assigns to each
+operation, not identities: the API has no authentication. A booking is refused when the projected
+position (Executed and Pending together, with it) would reach the position limit.
+
+**Executing a trade (M7).** `POST /trades/{id}/execution` takes no body (an empty JSON object is
+accepted; any member is refused with `400` and an `invalid-execution` problem naming it). In one
+`BEGIN IMMEDIATE` transaction the server reads its clock once the write lock is held, checks that
+the trade is Pending, checks the symbol's Executed position at every step with the trade at that
+time, and updates the trade's own row: `status` `Executed`, `executedAt` and `updatedAt` that
+canonical UTC time, `updatedBy` `User`; its id, booking sequence, economic fields, `createdAt` and
+`createdBy` are kept, and no row is added. It answers `200` with the trade, `404` for an unknown
+id, and `409` for a trade already Executed, a Cancelled trade or a cancellation record
+(`invalid-transition`), or an execution the position limit refuses (`position-limit`, naming the
+symbol; the trade stays Pending). Of simultaneous executions and cancellations of one trade,
+exactly one succeeds. The database audits the update like any other write.
+
+**Trade lifecycle in the API (M4, M7).** Every trade carries `status`, `createdBy`, `updatedBy`,
+`originalTradeId`, `cancellationReason` and `cancellationTradeId`. The lists show each logical
+trade once: a cancelled trade appears as one `Cancelled` entry, with the reason and the id of its
+cancellation record, and the cancellation record itself is never listed. `status=Pending`,
+`Executed` or `Cancelled` filters. Sorting by execution time places trades without one (Pending,
+or cancelled while Pending) before every executed trade in ascending order and after them in
+descending order, ordered among themselves by booking sequence, so every order is total and paging
+never repeats or skips a trade; a date range lists only executed trades.
+`POST /trades/{id}/cancellation` takes `{"reason":"..."}` and answers `400` (an invalid body or
+reason), `404` (no such trade) or `409` (an Executed trade, one already cancelled, or a
+cancellation record); of simultaneous requests exactly one succeeds. `GET /positions` keeps
+`netQuantity` (the Executed Net, the actual position) and `averageCost` (Executed trades only) and
+adds `executedNetQuantity`, `pendingNetQuantity` and `projectedNetQuantity`; a symbol with only
+Pending trades is listed. Pending and Projected Net are kept in the API, unchanged, for a later
+enhancement; the page does not show them. `GET /trades/{id}/audit` lists `auditAction`, `auditOn`, `auditBy` and a snapshot
+of every column of the physical row at each write: `scope=trade` (the default) for that one row,
+`scope=logical` for the original and its cancellation record together, whichever id is given. No
+endpoint writes, changes or removes an audit entry. The page uses all of it: Pending-only
+bookings, execution (M7), the Status column and filter, cancellation with a reason, the actual
+position, and the logical audit history in Trade Details. It never sends `status`, `executedAt`,
+`createdBy`, `updatedBy` or `auditBy`.
 
 `GET /trades` takes optional query parameters, combined with AND: `symbol` (case-insensitive,
 matches anywhere in the symbol), `symbolMatch` (`contains`, the default, or `exact`: the whole
-symbol, so `symbol=ms&symbolMatch=exact` lists MS but not MSFT or MSTR; the Trade Details use it),
+symbol, so `symbol=ms&symbolMatch=exact` lists MS but not MSFT or MSTR; Trade Details' **Cancel a
+Pending trade in …** and the Trade Details grid use it),
 `side` (`Buy` or `Sell`), `executedFrom` and `executedTo`
 (inclusive, RFC 3339 with `Z` or an offset; write `+` as `%2B`), `sortBy` (`executedAt`,
 `symbol`, `quantity` or `price`) and `sortDirection` (`asc` or `desc`). Without them the list is
@@ -761,7 +1116,8 @@ no items and the real counts. Filters apply before paging; ties are ordered by `
 ```bash
 curl -i -X POST http://localhost:5299/trades \
   -H 'Content-Type: application/json' \
-  -d '{"symbol":"MSFT","side":"Buy","quantity":100,"price":"301.25","executedAt":"2026-01-02T09:30:00-05:00"}'
+  -d '{"symbol":"MSFT","side":"Buy","quantity":100,"price":"301.25"}'
+curl -i -X POST http://localhost:5299/trades/<id>/execution
 curl 'http://localhost:5299/trades?symbol=sf&side=buy&executedFrom=2026-01-01T00:00:00Z&sortBy=price&sortDirection=asc'
 curl 'http://localhost:5299/trades/page?side=Buy&sortBy=quantity&sortDirection=desc&page=2&pageSize=25'
 curl 'http://localhost:5299/trades/page?symbol=MS&symbolMatch=exact&page=1&pageSize=25'
@@ -771,16 +1127,26 @@ curl http://localhost:5299/positions
 In Windows PowerShell, use `curl.exe` with the same arguments, and a backtick instead of `\` at
 the end of a line.
 
-A created trade:
+A booked trade:
 
 ```json
 {"id":"0b8f4c6e-…","bookingSequence":1,"symbol":"MSFT","side":"Buy","quantity":100,"price":301.25,
- "notional":30125,"executedAt":"2026-01-02T14:30:00.000Z","createdAt":"2026-03-01T12:00:00.000Z",
- "updatedAt":"2026-03-01T12:00:00.000Z"}
+ "notional":30125,"status":"Pending","executedAt":null,
+ "createdAt":"2026-03-01T12:00:00.000Z","updatedAt":"2026-03-01T12:00:00.000Z",
+ "createdBy":"User","updatedBy":"User","originalTradeId":null,"cancellationReason":null,
+ "cancellationTradeId":null}
 ```
 
-A position: `{"symbol":"MSFT","netQuantity":100,"averageCost":301.25}`. `netQuantity` is negative
-for a short. The API always sends every digit; rounding to 2 places is done by the frontend, for
+Executed, the same trade answers with `"status":"Executed"`, `"executedAt"` and `"updatedAt"` the
+execution time, such as `"2026-03-01T12:05:00.000Z"`, and everything else as booked. Once cancelled
+instead, it is listed with
+`"status":"Cancelled"`, `"updatedBy":"Admin"`, the `cancellationReason` and the
+`cancellationTradeId` of its cancellation record; that record, returned only by the cancellation
+request and the audit, has the original's id in `originalTradeId`.
+
+A position:
+`{"symbol":"MSFT","netQuantity":100,"averageCost":301.25,"executedNetQuantity":100,"pendingNetQuantity":0,"projectedNetQuantity":100}`.
+`netQuantity` (the same as `executedNetQuantity`) is negative for a short. The API always sends every digit; rounding to 2 places is done by the frontend, for
 display only.
 
 Errors are RFC 9457 problem details (`application/problem+json`). An invalid trade names every
@@ -817,8 +1183,10 @@ long and short positions follow the same rules. Each trade falls under exactly o
 - **Precision:** notionals and net quantities are exact. Average cost is the only value that can
   need rounding (5/3, for example); it is calculated to 50 significant digits, rounding half to
   even, and reported as calculated.
-- **Position limit:** a trade that would take any intermediate position to 10^30 or beyond is
-  refused with `400` and never stored.
+- **Position limit:** a booking (Pending) is refused with `400` when the projected position, the
+  Executed and Pending trades together with it, would reach 10^30; an execution is refused with
+  `409` when it would take any intermediate Executed position to 10^30 or beyond, and the trade
+  stays Pending. Nothing is stored either way.
 - Realised profit and loss is out of scope.
 
 The [business rules](docs/architecture.md#business-rules) and the
@@ -851,9 +1219,10 @@ order is their exact value (added by the second migration, with their indexes), 
 count are read in one transaction. `compareTrades` in the domain stays the reference order the SQL
 is tested against.
 
-Each trade has three timestamps: `executedAt` (optional in the request; the server clock when
-omitted), and `createdAt` and `updatedAt`, which only the server sets. Trades are immutable, so
-`updatedAt` equals `createdAt`.
+Each trade has three timestamps, all set by the server: `createdAt` when it is booked, `executedAt`
+when it is executed (null while Pending, and for a trade cancelled while Pending), and `updatedAt`
+when the record last changed (booked, executed or cancelled). A trade's economic fields never
+change; only its status moves, from Pending to Executed or to Cancelled.
 
 [docs/architecture.md](docs/architecture.md) has diagrams, the database schema, the transaction
 boundary, error handling and the test strategy.
@@ -864,6 +1233,74 @@ Measured with `review:06` on the 25,000-trade benchmark, dataset version 2 (181 
 positions), on one Windows 11 machine (8 logical cores, Node.js 22.23.1, headless Chrome 157),
 with the API and frontend on the same machine and requests sent one at a time, on 2026-11-13.
 Absolute times will differ elsewhere; each run saves its full results in `.run/review/perf/`.
+
+**Latest measurement, and the code it measured.** `npm run check:all` on 2026-11-22 (run
+`20261122T011915.335Z-3961c7`), on Node.js 22.21.0, the same machine and dataset, with Chrome 157,
+measured application source fingerprint `4a159f775198`: M6 Phase 2, the Positions grids without the
+deferred Pending and Projected net, on M7's Pending-first booking and execution and the M4 API with
+its indexes (the files under `server/src`, `server/drizzle`, `client/src` and `client/index.html`;
+`check:all` prints it, and `check:docs` compares it with the current source). Neither M7 nor M6
+Phase 2 changes a query, index or migration that the benchmarks read; their columns are within the
+variation between runs. The M7 run, `20261122T001837.885Z-cd5afd` (fingerprint `24b593719c51`), and
+the M5 run, `20261121T132704.604Z-f85d41` (fingerprint `6ade3fad4de8`), are kept beside it:
+
+| Measure (medians) | Before M3 (run `…205025…`) | M3 with its fix (run `…225357…`) | M4 (run `…025603…`) | M5, logical indexes (run `…132704…`) | M7 (run `…001837…`) | M6 Phase 2 (this run) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `GET /trades/page`, 47 scenarios | 0.61–37 ms (median 1.9) | 1.1–38 ms (median 2.9) | 3.0–51 ms (median 10.5) | 1.1–40 ms (median 3.6) | 2.0–44 ms (median 3.4) | 1.6–43 ms (median 3.3) |
+| Page of 50, newest first, first or middle | 1.9 ms | 3.1–3.3 ms | 9.8–13.6 ms | 2.5–2.9 ms | 3.7–3.8 ms | 3.4–3.6 ms |
+| Middle page of 50 by symbol, quantity or price | 3.7–6.2 ms | 2.2–6.3 ms | 38–51 ms | 2.7–7.3 ms | 2.9–5.0 ms | 2.7–5.1 ms |
+| Page of 50, symbol search "ms", first | 3.6 ms | 4.8 ms | 10.5 ms | 8.6 ms | 10.1 ms | 10.4 ms |
+| `GET /trades`, 14 scenarios | 24–460 ms | 15–505 ms | 19–793 ms | 14–573 ms | 13–538 ms | 18–544 ms |
+| `GET /positions` | 0.35 s | 0.38 s | 0.27 s | 0.21 s | 0.24 s | 0.23 s |
+| First page load | 0.64 s | 0.76 s | 0.73 s | 0.56 s | 0.45 s | 0.70 s |
+| Each later action | 29–48 ms | 30–48 ms | 32–48 ms | 30–47 ms | 29–48 ms | 30–48 ms |
+
+**M4's regression, and the logical-trade indexes that fixed it (approved after M4).** In M4 the
+lists showed logical trades, `original_trade_id IS NULL`, and no index served that condition: the
+unique index on `original_trade_id` is partial and holds only the cancellation rows (as a full
+index it was chosen, and found every ordinary trade by a lookup and a sort of all of them, 15–110
+ms a page). So counting an unfiltered page read every row, and a page deep in a list sorted by
+another column read each row it stepped over (a middle page by symbol, quantity or price 38–51 ms,
+the page median 3.7 times M3's). Migration `20261121043510_logical_trade_indexes` adds four partial
+indexes, one per sort order, `WHERE original_trade_id is null`; the unique index and the Executed
+indexes are unchanged. In this run the page median is 3.6 ms and those middle pages 2.7–7.3 ms. In
+a controlled comparison on one copy of the benchmark database (before and after, alternated, the
+same results in every scenario) unfiltered pages took 0.04–0.29 times as long, while filtered
+pages took 0.87–1.20 times: a symbol search or side filter still reads each candidate row to count
+it, because SQLite 3.50.4 does not treat `is null` as covered by the index, so filtered pages and
+counts are about as before (the slowest, a middle page of side Buy by quantity, is 40 ms). The cost
+is on writes and size: per operation, the median Executed booking went from 3.77 to 3.92 ms (+4%),
+a Pending booking from 3.19 to 3.65 ms (+14%), a cancellation from 1.48 to 1.25 ms (no cost; its
+record is not a logical trade), and the 28,750-row test database from 24.8 to 29.4 MB (about 4.6 MB
+for the four indexes). The migration took about 0.15 s on that database.
+
+**The lifecycle's larger responses (accepted).** Every trade now carries six more fields
+(`status`, `createdBy`, `updatedBy`, `originalTradeId`, `cancellationReason`,
+`cancellationTradeId`), 134 bytes more in JSON, about half as much again: a page of 50 is 20 KB
+instead of 13 KB, every trade in `GET /trades` 10.0 MB instead of 6.6 MB, and `GET /positions`,
+with three nets beside the existing two figures, 25.8 KB instead of 12.6 KB. That costs time
+mainly in `GET /trades` for every trade (0.55–0.79 s against 0.39–0.51 s in M3's run), which the
+frontend does not use. It is the contract M4 asks for, so it is accepted. This run was also
+slower on scenarios the change does not affect (a date-range page 3.0–3.3 ms against 2.1–2.4),
+so part of every difference is variation between runs; the regression above is ten times larger
+and is reproduced by its query plans.
+
+Earlier figures follow. M3's own regression (Executed trades read without an index for
+`status = 'Executed'`, a middle page by symbol 53 ms) was fixed by partial indexes on Executed
+trades, measured in run `20261120T225357.760Z-b9f9a0` (fingerprint `ef465d33a491`; the run before
+the fix, `20261120T222548.536Z-b8caaf`, fingerprint `b390b2c34e03`, measured the regression).
+
+Each figure is from one run, not a precise measurement. Before M3, on Node.js 22.21.0 (fingerprint `28aa82c79ae3`, run
+`20261120T205025.107Z-f9d52c`): `GET /trades/page` 0.6–37 ms, `GET /positions` 0.35 s, first page
+load 0.64 s. Earlier the same day, before the trade lifecycle's domain functions were added (fingerprint
+`35ea4f1a6b6f`, run `20261120T195642.577Z-bf3c9c`):
+`GET /trades/page` 0.8–36 ms, `GET /positions` 0.37 s, first page load 0.61 s. Before that, on
+source that differed only in the Node.js version constant (fingerprint `4c8b475443c9`), Node.js
+22.23.1 (no longer supported) and 22.21.0 each ran once: `GET /trades/page` 0.5–59 and 0.6–37 ms,
+`GET /positions` 0.58 and 0.37 s, first page load 0.99 and 0.75 s (runs
+`20261120T190954.276Z-c1b828` and `20261120T192639.308Z-bf0f0e`). The detailed
+figures that follow were measured on 2026-11-13; that run recorded no source fingerprint, so they
+are kept as the record of that run, not claimed for this version.
 
 **API** (`perf:api`, medians of 10 requests after 5 warmups):
 
@@ -941,14 +1378,27 @@ The same npm commands work on Windows, Linux (WSL included) and macOS: paths are
 `node:path`, process handling has a branch for each platform, and the browser is found by the
 same search everywhere ([Finding a browser](#finding-a-browser)). What has actually been run:
 
-- **Windows 11 x64** (Node.js 22.23.1, npm 12.0.1, Chrome 157): everything, most recently on
-  2026-11-13: installation, lint, typecheck, build, every test, `db:check`, migrations (including
-  the upgrade of a populated database), the compiled API, the built frontend, `check:ui`, both
-  benchmarks and the seven reviewer commands. The reviewer workflow is run in the environment
-  being developed in, which is Windows.
-- **Linux under WSL 2** (Debian 11, Node.js 22.23.1, Chrome for Testing 156 in `~/.local`): the
+- **Windows 11 x64**, Chrome 157, on Node.js 22.21.0 (npm 10.9.4, SQLite 3.50.4), the supported
+  version, most recently on 2026-11-22: `npm ci`, then `npm run check:all` (the seven reviewer
+  steps with `check:ui`, `db:check` and both benchmarks, the failure-detection checks and the
+  documentation checks), run `20261122T020547.013Z-5fa17b` on 2026-11-22 (after `check:fast` was added): every check passed,
+  1,909 API and tool tests (1,908 passed, 1 Linux-only test skipped) and 441 frontend tests, 65 of
+  65 UI checks, 56 functional checks and 37 of 37 failure-detection checks (31 server, 6 client); `npm ci` printed the
+  six expected engine warnings ([Node.js versions](#nodejs-versions)). Earlier the same day, when 22.23.1 was
+  also supported, the full and quick `check:all` passed on both 22.23.1 and 22.21.0. The test suite
+  covers migrations (including the upgrade of a populated database), the compiled API and the
+  built frontend. One intermittent failure was seen on Windows, on 22.23.1 on 2026-11-20: a
+  reviewer test's clean-up failed with `kill EPERM` after the test's own checks had passed. The
+  clean-up was then replaced by confirmed termination (see
+  [docs/architecture.md](docs/architecture.md#verification-checkall)); it did not recur in the eleven
+  `check:all` runs since (nine full, two quick), nor in the five full runs of M4, the four of M5, the four of M6, the one of M7 or the one of M6 Phase 2. The run before that one, M3's first
+  (`20261120T221728.906Z-a65767`), also failed its UI benchmark once with `EBUSY` opening Chrome's
+  `DevToolsActivePort` file, while another test run was using the machine; it passed in the next
+  run, which is too few to call the suite free of intermittent failures. The reviewer
+  workflow is run in the environment being developed in, which is Windows.
+- **Linux under WSL 2** (Debian 11, Node.js 22.23.1, a version no longer supported, Chrome for Testing 156 in `~/.local`): the
   real-browser checks ran there, found without `CHROME_PATH` (44 of 44 on 2026-11-13, before the
-  final screenshot changes and the five checks added since), as did the browser search itself, the process probe (`/proc`), the
+  final screenshot changes and the eighteen checks added since), as did the browser search itself, the process probe (`/proc`), the
   background process manager with a stand-in application, and reviewer setup and seeding. The full
   test suite, the build and the seven reviewer commands were not run there.
 - **Linux sandboxes** (such as a container with Playwright's browsers in `/opt/playwright-browsers`):
@@ -963,16 +1413,80 @@ same search everywhere ([Finding a browser](#finding-a-browser)). What has actua
 
 - Fully run on Windows 11 x64 only; see [Platform support](#platform-support) for what ran under
   WSL and what was only simulated.
-- Node.js 22.23.1 is the only supported runtime.
-- Trades cannot be amended or deleted, and there is no audit history.
+- Node.js 22.21.0 only (npm 10.9.4, SQLite 3.50.4), verified on Windows; every other version
+  fails `review:01`. Six development-only packages run outside the Node.js range they declare,
+  and `npm ci` warns about each; see [Node.js versions](#nodejs-versions).
+- Trades cannot be amended or deleted; a Pending trade is executed or cancelled, and Executed and
+  Cancelled are final. A booking cannot give an execution time: the server sets it on execution,
+  so a trade cannot be recorded as executed at an earlier time (trades booked Executed before M7
+  keep the times they were given). The audit trail starts at the M3 upgrade, with no entries for
+  trades booked before it, so their History is empty.
+- **No authentication or authorization.** The actors recorded (User for bookings and executions,
+  Admin for cancellations) are labels the server assigns to each operation; anyone who can reach the
+  API can book, execute or cancel. User and Admin roles with real sign-in are deferred
+  ([roadmap](docs/roadmap.md#m6m7--identity-and-authorization), M6–M7).
+- **Pending exposure is deferred.** The page shows the actual position only (Executed net and
+  average cost); no grid, Columns choice or summary shows the Pending or Projected Net. The API
+  still calculates and sends both, and the booking limit still uses the projected position
+  (Executed and Pending together), so a booking can be refused for exposure the page does not show;
+  the refusal says what was checked.
+- A symbol whose Pending trades net to zero while it has no Executed position is not listed in the
+  positions (the API lists a symbol when its Executed or Pending net is not zero), so its Pending
+  trades are executed or cancelled from Trade History rather than from Trade Details.
+- Cancelling from Trade Details offers at most the symbol's first 100 Pending trades at once (the
+  API's largest page); the dialog says so when there are more, and any of them can be cancelled
+  from its row.
 - Realised profit and loss is not calculated.
-- The frontend and API have no authentication; the API listens on `localhost` by default.
+- The API listens on `localhost` by default.
 - The frontend tests use jsdom; layout, scrolling and real input are checked in a real browser
-  by `check:ui` (49 checks), which runs in `review:05` but not in `npm test` or `verify`.
-- `GET /trades` still returns every matching trade in one response (6.6 MB and about a second for
-  25,000), for clients that need the whole list; the frontend uses `GET /trades/page`.
+  by `check:ui` (64 checks), which runs in `review:05` but not in `npm test` or `verify`.
+- `GET /trades` still returns every matching trade in one response (10 MB with the lifecycle
+  fields and up to about 0.8 s for 25,000), for clients that need the whole list; the frontend uses
+  `GET /trades/page`.
+- **Filtered counts are not faster.** The four logical-trade indexes restored unfiltered pages
+  and counts (M4's regression), but a page filtered by a symbol search or side still reads each
+  candidate row to count it (SQLite does not treat `is null` as covered), so those pages are as
+  they were in M4, up to about 40 ms at 25,000 trades. The indexes add about 4% to an Executed
+  booking and 14% to a Pending one; see [Performance](#performance).
+- **Unexpected errors outside `check:all` (fixed in `check:all` in M6).** During M5 the UI
+  benchmark's connection to Chrome closed with a request nothing awaited (runs
+  `20261121T052103.723Z-1d7ea2` and `20261121T053052.700Z-2d2689`, after `perf-ui.ts` looked for
+  Trade History's sort headers at their pre-M5 positions); the unhandled rejection ended the
+  process, with no summary, no failure detection, documentation checks or `review:07`, and the
+  four reviewer applications left running (they were stopped by their tokens; both runs' folders are
+  kept). `check:all` now records such an error as a failure and goes on to the clean-up and the
+  summary, and a worker ended by an uncaught exception is cleaned up and reported by the supervisor
+  (see [Complete verification](#complete-verification-checkall)). The individual commands
+  (`npm run review:06`, `perf:ui` and the others) do not: run alone, they still end at an error
+  nothing caught, without their summary (their applications are then stopped with `review:07`).
+  `perf-ui.ts` itself still rejects requests outstanding when Chrome's connection closes, whether or
+  not anything awaits them.
+- Every verification failure since `check:all` existed, with its cause and resolution, and the
+  verification tooling's open issues are in [Known issues](docs/known-issues.md).
+- **`check:all` stops only the applications it recorded.** When the worker does not complete, the
+  supervisor stops this run's reviewer applications, each by its record and token, and nothing
+  else. Processes the worker started for a while (vitest, npm, the build, Chrome for the UI checks
+  and benchmarks, the tests of failure detection's copies) are not stopped by it: it lists any
+  process whose command line names this run's folder, failure detection's copies or the UI
+  benchmark's browser profile, with how to stop each by hand, and never claims the clean-up of child
+  processes is complete. On Windows, Node.js 22.21.0 was seen to end a child that is not detached,
+  and that child's own child, when the parent ended by an uncaught exception; that is one
+  observation, not a guarantee, and on Linux and macOS such a child can outlive the worker. If the
+  supervisor itself is killed, nothing cleans up; the applications' records still allow
+  `npm run app:stop` with their tokens checked.
+- **Failure detection's copies from a run that did not complete are kept.** A copy
+  (`server/.test-build-check-<run>-<check>` or `client/.test-build-check-<run>-<check>`) may still be in use when the worker ends, so the
+  supervisor names the run's copies and deletes none; another run's are never touched. They are
+  removed by hand once nothing uses them.
+- **Ctrl+C and SIGTERM are tested through a stand-in signal source**, not a real console: Windows
+  cannot send Ctrl+C to one process, and the tests' own process must not receive it.
+- **Step deadlines are fixed.** A machine where `review:05` or `review:06` takes over 45 minutes,
+  about nine and fifteen times what they take on the reviewer's, would fail at the deadline; the
+  deadlines are `STEP_DEADLINES_MS` in `server/scripts/check-all.ts`, the other phases' limits
+  `PHASE_LIMITS_MS`, and the supervisor's grace `GRACE_MS` (five minutes), with no option to
+  change them.
 - The symbol search (a substring match) cannot use an index. A page deep in a filtered list
-  sorted by another column takes longest, about 14–35 ms at 25,000 trades (see
+  sorted by another column takes longest, about 12–51 ms at 25,000 trades (see
   [Performance](#performance)), and grows with the number of matching trades.
 - Pages are numbered, not anchored to a trade: a booking made while you look at page 3 moves
   later trades one place down, so the next page can repeat one trade.
@@ -982,9 +1496,13 @@ same search everywhere ([Finding a browser](#finding-a-browser)). What has actua
   the Exact values setting are kept while you change tab, but not when the page is reloaded.
 - The Trade History table has no column resizing or Columns control; the Positions grids and the
   Trade Details do.
-- At 1280 px, side by side, the Trade Details' five default columns on the benchmark need about
-  45 px more than their panel (the full timestamp alone takes about 260 px), so the end of Notional
-  is reached by scrolling the grid sideways; long values (a 21-digit quantity, a 32-character
+- At 1280 px, side by side, the Trade Details' seven default columns on the benchmark (Actions,
+  with its Edit and History icons, first, then Executed at, Side and Status) need more than their panel (the
+  full timestamp alone takes about 260 px), so Quantity, Price and Notional are reached by
+  scrolling the grid sideways; at 768 px the Trading tab's Positions grid, with its six columns,
+  also scrolls sideways inside its box for the last one (the page itself never does). Trade
+  History scrolls sideways at 1280 px for Created at and Updated at; the details button (first)
+  and Status are always in view; long values (a 21-digit quantity, a 32-character
   symbol) do the same in the master. Exact values shown beside rounded ones make money columns
   wider. The page itself never scrolls sideways.
 - In table cells the exact value of a rounded figure is a tooltip, screen-reader text, or (with
@@ -1017,6 +1535,27 @@ same search everywhere ([Finding a browser](#finding-a-browser)). What has actua
   cause is not known; a machine-wide stall is suspected, not confirmed. If a run stops for minutes,
   note which processes are running (and any antivirus activity) before stopping it, then run the
   tests again.
+- **The port-probe test has its own 20 s limit.** `test/scripts/perf-api.test.ts`'s test that
+  tells this process from a real other one and sees the port freed takes 0.35–0.5 s alone, but
+  0.5–3.6 s in 14 full test runs on Windows, and 6.2 s in one (`check:all` run
+  `20261120T234553.962Z-c96300`), which failed at Vitest's default 5 s. The test, and only it, now
+  allows 20 s, about three times the slowest seen; the other process's stop has its own 5 s
+  deadline and fails, naming the process and whether it is still alive, if it has not exited by
+  then. Each step's time is printed if the test fails. Vitest's default stays 5 s, and the
+  ownership and port-release checks are unchanged.
+- **The trade-audit trigger test has its own 15 s limit.** `test/infrastructure/trade-audit.test.ts`'s
+  test of the audit triggers after migration and after composing the server again exceeded
+  Vitest's default 5 s twice: once during M4 in a run of ten test files, and once in M6, in
+  failure detection's control for `audit-update-recorded-as-update` (`check:all` run
+  `20261121T144350.160Z-af960e`, which therefore failed). It is the only test in its file that
+  composes the whole server, and the first composition in a process loads Fastify, Ajv and the
+  Swagger plugins synchronously (241 CommonJS modules and 654 synchronous file-system calls,
+  measured), about 0.3 s normally (0.33–0.49 s in 15 runs alone and 10 controls). In that control,
+  the process's imports took 18.7 s instead of about 1.3 s and the test 6.05 s, with the event loop
+  blocked past the deadline, while the file's other tests took their usual 17–29 ms: the same
+  loading, slowed by the machine's file access at the time (what slowed it was not identified). No
+  lock, leak or open-ended wait was found. The test, and only it, now allows 15 s; its assertions,
+  every other test's 5 s and failure detection's strictness are unchanged.
 
 ## Dependency advisories
 
@@ -1040,3 +1579,7 @@ published, with the same lockfile), all from two packages:
 - [Setup guide](docs/setup.md): installation, configuration, database, ports, troubleshooting
 - [Architecture](docs/architecture.md): layers, diagrams, business rules, numeric and timestamp
   policies, persistence, API contract, testing
+- [Known issues](docs/known-issues.md): open issues and every verification failure with its
+  resolution
+- [Roadmap](docs/roadmap.md): the product roadmap, M1 to M4 delivered and M5 to M20 planned (none
+  of them authorized or implemented yet)

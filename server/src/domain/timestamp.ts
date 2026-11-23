@@ -51,6 +51,11 @@ export function parseTimestamp(text: string): UtcTimestamp | undefined {
   return fromEpochMilliseconds(wallClock.getTime() - offsetMinutes * MINUTE_MS)
 }
 
+/** Whether a value is canonical UTC timestamp text: what parseTimestamp gives, unchanged by it. */
+export function isUtcTimestamp(value: unknown): value is UtcTimestamp {
+  return typeof value === 'string' && value.length === 24 && value.endsWith('Z') && parseTimestamp(value) === value
+}
+
 /** The canonical UTC timestamp of a clock reading. Throws if the date is invalid or out of range. */
 export function toUtcTimestamp(date: Date): UtcTimestamp {
   const timestamp = fromEpochMilliseconds(date.getTime())

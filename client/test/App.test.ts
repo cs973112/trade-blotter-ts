@@ -3,7 +3,7 @@ import { createPinia } from 'pinia'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import App from '../src/App.vue'
-import { fakeApi, json, pagedTrades, tradeJson } from './support/fake-api.ts'
+import { asPending, fakeApi, json, pagedTrades, tradeJson } from './support/fake-api.ts'
 
 const FIRST_PAGE = 'GET /trades/page?page=1&pageSize=50'
 
@@ -22,7 +22,7 @@ const second = tradeJson({ id: 'b', bookingSequence: 2, symbol: 'MSFT', side: 'S
 
 describe('app', () => {
   it('loads the first page of trades, and positions, when it opens: never the whole history', async () => {
-    const server = fakeApi({ 'GET /trades/page': pagedTrades([first]), 'GET /positions': json('[{"symbol":"AAPL","netQuantity":10,"averageCost":100}]') })
+    const server = fakeApi({ 'GET /trades/page': pagedTrades([first]), 'GET /positions': json('[{"symbol":"AAPL","netQuantity":10,"averageCost":100,"executedNetQuantity":10,"pendingNetQuantity":0,"projectedNetQuantity":10}]') })
 
     wrapper = mount(App, { global: { plugins: [createPinia()] } })
     await flushPromises()
@@ -36,14 +36,14 @@ describe('app', () => {
   it('shows the new trade and the updated position after booking, as the API returns them', async () => {
     const server = fakeApi({
       'GET /trades/page': pagedTrades([first]),
-      'GET /positions': json('[{"symbol":"AAPL","netQuantity":10,"averageCost":100}]'),
-      'POST /trades': json(second, 201),
+      'GET /positions': json('[{"symbol":"AAPL","netQuantity":10,"averageCost":100,"executedNetQuantity":10,"pendingNetQuantity":0,"projectedNetQuantity":10}]'),
+      'POST /trades': json(asPending(second), 201),
     })
     wrapper = mount(App, { global: { plugins: [createPinia()] } })
     await flushPromises()
     server.set('GET /trades/page', pagedTrades([second, first]))
-    server.set('GET /positions', json('[{"symbol":"AAPL","netQuantity":10,"averageCost":100},' +
-      '{"symbol":"MSFT","netQuantity":-5,"averageCost":301.25}]'))
+    server.set('GET /positions', json('[{"symbol":"AAPL","netQuantity":10,"averageCost":100,"executedNetQuantity":10,"pendingNetQuantity":0,"projectedNetQuantity":10},' +
+      '{"symbol":"MSFT","netQuantity":0,"averageCost":0,"executedNetQuantity":0,"pendingNetQuantity":-5,"projectedNetQuantity":-5}]'))
 
     await wrapper.find('#trade-symbol').setValue('MSFT')
     await wrapper.find('#trade-side-sell').setValue(true)
@@ -56,6 +56,7 @@ describe('app', () => {
     const tradeSymbols = wrapper.findAll('section[aria-labelledby="blotter-heading"] tbody th').map((cell) => cell.text())
     expect(tradeSymbols).toEqual(['MSFT', 'AAPL'])
     const positions = wrapper.findAll('section[aria-labelledby="positions-heading"] tbody tr').map((row) => row.text())
-    expect(positions).toEqual(['AAPLLong10100.00', 'MSFTShort-5301.25'])
+    // The actual position: Executed net and average cost. The new trade is Pending, so MSFT has no actual position yet.
+    expect(positions).toEqual(['AAPLLong10100.00', 'MSFTFlat00.00'])
   })
 })

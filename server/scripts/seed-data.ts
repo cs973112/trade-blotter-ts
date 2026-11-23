@@ -3,13 +3,13 @@ import { createHash } from 'node:crypto'
 import { Dec, decimalText, type Dec as Decimal } from '../src/domain/decimal.ts'
 import { DEFAULT_SYMBOL_MAX_LENGTH } from '../src/domain/symbol.ts'
 import { toUtcTimestamp } from '../src/domain/timestamp.ts'
-import { createTrade, validateTradeRequest, type NewTrade, type TradeSide } from '../src/domain/trade.ts'
+import { createTrade, validateExecutedTradeRequest, type NewTrade, type TradeSide } from '../src/domain/trade.ts'
 
 /**
  * Deterministic sample trades for trying the application with realistic volumes. The same count
  * and seed always give the same trades: ids, timestamps and every digit.
  *
- * Each trade is built the way the API builds one, through validateTradeRequest and createTrade,
+ * Each trade is a historical Executed trade, built through validateExecutedTradeRequest and createTrade,
  * so it is valid and normalised by the domain's own rules. The generator tracks only each
  * symbol's net quantity, to choose quantities that open, increase, reduce, close or cross a
  * position; average costs and the position limit are left to the domain (see summariseTrades in
@@ -225,7 +225,7 @@ export function generateTrades(count: number, seed: string = DEFAULT_SEED): NewT
     const price = nextPrice(state, random)
     const recorded = executed + (random.chance(0.03) ? (1 + random.integer(10)) * 86_400_000 : (1 + random.integer(600)) * 1000)
 
-    const result = validateTradeRequest(
+    const result = validateExecutedTradeRequest(
       { symbol: state.symbol, side, quantity: decimalText(quantity), price, executedAt: new Date(executed).toISOString() },
       { symbolMaxLength: DEFAULT_SYMBOL_MAX_LENGTH },
     )

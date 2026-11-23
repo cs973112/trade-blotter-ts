@@ -31,6 +31,7 @@ Thumbs.db
 
 # Test tooling
 server/.test-build-*/
+client/.test-build-*/
 test-results/
 playwright-report/
 .eslintcache

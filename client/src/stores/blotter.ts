@@ -1,8 +1,8 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
-import { api } from '../api/client.ts'
-import type { CreateTradeRequest, Position, SortField, Trade, TradePageQuery, TradeQuery } from '../api/contracts.ts'
+import { api, ApiError } from '../api/client.ts'
+import type { Cancellation, CreateTradeRequest, Position, SortField, Trade, TradePageQuery, TradeQuery } from '../api/contracts.ts'
 import { DEFAULT_PAGE_SIZE, DEFAULT_TRADE_SORT, nextSort, type TradeFilterQuery, type TradeSort } from '../lib/trade-filters.ts'
 import { useDetailsStore } from './details.ts'
 import { emptyList, messageFor, type ListState, type ShownPage } from './list-state.ts'
@@ -18,6 +18,10 @@ export { emptyList, messageFor, type ListState, type ShownPage } from './list-st
  * page and the page size. Each is changed only through the actions below, which reload the list;
  * changing the filters, the sort or the page size goes back to page 1. Positions never use any of
  * it: they always cover every trade.
+ *
+ * Executing or cancelling a Pending trade refreshes the same lists, and the Trade Details when they
+ * show that trade's symbol. A refusal (the trade was executed, cancelled or changed
+ * meanwhile, or no longer exists) refreshes them too, since what is shown is then out of date.
  */
 export const useBlotterStore = defineStore('blotter', () => {
   const trades = ref<ListState<Trade>>(emptyList())
@@ -156,8 +160,53 @@ export const useBlotterStore = defineStore('blotter', () => {
     return trade
   }
 
+  /** Trades, positions, and the Trade Details when they show this symbol. */
+  async function refreshAfterChange(symbol: string | undefined): Promise<void> {
+    const details = useDetailsStore()
+    const showsSymbol = symbol === undefined || details.symbol === symbol
+    await Promise.all([refresh(), showsSymbol && details.symbol !== undefined ? details.reload() : undefined])
+  }
+
+  /**
+   * Executes a Pending trade (the server sets the time and records it as User), then refreshes what
+   * it changes: the trades, the positions, and the Trade Details when they show its symbol. Throws ApiError if it was not executed; after a 404 or 409, the lists are
+   * refreshed first, so the page no longer offers what the server refused.
+   */
+  async function executeTrade(id: string, symbol: string): Promise<Trade> {
+    const number = ++requestsStarted
+    let result: Trade
+    try {
+      result = await api.executeTrade(id)
+    } catch (error) {
+      if (error instanceof ApiError && (error.kind === 'conflict' || error.kind === 'not-found')) await refreshAfterChange(symbol)
+      throw error
+    }
+    answered(number)
+    await refreshAfterChange(result.symbol)
+    return result
+  }
+
+  /**
+   * Cancels a Pending trade with a reason (the server records it as Admin), then refreshes what it
+   * changes. Throws ApiError if it was not cancelled; after a 404 or 409, the lists are refreshed
+   * first, so the page no longer offers what the server refused. `symbol` is the trade's, as shown.
+   */
+  async function cancelTrade(id: string, reason: string, symbol: string): Promise<Cancellation> {
+    const number = ++requestsStarted
+    let result: Cancellation
+    try {
+      result = await api.cancelTrade(id, reason)
+    } catch (error) {
+      if (error instanceof ApiError && (error.kind === 'conflict' || error.kind === 'not-found')) await refreshAfterChange(symbol)
+      throw error
+    }
+    answered(number)
+    await refreshAfterChange(result.trade.symbol)
+    return result
+  }
+
   return {
     trades, positions, filters, sort, page, pageSize, tradeQuery, shownTradeQuery, shownPage, latestAnswered, lastRequestStarted,
-    loadTrades, loadPositions, applyFilters, clearFilters, sortBy, goToPage, setPageSize, refresh, createTrade,
+    loadTrades, loadPositions, applyFilters, clearFilters, sortBy, goToPage, setPageSize, refresh, createTrade, executeTrade, cancelTrade,
   }
 })

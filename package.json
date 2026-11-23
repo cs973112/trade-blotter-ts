@@ -9,7 +9,7 @@
     "client"
   ],
   "engines": {
-    "node": "^22.23.1"
+    "node": "22.21.0"
   },
   "scripts": {
     "lint": "eslint .",
@@ -27,6 +27,10 @@
     "perf:ui": "node --disable-warning=ExperimentalWarning server/scripts/perf-ui.ts",
     "perf:ui:sizes": "node --disable-warning=ExperimentalWarning server/scripts/perf-sizes.ts ui",
     "check:ui": "node --disable-warning=ExperimentalWarning server/scripts/ui-check.ts",
+    "check:all": "node --disable-warning=ExperimentalWarning server/scripts/check-all-main.ts",
+    "check:fast": "node --disable-warning=ExperimentalWarning server/scripts/check-fast.ts",
+    "check:docs": "node --disable-warning=ExperimentalWarning server/scripts/docs-check.ts",
+    "check:failures": "node --disable-warning=ExperimentalWarning server/scripts/failure-detection.ts",
     "review:01": "node --disable-warning=ExperimentalWarning server/scripts/review.ts 01",
     "review:02": "node --disable-warning=ExperimentalWarning server/scripts/review.ts 02",
     "review:03": "node --disable-warning=ExperimentalWarning server/scripts/review.ts 03",

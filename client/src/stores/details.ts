@@ -21,6 +21,9 @@ export function detailQuery(symbol: string, sort: TradeSort, page: number, pageS
 
 const OTHER_SYMBOL = 'The server returned trades for another symbol. Try again in a moment.'
 
+/** Audit entries the trade dialog asks for. A logical trade has two (booked) or three (cancelled). */
+export const AUDIT_PAGE_SIZE = 25
+
 /**
  * Positions & Trade Details: the position chosen in the master grid, and one page of its trades
  * from GET /trades/page, filtered by the API on that exact symbol. Positions themselves come from
@@ -29,7 +32,8 @@ const OTHER_SYMBOL = 'The server returned trades for another symbol. Try again i
  * Choosing another position starts again at page 1 (keeping the sort and page size) and clears the
  * trades shown, so one position's trades are never shown under another's name. Only the newest
  * request may change what is shown: an answer for an earlier choice, page or sort is dropped.
- * Choosing the position already chosen, or the page already shown, sends nothing.
+ * Choosing the position already chosen, or the page already shown, sends nothing. A trade's audit
+ * history is shown in the trade dialog (stores/trade-dialog.ts), opened from its History button.
  */
 export const useDetailsStore = defineStore('details', () => {
   /** The position chosen, by symbol; undefined until one is. */
@@ -113,5 +117,7 @@ export const useDetailsStore = defineStore('details', () => {
     await load()
   }
 
-  return { symbol, trades, sort, page, pageSize, shownSymbol, shownSort, shownPage, showsChosen, select, sortBy, goToPage, setPageSize, reload }
+  return {
+    symbol, trades, sort, page, pageSize, shownSymbol, shownSort, shownPage, showsChosen, select, sortBy, goToPage, setPageSize, reload,
+  }
 })

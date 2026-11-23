@@ -1,9 +1,11 @@
+import { Dec } from '../src/domain/decimal.ts'
 import { calculatePositions } from '../src/domain/position.ts'
 import { DEFAULT_SYMBOL_MAX_LENGTH } from '../src/domain/symbol.ts'
 import { toUtcTimestamp } from '../src/domain/timestamp.ts'
-import { createTrade, validateTradeRequest, type NewTrade, type Trade } from '../src/domain/trade.ts'
+import { createTrade, validateExecutedTradeRequest, type NewTrade, type Trade } from '../src/domain/trade.ts'
 import { closeDatabase, openDatabase } from '../src/infrastructure/database/connection.ts'
 import { applyMigrations } from '../src/infrastructure/database/migrate.ts'
+import { createDrizzleLifecycleRepository } from '../src/infrastructure/drizzle-lifecycle-repository.ts'
 import { trades } from '../src/infrastructure/database/schema.ts'
 import { toRow } from '../src/infrastructure/drizzle-trade-repository.ts'
 import { BENCHMARK_COUNT, BENCHMARK_SEED } from './review-context.ts'
@@ -69,7 +71,7 @@ const fixedId = (index: number, variant = '8'): string => `00000000-0000-4000-${
 function build(list: readonly Order[], first: number, variant: string): NewTrade[] {
   return list.map((order, index) => {
     const executedAt = new Date(first + index * 60_000).toISOString()
-    const result = validateTradeRequest({ ...order, executedAt }, { symbolMaxLength: DEFAULT_SYMBOL_MAX_LENGTH })
+    const result = validateExecutedTradeRequest({ ...order, executedAt }, { symbolMaxLength: DEFAULT_SYMBOL_MAX_LENGTH })
     if (!result.ok) throw new Error(`An invalid UI check trade (${JSON.stringify(result.errors)}); this is a bug in the dataset.`)
     return createTrade(result.value, { id: fixedId(index + 1, variant), now: toUtcTimestamp(new Date(Date.parse(executedAt) + 30_000)) })
   })
@@ -168,4 +170,56 @@ export function writeBenchmarkDatabase(path: string): void {
 /** The benchmark's open positions, as the domain calculates them from its trades. */
 export function uiBenchmarkPositionCount(): number {
   return positionsOf(generateTrades(BENCHMARK_COUNT, BENCHMARK_SEED)).length
+}
+
+// ---------------------------------------------------------------------------------------------
+// The trade lifecycle: a third, separate dataset
+
+/**
+ * The lifecycle checks' own trades, booked and cancelled through the lifecycle repository as the API
+ * does, so every row has its audit entries. LIFE has an Executed trade, three Pending trades to
+ * choose among, and one Pending trade already cancelled; PEND has only a Pending trade (listed in
+ * the positions, Flat); EXEC has only an Executed one. Prices whose two-place display rounds half to
+ * even (10.125 shows as 10.12, 11.255 as 11.26).
+ */
+export const UI_LIFECYCLE = {
+  lifeExecuted: fixedId(1, 'a'), lifePending1: fixedId(2, 'a'), lifePending2: fixedId(3, 'a'), lifePending3: fixedId(4, 'a'),
+  lifeCancelled: fixedId(5, 'a'), lifeCancellationRecord: fixedId(6, 'a'), pendOnly: fixedId(7, 'a'), execOnly: fixedId(8, 'a'),
+  // M7: one Pending trade the checks execute, and one executed behind the page's back.
+  lifeToExecute: fixedId(9, 'a'), lifeRace: fixedId(10, 'a'),
+} as const
+
+/** The logical trades the dataset lists (cancellation records are not listed). */
+export const UI_LIFECYCLE_LOGICAL_TRADES = 9
+
+/** Creates a new database file at `path` (migrated as the API would) holding the lifecycle dataset. */
+export async function writeUiLifecycleDatabase(path: string): Promise<void> {
+  const db = openDatabase(path)
+  try {
+    applyMigrations(db)
+    const repository = createDrizzleLifecycleRepository(db)
+    let minute = 0
+    const at = (): ReturnType<typeof toUtcTimestamp> => toUtcTimestamp(new Date(Date.parse('2026-03-02T14:00:00.000Z') + minute++ * 60_000))
+    const book = async (id: string, symbol: string, side: 'Buy' | 'Sell', quantity: string, price: string, status: 'Pending' | 'Executed'): Promise<void> => {
+      const now = at()
+      await repository.book({
+        id, symbol, side, quantity: new Dec(quantity), price: new Dec(price), status, executedAt: status === 'Executed' ? now : null,
+        createdAt: now, updatedAt: now, createdBy: 'User', updatedBy: 'User', originalTradeId: null, cancellationReason: null,
+      })
+    }
+    const ids = UI_LIFECYCLE
+    await book(ids.lifeExecuted, 'LIFE', 'Buy', '100', '10.125', 'Executed')
+    await book(ids.lifePending1, 'LIFE', 'Buy', '5', '11.255', 'Pending')
+    await book(ids.lifePending2, 'LIFE', 'Sell', '3', '12.5', 'Pending')
+    await book(ids.lifePending3, 'LIFE', 'Buy', '2', '9.995', 'Pending')
+    await book(ids.lifeCancelled, 'LIFE', 'Buy', '1', '10', 'Pending')
+    const cancelled = await repository.cancel(ids.lifeCancelled, { reason: 'Booked in error' }, { id: ids.lifeCancellationRecord, now: at() })
+    if (!cancelled.ok) throw new Error(`The lifecycle dataset could not cancel its trade: ${cancelled.message}`)
+    await book(ids.pendOnly, 'PEND', 'Buy', '7', '20', 'Pending')
+    await book(ids.execOnly, 'EXEC', 'Sell', '50', '30.333', 'Executed')
+    await book(ids.lifeToExecute, 'LIFE', 'Buy', '4', '10.5', 'Pending')
+    await book(ids.lifeRace, 'LIFE', 'Sell', '1', '10.75', 'Pending')
+  } finally {
+    closeDatabase(db)
+  }
 }

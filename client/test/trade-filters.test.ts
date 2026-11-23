@@ -160,7 +160,8 @@ describe('trade filters: sorting by a column', () => {
 describe('trade filters: whether a booked trade matches the applied filters', () => {
   const trade = (overrides: Partial<Trade> = {}): Trade => ({
     id: 't', bookingSequence: 1, symbol: 'BRK.B', side: 'Buy', quantity: '1', price: '1', notional: '1',
-    executedAt: '2026-03-08T05:00:00.000Z', createdAt: '2026-03-08T05:00:00.000Z', updatedAt: '2026-03-08T05:00:00.000Z', ...overrides,
+    status: 'Executed', executedAt: '2026-03-08T05:00:00.000Z', createdAt: '2026-03-08T05:00:00.000Z', updatedAt: '2026-03-08T05:00:00.000Z',
+    createdBy: 'User', updatedBy: 'User', originalTradeId: null, cancellationReason: null, cancellationTradeId: null, ...overrides,
   })
 
   it('matches everything without filters, and ignores the sort', () => {

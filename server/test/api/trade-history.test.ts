@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { closeDatabase, openDatabase } from '../../src/infrastructure/database/connection.ts'
 import { createTestServer } from '../support/app.ts'
 import { rawRows } from '../support/database.ts'
-import { JSON_TYPE, postTrade, PROBLEM_TYPE, rawNumbers } from '../support/http.ts'
+import { JSON_TYPE, bookExecuted, PROBLEM_TYPE, rawNumbers } from '../support/http.ts'
 
 let server: Awaited<ReturnType<typeof createTestServer>>
 
@@ -17,10 +17,10 @@ afterEach(async () => {
 
 const get = (url: string) => server.app.inject({ method: 'GET', url })
 
+/** An Executed trade: booked (Pending), then executed at `executedAt` (bookExecuted). */
 async function trade(symbol: string, side: string, quantity: string, price: string, executedAt: string): Promise<void> {
-  const response = await postTrade(server.app,
-    `{"symbol":"${symbol}","side":"${side}","quantity":${quantity},"price":${price},"executedAt":"${executedAt}"}`)
-  expect(response.statusCode).toBe(201)
+  const response = await bookExecuted(server, `{"symbol":"${symbol}","side":"${side}","quantity":${quantity},"price":${price}}`, executedAt)
+  expect(response.statusCode, response.body).toBe(200)
 }
 
 /** The booking sequences GET /trades returns for a query string, in order. */
@@ -305,10 +305,10 @@ describe('API: GET /trades leaves stored trades and positions alone', () => {
 
     expect(storedRows()).toEqual(rows)
     expect(positions).toBe(
-      '[{"symbol":"AAPL","netQuantity":-9,"averageCost":100.25},{"symbol":"BRK.B","netQuantity":9,"averageCost":1000},' +
+      '[{"symbol":"AAPL","netQuantity":-9,"averageCost":100.25,"executedNetQuantity":-9,"pendingNetQuantity":0,"projectedNetQuantity":-9},{"symbol":"BRK.B","netQuantity":9,"averageCost":1000,"executedNetQuantity":9,"pendingNetQuantity":0,"projectedNetQuantity":9},' +
         // MSFT: +10 at 9, crossed short by the Sell of 100 booked later at the same instant, then crossed long at 2.
-        '{"symbol":"MSFT","netQuantity":123456789012255.1234567891,"averageCost":2},' +
-        '{"symbol":"XMSFTX","netQuantity":-0.5,"averageCost":2}]',
+        '{"symbol":"MSFT","netQuantity":123456789012255.1234567891,"averageCost":2,"executedNetQuantity":123456789012255.1234567891,"pendingNetQuantity":0,"projectedNetQuantity":123456789012255.1234567891},' +
+        '{"symbol":"XMSFTX","netQuantity":-0.5,"averageCost":2,"executedNetQuantity":-0.5,"pendingNetQuantity":0,"projectedNetQuantity":-0.5}]',
     )
   })
 

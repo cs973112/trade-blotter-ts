@@ -27,7 +27,7 @@ const many = (count: number): string[] => Array.from({ length: count }, (_, inde
 }))
 
 async function openPage() {
-  const server = fakeApi({ 'GET /trades/page': pagedTrades(many(120)), 'GET /positions': json('[{"symbol":"AAPL","netQuantity":10,"averageCost":100}]') })
+  const server = fakeApi({ 'GET /trades/page': pagedTrades(many(120)), 'GET /positions': json('[{"symbol":"AAPL","netQuantity":10,"averageCost":100,"executedNetQuantity":10,"pendingNetQuantity":0,"projectedNetQuantity":10}]') })
   wrapper = mount(App, { global: { plugins: [createPinia()] }, attachTo: document.body })
   await flushPromises()
   return { server, page: wrapper }
@@ -126,7 +126,7 @@ describe('tabs on the page', () => {
     await page.find('#filter-symbol').setValue('s0')
     await page.find('form.trade-filters').trigger('submit')
     await flushPromises()
-    await page.find('section[aria-labelledby="blotter-heading"] thead th:nth-child(1) button').trigger('click')
+    await page.find('section[aria-labelledby="blotter-heading"] thead th:nth-child(2) button').trigger('click')
     await flushPromises()
     await page.find('nav.pager select').setValue('25')
     await flushPromises()

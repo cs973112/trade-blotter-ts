@@ -80,9 +80,17 @@ export function applyTrade(position: Position, trade: Pick<Trade, 'side' | 'quan
  * `history` must hold every stored trade for the symbol; trades for other symbols are ignored.
  */
 export function positionAfterTrade(history: readonly PositionTrade[], proposed: Omit<PositionTrade, 'bookingSequence'>): Position {
-  const ordered = [...history.filter((trade) => trade.symbol === proposed.symbol), { ...proposed, bookingSequence: Infinity }]
-    .sort(compareTradeOrder)
-  return ordered.reduce(applyTrade, flatPosition(proposed.symbol))
+  return positionWithTrade(history, { ...proposed, bookingSequence: Infinity })
+}
+
+/**
+ * As positionAfterTrade, for a trade that already has its booking sequence: a stored Pending trade
+ * being executed. It takes its place in trade order by its execution time and its own booking
+ * sequence; the trades after it are replayed on top of it. `history` must not include it.
+ */
+export function positionWithTrade(history: readonly PositionTrade[], trade: PositionTrade): Position {
+  const ordered = [...history.filter((stored) => stored.symbol === trade.symbol), trade].sort(compareTradeOrder)
+  return ordered.reduce(applyTrade, flatPosition(trade.symbol))
 }
 
 /**

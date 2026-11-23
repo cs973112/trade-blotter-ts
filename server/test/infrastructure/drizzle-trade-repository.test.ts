@@ -6,6 +6,7 @@ import { decimalText } from '../../src/domain/decimal.ts'
 import { PositionLimitError } from '../../src/domain/position.ts'
 import type { Trade } from '../../src/domain/trade.ts'
 import type { Database } from '../../src/infrastructure/database/connection.ts'
+import { createDrizzleLifecycleRepository } from '../../src/infrastructure/drizzle-lifecycle-repository.ts'
 import { createDrizzleTradeRepository, planPageRead } from '../../src/infrastructure/drizzle-trade-repository.ts'
 import { createTestDatabase, rawRows } from '../support/database.ts'
 import { createFixedClock, createSequentialIds } from '../support/fixed-clock.ts'
@@ -122,20 +123,26 @@ describe('infrastructure: Drizzle trade repository', () => {
   })
 
   it('derives positions for several symbols from out-of-order trades through the real services', async () => {
-    const trades = createDrizzleTradeRepository(db)
+    const trades = createDrizzleLifecycleRepository(db)
     const clock = createFixedClock('2026-03-01T12:00:00.000Z')
     const tradeService = createTradeService({ trades, clock, ids: createSequentialIds() })
     const positionService = createPositionService({ trades })
 
-    await tradeService.createTrade({ symbol: 'msft', side: 'Buy', quantity: '100', price: '10', executedAt: '2026-01-01T09:00:00Z' })
-    await tradeService.createTrade({ symbol: 'MSFT', side: 'Sell', quantity: '100', price: '12', executedAt: '2026-01-01T11:00:00Z' })
-    await tradeService.createTrade({ symbol: 'AAPL', side: 'Sell', quantity: '1', price: '1', executedAt: '2026-01-01T09:00:00Z' })
-    await tradeService.createTrade({ symbol: 'AAPL', side: 'Sell', quantity: '2', price: '2', executedAt: '2026-01-01T09:00:00Z' })
-    // Executed between the MSFT trades, recorded later: it raises the long before the sale.
-    await tradeService.createTrade({ symbol: 'MSFT', side: 'Buy', quantity: '100', price: '20', executedAt: '2026-01-01T10:00:00Z' })
+    // Each trade is booked, then executed with the clock at its execution time.
+    const executed = async (request: { symbol: string; side: string; quantity: string; price: string }, at: string) => {
+      clock.set(at)
+      const booked = await tradeService.createTrade(request)
+      await tradeService.executeTrade(booked.id, undefined)
+    }
+    await executed({ symbol: 'msft', side: 'Buy', quantity: '100', price: '10' }, '2026-01-01T09:00:00Z')
+    await executed({ symbol: 'MSFT', side: 'Sell', quantity: '100', price: '12' }, '2026-01-01T11:00:00Z')
+    await executed({ symbol: 'AAPL', side: 'Sell', quantity: '1', price: '1' }, '2026-01-01T09:00:00Z')
+    await executed({ symbol: 'AAPL', side: 'Sell', quantity: '2', price: '2' }, '2026-01-01T09:00:00Z')
+    // Executed between the MSFT trades, booked later: it raises the long before the sale.
+    await executed({ symbol: 'MSFT', side: 'Buy', quantity: '100', price: '20' }, '2026-01-01T10:00:00Z')
 
     const positions = (await positionService.listPositions())
-      .map((position) => [position.symbol, decimalText(position.netQuantity), decimalText(position.averageCost)])
+      .map((position) => [position.symbol, decimalText(position.executedNet), decimalText(position.averageCost)])
     expect(positions).toEqual([['AAPL', '-3', `1.${'6'.repeat(48)}7`], ['MSFT', '100', '15']])
     expect((await tradeService.listTrades()).map((trade) => trade.bookingSequence)).toEqual([2, 5, 4, 3, 1])
   })

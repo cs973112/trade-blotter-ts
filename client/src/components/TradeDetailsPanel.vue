@@ -3,39 +3,75 @@ import { storeToRefs } from 'pinia'
 import { computed, nextTick, ref, watch } from 'vue'
 
 import type { SortField, Trade } from '../api/contracts.ts'
+import { describeTrade } from '../lib/cancellation.ts'
 import { useColumnVisibility, type ChoosableColumn } from '../lib/column-visibility.ts'
 import { useResizableGrid, type ResizableColumn } from '../lib/column-widths.ts'
 import { formatDecimal } from '../lib/decimal-text.ts'
+import { positionDirection } from '../lib/positions.ts'
 import { ariaSortFor, DEFAULT_TRADE_SORT, directionLabel, SORT_FIELDS } from '../lib/trade-filters.ts'
 import { useBlotterStore } from '../stores/blotter.ts'
+import { useCancellationStore } from '../stores/cancellation.ts'
+import { useExecutionStore } from '../stores/execution.ts'
 import { useDetailsStore } from '../stores/details.ts'
+import { useTradeDialogStore } from '../stores/trade-dialog.ts'
 import ColumnChooser from './ColumnChooser.vue'
 import ColumnResizer from './ColumnResizer.vue'
 import ExactValuesToggle from './ExactValuesToggle.vue'
 import LocalTimestamp from './LocalTimestamp.vue'
 import MoneyValue from './MoneyValue.vue'
 import SortButton from './SortButton.vue'
+import StatusBadge from './StatusBadge.vue'
 import TradePager from './TradePager.vue'
 
 /**
  * The trades of the position chosen in the master grid: one page at a time from GET /trades/page
  * with symbolMatch=exact, so only that symbol's trades (MS never shows MSFT or MSTR). The API
  * sorts, counts and pages them; this panel never loads every trade. Columns can be resized and
- * hidden, as in the Positions grid.
+ * hidden, as in the Positions grid. Each row's first cell has an edit button, which opens the trade
+ * dialog (Execute, Keep Pending, Cancel with a reason, for a Pending trade), and a History button,
+ * which opens the same dialog with the trade's audit history.
  */
 const blotter = useBlotterStore()
 const details = useDetailsStore()
 const { positions } = storeToRefs(blotter)
 const { symbol, trades, sort, page, pageSize, shownSymbol, shownSort, shownPage, showsChosen } = storeToRefs(details)
+const cancellation = useCancellationStore()
+const { outcome } = storeToRefs(cancellation)
+const execution = useExecutionStore()
+const { outcome: executed } = storeToRefs(execution)
+
+const tradeDialog = useTradeDialogStore()
+
+const opener = (event: Event): HTMLElement | null => event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+
+/** A row's edit button: the trade dialog, which offers Execute and Cancel for a Pending trade. */
+function startEdit(trade: Trade, event: Event): void {
+  tradeDialog.openFor(trade, opener(event), 'details')
+}
+
+/** The summary's button: the chosen symbol's Pending trades, to choose one from. */
+function startCancelForSymbol(event: Event): void {
+  if (symbol.value !== undefined) void cancellation.openForSymbol(symbol.value, 'details', opener(event))
+}
+
+/** A row's History button: the trade dialog with the trade's audit history, read only. */
+function showHistory(trade: Trade, event: Event): void {
+  tradeDialog.openFor(trade, opener(event), 'details', true)
+}
 
 const VISIBLE_TRADES = 25
 
 type TradeColumn = ResizableColumn & ChoosableColumn & { readonly field?: SortField; readonly numeric?: boolean }
 
-/** In order. The execution time identifies a trade within one symbol, so it is always shown. */
+/**
+ * In order. Actions comes first, so each trade's edit and History buttons are always in view; the
+ * execution time identifies a trade within one symbol, so it is always shown too.
+ */
 const COLUMNS: readonly TradeColumn[] = [
+  { key: 'actions', label: 'Actions', essential: true, minWidth: 96, maxWidth: 200 },
   { key: 'executedAt', label: 'Executed at', field: 'executedAt', essential: true, minWidth: 150, maxWidth: 480 },
   { key: 'side', label: 'Side', minWidth: 76, maxWidth: 240 },
+  { key: 'status', label: 'Status', minWidth: 112, maxWidth: 240 },
   { key: 'quantity', label: 'Quantity', field: 'quantity', numeric: true, minWidth: 120, maxWidth: 800 },
   { key: 'price', label: 'Price', field: 'price', numeric: true, minWidth: 100, maxWidth: 800 },
   { key: 'notional', label: 'Notional', numeric: true, minWidth: 116, maxWidth: 800 },
@@ -86,7 +122,7 @@ const caption = computed(() => {
   const order = field === DEFAULT_TRADE_SORT.sortBy && direction === DEFAULT_TRADE_SORT.sortDirection
     ? 'newest execution first'
     : `sorted by ${fieldLabel.toLowerCase()}, ${directionLabel(field, direction).toLowerCase()}`
-  return `Trades in ${shownSymbol.value ?? ''}, ${order}. Times are in your time zone. Prices and notionals are rounded to 2 decimal places.`
+  return `Trades in ${shownSymbol.value ?? ''}, ${order}. Each trade is shown with its status. Times are in your time zone; a Pending trade has no execution time. Prices and notionals are rounded to 2 decimal places.`
 })
 
 const pager = computed(() => ({
@@ -143,12 +179,12 @@ const cellText = (trade: Trade, key: string): string => {
           <div>
             <dt>Direction</dt>
             <dd>
-              <span class="direction-badge" :class="position.netQuantity.startsWith('-') ? 'direction-short' : 'direction-long'">
-                {{ position.netQuantity.startsWith('-') ? 'Short' : 'Long' }}
+              <span class="direction-badge" :class="`direction-${positionDirection(position).toLowerCase()}`">
+                {{ positionDirection(position) }}
               </span>
             </dd>
           </div>
-          <div><dt>Net quantity</dt><dd class="numeric">{{ formatDecimal(position.netQuantity) }}</dd></div>
+          <div><dt>Executed net</dt><dd class="numeric executed-net">{{ formatDecimal(position.executedNetQuantity) }}</dd></div>
           <div>
             <dt>Average cost</dt>
             <dd class="numeric average-cost"><MoneyValue :value="position.averageCost" :show-exact="showExact" /></dd>
@@ -156,6 +192,29 @@ const cellText = (trade: Trade, key: string): string => {
         </template>
         <div v-if="total"><dt>Trades</dt><dd class="numeric trade-count">{{ total }}</dd></div>
       </dl>
+      <div class="details-actions">
+        <button type="button" class="button-secondary cancel-pending" @click="startCancelForSymbol($event)">
+          Cancel a Pending trade in {{ symbol }}…
+        </button>
+      </div>
+      <p
+        v-if="outcome?.context === 'details'"
+        id="details-cancellation-outcome"
+        class="alert alert-success cancellation-outcome"
+        role="status"
+        tabindex="-1"
+      >
+        {{ outcome.message }}
+      </p>
+      <p
+        v-if="executed?.context === 'details'"
+        id="details-execution-outcome"
+        class="alert alert-success execution-outcome"
+        role="status"
+        tabindex="-1"
+      >
+        {{ executed.message }}
+      </p>
       <p v-if="positions.loaded && position === undefined" class="state">{{ symbol }} is no longer an open position; its trades are still listed.</p>
 
       <p v-if="trades.error" class="alert alert-error" role="alert">
@@ -207,11 +266,38 @@ const cellText = (trade: Trade, key: string): string => {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="trade in trades.items" :key="trade.id">
+              <tr v-for="trade in trades.items" :key="trade.id" :data-trade-id="trade.id">
                 <template v-for="column in visibleColumns" :key="column.key">
-                  <th v-if="column.key === 'executedAt'" scope="row" class="executed"><LocalTimestamp :utc="trade.executedAt" /></th>
+                  <th v-if="column.key === 'executedAt'" scope="row" class="executed"><LocalTimestamp :utc="trade.executedAt" none="Not executed" /></th>
                   <td v-else-if="column.key === 'side'">
                     <span class="side-badge" :class="trade.side === 'Buy' ? 'side-badge-buy' : 'side-badge-sell'">{{ trade.side }}</span>
+                  </td>
+                  <td v-else-if="column.key === 'status'" class="status"><StatusBadge :status="trade.status" :reason="trade.cancellationReason" /></td>
+                  <td v-else-if="column.key === 'actions'" class="actions">
+                    <button
+                      type="button"
+                      class="icon-button trade-edit"
+                      :aria-label="`Edit the trade: ${describeTrade(trade)}, ${trade.status}`"
+                      title="Edit"
+                      @click="startEdit(trade, $event)"
+                    >
+                      <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
+                        <path d="M10.6 2.6l2.8 2.8-7.6 7.6-3.4.6.6-3.4z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+                        <path d="M9.2 4l2.8 2.8" fill="none" stroke="currentColor" stroke-width="1.5" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      class="icon-button show-history"
+                      :aria-label="`Audit history of the trade: ${describeTrade(trade)}, ${trade.status}`"
+                      title="History"
+                      @click="showHistory(trade, $event)"
+                    >
+                      <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
+                        <circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.5" />
+                        <path d="M8 4.4V8l2.6 1.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </button>
                   </td>
                   <td v-else-if="column.key === 'price'" class="numeric price"><MoneyValue :value="trade.price" :show-exact="showExact" /></td>
                   <td v-else-if="column.key === 'notional'" class="numeric notional"><MoneyValue :value="trade.notional" :show-exact="showExact" /></td>
@@ -226,7 +312,8 @@ const cellText = (trade: Trade, key: string): string => {
         <TradePager placement="bottom" v-bind="pager" />
       </template>
       <p id="details-help" class="hint">
-        Only trades in exactly {{ symbol }} are listed. Prices and notionals are shown to 2 decimal places; point at one,
+        Only trades in exactly {{ symbol }} are listed, each once with its status. The edit button opens a trade, to execute or cancel it
+        while it is Pending; History opens it with its audit history. Prices and notionals are shown to 2 decimal places; point at one,
         or turn on Exact values, for its exact value. Choose Executed at, Quantity or Price to sort. To resize a column, drag the edge of its header,
         or focus the edge and press the Left or Right arrow key.
       </p>

@@ -11,6 +11,7 @@ import {
   canonicalPath,
   commandLinesOf,
   DatabaseInUseError,
+  ensureTerminated,
   isAlive,
   isDevelopmentDatabase,
   portAnswers,
@@ -25,6 +26,7 @@ import {
   writeState,
   type AppLaunch,
   type AppState,
+  type OwnedProcess,
 } from '../../scripts/lifecycle.ts'
 import { isolatedEnv, runNode, startNode, stopChild } from '../support/child-process.ts'
 import { createTempDir, removeTempDir } from '../support/temp-dir.ts'
@@ -39,7 +41,8 @@ const FAKE_APP = join(import.meta.dirname, '../support/fake-app.ts')
 const TIMEOUT = 90_000
 
 let runDir: string
-let started: number[] = []
+/** Every process a test started, with the token in its command line that identifies it. */
+let started: OwnedProcess[] = []
 
 beforeEach(() => {
   runDir = createTempDir()
@@ -47,13 +50,15 @@ beforeEach(() => {
 })
 
 afterEach(async () => {
-  // Whatever a failed test left running: stop it through the manager, then any stray child.
-  await stopApps(runDir).catch(() => undefined)
-  // Only ids this test recorded for processes it started, and only while they are alive.
-  for (const pid of started) {
-    if (isAlive(pid)) process.kill(pid, 'SIGKILL')
+  try {
+    // Whatever a failed test left running: stop it through the manager (a test may leave a run state it cannot read).
+    await stopApps(runDir).catch(() => undefined)
+    // Then every process this test started, children included, must be confirmed gone, identified
+    // by its token first: an id the system has since given to another program is never signalled.
+    await ensureTerminated(started, { timeoutMs: 20_000 })
+  } finally {
+    removeTempDir(runDir)
   }
-  removeTempDir(runDir)
 }, TIMEOUT)
 
 /** A port the operating system says is free now. */
@@ -95,7 +100,7 @@ const DATABASE = (): string => join(runDir, 'trades.db')
 
 async function startFakes(...launches: AppLaunch[]) {
   const result = await startApps({ runDir, databasePath: DATABASE(), launches, readyTimeoutMs: 20_000 })
-  started.push(...result.state.apps.map((app) => app.pid))
+  started.push(...result.state.apps.map((app) => ({ label: app.label, pid: app.pid, token: app.token, ports: [{ port: app.port, host: app.host }] })))
   return result
 }
 
@@ -187,9 +192,12 @@ describe('scripts: starting in the background', () => {
 describe('scripts: stopping', () => {
   it('stops every application and its child processes, releases the ports, and removes the record', async () => {
     const { state } = await startFakes(await fakeLaunch('api', 'serve', true), await fakeLaunch('web', 'serve', true))
-    const children = ['api', 'web'].map((name) => Number(readFileSync(join(runDir, `${name}.child-pid`), 'utf8')))
+    const children = ['api', 'web'].map((name) => {
+      const [pid = '', token = ''] = readFileSync(join(runDir, `${name}.child-pid`), 'utf8').split(' ')
+      return { label: `${name} child`, pid: Number(pid), token }
+    })
     started.push(...children)
-    expect(children.every(isAlive)).toBe(true)
+    expect(processStatuses(children)).toEqual(['running', 'running'])
 
     const result = await stopApps(runDir)
 
@@ -197,8 +205,10 @@ describe('scripts: stopping', () => {
     const reports = result.kind === 'stopped' ? result.reports : []
     expect(reports.map((report) => [report.record.name, report.outcome, report.portReleased]))
       .toEqual(['api', 'web'].map((name) => [name, process.platform === 'win32' ? 'terminated' : 'stopped', true]))
-    expect(state.apps.every((app) => !isAlive(app.pid))).toBe(true)
-    expect(children.some(isAlive)).toBe(false)
+    // Gone means no longer running as ours: the id is free, or the system has given it to another program.
+    const gone = (statuses: string[]): boolean => statuses.every((status) => status === 'stopped' || status === 'reused')
+    expect(gone(processStatuses(state.apps))).toBe(true)
+    expect(gone(processStatuses(children))).toBe(true)
     expect(existsSync(statePath(runDir))).toBe(false)
     expect(existsSync(state.apps[0]?.log ?? '')).toBe(true)
   }, TIMEOUT)

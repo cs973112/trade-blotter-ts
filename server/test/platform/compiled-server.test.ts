@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
+import { SUPPORTED_NODE_VERSIONS } from '../../src/platform.ts'
 import { isolatedEnv, runNode, SERVER_ROOT, startNode, stopChild } from '../support/child-process.ts'
 import { createTempDir, removeTempDir, tempDirPrefix } from '../support/temp-dir.ts'
 
@@ -165,6 +166,7 @@ describe('platform: compiled server', () => {
 
     expect(result.status).toBe(1)
     expect(result.stderr).toContain('JSON.rawJSON is not available.')
-    expect(result.stderr).toContain('Use Node.js ^22.23.1.')
+    expect(result.stderr).toContain(`Use Node.js ${SUPPORTED_NODE_VERSIONS}.`)
+    expect(SUPPORTED_NODE_VERSIONS).toBe('22.21.0')
   })
 })

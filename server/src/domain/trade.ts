@@ -1,6 +1,7 @@
 import { MAX_DECIMAL_PLACES, MAX_INTEGER_DIGITS, parseDecimalInput, type Dec, type DecimalInputProblem } from './decimal.ts'
 import { normaliseSymbol, type SymbolProblem } from './symbol.ts'
 import { parseTimestamp, type UtcTimestamp } from './timestamp.ts'
+import { validateBookingStatus, type BookingStatus } from './trade-status.ts'
 
 export const TRADE_SIDES = ['Buy', 'Sell'] as const
 
@@ -40,19 +41,34 @@ export interface TradeRequest {
   readonly side?: unknown
   readonly quantity?: unknown
   readonly price?: unknown
+  /** Refused in a booking (the server sets it when the trade is executed); read only for historical trades. */
   readonly executedAt?: unknown
+  /** Pending, or omitted (trade-status.ts, validateBookingStatus). */
+  readonly status?: unknown
 }
 
 /** Request fields in the order errors are reported. */
-export const TRADE_FIELDS = ['symbol', 'side', 'quantity', 'price', 'executedAt'] as const
+export const TRADE_FIELDS = ['symbol', 'side', 'quantity', 'price', 'executedAt', 'status'] as const
 
 export type TradeField = (typeof TRADE_FIELDS)[number]
 
 /** Messages for each invalid field. Fields that are valid are absent. */
 export type FieldErrors = Readonly<Partial<Record<TradeField, readonly string[]>>>
 
-/** A request that passed validation, normalised. `executedAt` is undefined when the client omitted it. */
+/** A booking request that passed validation, normalised: always Pending, with no execution time. */
 export interface ValidTradeRequest {
+  readonly symbol: string
+  readonly side: TradeSide
+  readonly quantity: Dec
+  readonly price: Dec
+  readonly status: BookingStatus
+}
+
+/**
+ * A historical Executed trade's request, normalised (validateExecutedTradeRequest). `executedAt` is
+ * undefined when the request has none.
+ */
+export interface ValidExecutedTradeRequest {
   readonly symbol: string
   readonly side: TradeSide
   readonly quantity: Dec
@@ -69,11 +85,16 @@ export type TradeValidationResult =
   | { readonly ok: true; readonly value: ValidTradeRequest }
   | { readonly ok: false; readonly errors: FieldErrors }
 
+export type ExecutedTradeValidationResult =
+  | { readonly ok: true; readonly value: ValidExecutedTradeRequest }
+  | { readonly ok: false; readonly errors: FieldErrors }
+
 type FieldResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly message: string }
 
 const valid = <T>(value: T): FieldResult<T> => ({ ok: true, value })
 const invalid = (message: string): FieldResult<never> => ({ ok: false, message })
 
+const BOOKING_EXECUTED_AT_MESSAGE = 'A trade is booked as Pending, with no execution time: omit executedAt. The server sets it when the trade is executed.'
 const EXECUTED_AT_MESSAGE = 'Execution time must be an RFC 3339 date-time with an offset, such as 2026-01-01T09:00:00Z.'
 
 function checkSymbol(input: unknown, maxLength: number): FieldResult<string> {
@@ -119,39 +140,61 @@ function checkExecutedAt(input: unknown): FieldResult<UtcTimestamp | undefined> 
   return timestamp === undefined ? invalid(EXECUTED_AT_MESSAGE) : valid(timestamp)
 }
 
+/** Every invalid field's message, in TRADE_FIELDS order. */
+function fieldErrors(results: Partial<Record<TradeField, FieldResult<unknown>>>): FieldErrors {
+  const errors: Partial<Record<TradeField, readonly string[]>> = {}
+  for (const field of TRADE_FIELDS) {
+    const result = results[field]
+    if (result !== undefined && !result.ok) errors[field] = [result.message]
+  }
+  return errors
+}
+
 /**
- * Validates and normalises a trade request. Checks every field and reports every invalid one at
- * once, in TRADE_FIELDS order. Never throws for invalid input.
+ * Validates and normalises a booking request (POST /trades). Checks every field and reports every
+ * invalid one at once, in TRADE_FIELDS order. A booking is always Pending: a status other than
+ * Pending (or none) is refused, and so is any execution time (null counts as none), since the
+ * server sets it when the trade is executed. Never throws for invalid input.
  */
 export function validateTradeRequest(request: TradeRequest, rules: TradeRules): TradeValidationResult {
   const symbol = checkSymbol(request.symbol, rules.symbolMaxLength)
   const side = checkSide(request.side)
   const quantity = checkDecimal(request.quantity, 'Quantity')
   const price = checkDecimal(request.price, 'Price')
-  const executedAt = checkExecutedAt(request.executedAt)
+  const executedAt: FieldResult<undefined> = request.executedAt === undefined || request.executedAt === null ? valid(undefined) : invalid(BOOKING_EXECUTED_AT_MESSAGE)
+  const bookingStatus = validateBookingStatus(request.status)
+  const status: FieldResult<BookingStatus> = bookingStatus.ok ? valid(bookingStatus.value) : invalid(bookingStatus.message)
 
-  if (symbol.ok && side.ok && quantity.ok && price.ok && executedAt.ok) {
-    return {
-      ok: true,
-      value: { symbol: symbol.value, side: side.value, quantity: quantity.value, price: price.value, executedAt: executedAt.value },
-    }
+  if (symbol.ok && side.ok && quantity.ok && price.ok && executedAt.ok && status.ok) {
+    return { ok: true, value: { symbol: symbol.value, side: side.value, quantity: quantity.value, price: price.value, status: status.value } }
   }
-
-  const results: Record<TradeField, FieldResult<unknown>> = { symbol, side, quantity, price, executedAt }
-  const errors: Partial<Record<TradeField, readonly string[]>> = {}
-  for (const field of TRADE_FIELDS) {
-    const result = results[field]
-    if (!result.ok) errors[field] = [result.message]
-  }
-  return { ok: false, errors }
+  return { ok: false, errors: fieldErrors({ symbol, side, quantity, price, executedAt, status }) }
 }
 
 /**
- * Creates a trade from a validated request, with the identity and time the application assigns.
- * `now` is one clock reading: it becomes `createdAt` and `updatedAt`, and `executedAt` when the
- * request did not supply one.
+ * Validates and normalises a historical Executed trade: the trades the reviewer and UI-check
+ * datasets write straight to the database, as trades booked Executed before M7 were. The same rules
+ * as a booking for symbol, side, quantity and price; executedAt, when given, must be an RFC 3339
+ * date-time with an offset. No status is read. The API never uses this: it books only Pending trades.
  */
-export function createTrade(request: ValidTradeRequest, assigned: { readonly id: string; readonly now: UtcTimestamp }): NewTrade {
+export function validateExecutedTradeRequest(request: TradeRequest, rules: TradeRules): ExecutedTradeValidationResult {
+  const symbol = checkSymbol(request.symbol, rules.symbolMaxLength)
+  const side = checkSide(request.side)
+  const quantity = checkDecimal(request.quantity, 'Quantity')
+  const price = checkDecimal(request.price, 'Price')
+  const executedAt = checkExecutedAt(request.executedAt)
+  if (symbol.ok && side.ok && quantity.ok && price.ok && executedAt.ok) {
+    return { ok: true, value: { symbol: symbol.value, side: side.value, quantity: quantity.value, price: price.value, executedAt: executedAt.value } }
+  }
+  return { ok: false, errors: fieldErrors({ symbol, side, quantity, price, executedAt }) }
+}
+
+/**
+ * Creates a historical Executed trade from a validated request, with the identity and time given.
+ * `now` is one clock reading: it becomes `createdAt` and `updatedAt`, and `executedAt` when the
+ * request did not supply one. Used only to build the datasets written straight to the database.
+ */
+export function createTrade(request: ValidExecutedTradeRequest, assigned: { readonly id: string; readonly now: UtcTimestamp }): NewTrade {
   return Object.freeze({
     id: assigned.id,
     symbol: request.symbol,

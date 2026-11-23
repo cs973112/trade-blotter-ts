@@ -3,7 +3,10 @@
 How to install, configure, verify and run Trade Blotter from a clone of the repository. The
 [README](../README.md) has the short version.
 
-- **Verified:** every command here was run on Windows 11 x64 with Node.js 22.23.1 and npm 12.0.1.
+- **Supported environment:** Node.js 22.21.0 exactly, with npm 10.9.4 and SQLite 3.50.4.
+- **Verified:** on Windows 11 x64 with Node.js 22.21.0: `npm ci` and `npm run check:all` on
+  2026-11-20 (see [Platform limitations](#platform-limitations)). Most other commands here were
+  first run with Node.js 22.23.1 by 2026-11-13; 22.23.1 was supported until 2026-11-20 and is not now.
 - **Partly run under WSL Linux, not on macOS or in a Linux sandbox:** see
   [Platform limitations](#platform-limitations).
 
@@ -28,30 +31,34 @@ step says otherwise. Any location on disk works.
 
 | Requirement | Detail |
 | --- | --- |
-| Node.js 22.23.1 | The only supported and verified version (`.nvmrc`). `engines` is `^22.23.1`: later 22.x releases are accepted but not verified; other major versions are not supported. |
-| npm 12.0.1 | Bundled with Node.js 22.23.1. |
+| Node.js 22.21.0 | `engines` is `22.21.0` everywhere and `.nvmrc` holds 22.21.0. It is the only supported and verified version: `review:01` fails on any other. See [Node.js versions](../README.md#nodejs-versions). |
+| npm 10.9.4 | The npm bundled with Node.js 22.21.0. |
 | Git | To clone the repository. |
 | Network access to the npm registry | `npm ci` downloads 300 packages, or see [Installing without internet access](#installing-without-internet-access). |
 | A writable temp folder | The tests create temporary databases in the operating system's temp folder. |
 | A web browser | To use the frontend. `npm run check:ui` and reviewer steps 05 and 06 also need a Chromium-based browser (Chrome, Edge or Chromium, or Chrome for Testing); it is found automatically, see [Finding a browser](../README.md#finding-a-browser). `npm test` and `verify` start none. |
 | Compiler, Python, Docker, a database server | Not needed. SQLite is built into Node.js (`node:sqlite`). |
 
-Install Node.js 22.23.1 exactly; installers that pick "the latest LTS" may give another version.
+Install Node.js 22.21.0 exactly; installers that pick "the latest LTS" give another version.
 
-- **Windows:** `node-v22.23.1-x64.msi` from <https://nodejs.org/dist/v22.23.1/>, or
-  [nvm-windows](https://github.com/coreybutler/nvm-windows): `nvm install 22.23.1`, then
-  `nvm use 22.23.1`. Open a new terminal afterwards.
-- **macOS:** `node-v22.23.1.pkg` from the same page, or [nvm](https://github.com/nvm-sh/nvm) or
+- **Windows:** the `.msi` from <https://nodejs.org/dist/v22.21.0/>, or
+  [nvm-windows](https://github.com/coreybutler/nvm-windows): `nvm install 22.21.0`, then
+  `nvm use 22.21.0`. Open a new terminal afterwards. To keep an existing installation (another
+  Node.js, the registry and the user and system `PATH` untouched), unpack the official
+  `node-v22.21.0-win-x64.zip` (checked against `SHASUMS256.txt`) into a folder of your own and put
+  that folder first on `PATH` in one terminal only: `$env:PATH = "<folder>;$env:PATH"` in
+  PowerShell. Every npm command run in that terminal then uses 22.21.0.
+- **macOS:** the `.pkg` from the same page, or [nvm](https://github.com/nvm-sh/nvm) or
   [fnm](https://github.com/Schniz/fnm): `nvm install` or `fnm install` in the repository root
-  (both read `.nvmrc`).
+  (both read `.nvmrc`, so they install 22.21.0).
 - **Linux:** nvm or fnm as for macOS, or the official archive for your platform from the same
-  page. Distribution packages rarely carry this exact version.
+  page. Check a distribution package's version before relying on it.
 
 Check the environment; none of these needs the network:
 
 ```bash
-node --version             # expect v22.23.1
-npm --version              # expect 12.0.1
+node --version             # expect v22.21.0
+npm --version              # expect 10.9.4
 node -p "process.platform + ' ' + process.arch"
 node -p "require('node:os').tmpdir()"
 node -e "require('node:sqlite'); console.log('node:sqlite available')"
@@ -88,10 +95,31 @@ The repository uses LF line endings (`.gitattributes`). If Git converts them on 
 
 ```bash
 npm run verify             # all of the steps below, in order; exit code 0 means the setup works
+npm run check:fast         # development feedback (about two minutes); never acceptance
 ```
 
-`npm run check:ui` (after `npm run build`) runs 49 checks of the page in a real headless browser,
+`check:fast` runs lint, typecheck, build, `db:check` and the documentation checks at once, then
+the server application tests (every test outside `server/test/scripts/`), the client tests and the
+quick tooling tests, each a PASS or a FAIL, with logs in `.run/check-fast/`; exit code 1 when any
+failed. It starts no application, browser or benchmark and leaves failure detection out:
+`check:all` below is the acceptance. See README.md, "Development feedback: check:fast".
+
+`npm run check:ui` (after `npm run build`) runs 64 checks of the page in a real headless browser,
 on throwaway databases of its own, and saves screenshots: `npm run check:ui -- --out <folder>`.
+
+For acceptance, everything at once, including the reviewer workflow, the benchmarks, the failure-detection checks
+and the documentation checks, each run in a folder of its own under `.run/check-all/`:
+
+```bash
+npm run check:all                  # complete verification; exit code 0 only when it all passed
+npm run check:all -- --quick       # leaves out the benchmarks: never complete verification
+npm run check:all -- --verbose     # every check, command, test and detail, as it runs
+npm run check:failures             # failure detection alone
+npm run check:docs                 # documentation checks alone
+```
+
+`check:all` uses ports 5491, 5492, 4291 and 4292 (not the reviewer's), needs the same browser as
+`review:05`, and stops only the applications it started. See README.md, "Complete verification".
 
 One step at a time:
 
@@ -99,8 +127,8 @@ One step at a time:
 npm run lint               # ESLint over the repository
 npm run typecheck          # API and frontend, no output files
 npm run build              # API to server/dist/, frontend to client/dist/
-npm test -w server         # API and tool tests (1,572: 1,571 run, 1 Linux-only test skipped elsewhere)
-npm test -w client         # frontend tests (406)
+npm test -w server         # API and tool tests (1,909 on 2026-11-22: 1,908 run, 1 Linux-only test skipped elsewhere)
+npm test -w client         # frontend tests (457 on 2026-11-22)
 npm run db:check -w server # the migrations folder has no conflicts (drift is a test: schema-drift.test.ts)
 ```
 
@@ -160,6 +188,31 @@ npm run db:migrate -w server
 
 The API applies pending migrations itself at startup, before it accepts requests, so this step is
 optional.
+
+**Upgrading a database from before the trade lifecycle (M3).** The migration
+`20261120220032_trade_lifecycle_audit` rebuilds the `trades` table: every trade is kept with its
+id, booking sequence and values, as an Executed trade by User; the booking sequence never goes
+back; and `trade_audit` is created empty (no history is invented), with the triggers that record
+every later write. It runs in one transaction with the others, so it applies completely or not at
+all. Before the first start of the API, or `db:migrate`, on a database whose trades you want to
+keep, stop the API and back the file up (below). To check afterwards:
+
+```bash
+node -e "const {DatabaseSync}=require('node:sqlite');const d=new DatabaseSync(process.argv[1]);console.log(d.prepare('select count(*) n from trades').get(),d.prepare(\"select name from sqlite_master where type='trigger' order by name\").all().map(r=>r.name),d.prepare('pragma foreign_key_check').all(),d.prepare('pragma integrity_check').get())" server/data/trade-blotter.db
+```
+
+It prints the number of trades, the five triggers (`trade_audit_no_delete`,
+`trade_audit_no_update`, `trades_audit_delete`, `trades_audit_insert`, `trades_audit_update`),
+`[]` (no foreign-key violation) and `{ integrity_check: 'ok' }`.
+
+The migrations after it change indexes only, without rebuilding the table or changing a row:
+`20261120225020_executed_trade_indexes` adds four partial indexes on Executed trades,
+`20261121003941_cancellation_unique_index` makes the unique index on `original_trade_id` partial
+(cancellation rows only), and `20261121043510_logical_trade_indexes` adds four partial indexes on
+logical trades (`original_trade_id is null`), which the trade lists read. On the 28,750-row
+representative database used to verify it, the last took about 0.15 s and added about 4.6 MB.
+The page's use of the lifecycle (booking Pending, executing, cancelling, the audit history) is described in
+the README's [Features](../README.md#features) and [Test-drive](../README.md#test-drive-search-filters-and-sorting).
 
 ### Using a different file
 
@@ -335,12 +388,14 @@ in `.run/review/`, which Git ignores:
 
 | Symptom | Cause and fix |
 | --- | --- |
-| `npm ci` warns `EBADENGINE`, or refuses with `engine-strict` set | Node.js is not 22.23.1 (or a later 22.x). Install 22.23.1 and check `node --version` in the same terminal. |
+| `npm ci` warns `EBADENGINE` for `jsdom`, `@asamuzakjp/css-color`, `@asamuzakjp/dom-selector`, `w3c-xmlserializer`, `nopt` and `abbrev` | Expected on Node.js 22.21.0: these development-only packages declare `^22.22.2 \|\| ^24.15.0 \|\| >=26.0.0`. The install succeeds and every check passed with them on 22.21.0, but they run outside the range they declare; see [Node.js versions](../README.md#nodejs-versions). |
+| `npm ci` warns `EBADENGINE` for `trade-blotter-ts`, `@trade-blotter/server` or `@trade-blotter/client`, or refuses with `engine-strict` set | Node.js is not 22.x from 22.21.0. Install 22.21.0 or a later 22.x and check `node --version` in the same terminal. |
 | `npm ci` fails with a lockfile error | `package.json` and `package-lock.json` disagree, usually after a manual edit. Restore them from Git. |
 | `npm ci` fails with `ENOTCACHED`, `ENOTFOUND` or `ETIMEDOUT` | A package is missing from the cache, or the registry cannot be reached. Check the network or `npm config get registry`. |
 | `Cannot find native binding` from Vite or Vitest | The rolldown or lightningcss package for this platform is missing. Delete `node_modules` and run `npm ci` again on the same machine. |
 | PowerShell says running scripts is disabled | Run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, or type `npm.cmd` instead of `npm`. |
-| `Trade Blotter cannot start on Node.js vX` | The runtime lacks `node:sqlite`, `JSON.rawJSON` or JSON source text. Use Node.js 22.23.1. |
+| `Trade Blotter cannot start on Node.js vX` | The runtime lacks `node:sqlite`, `JSON.rawJSON` or JSON source text. Use Node.js `22.21.0`. |
+| `review:01` fails on the Node.js version | Any version other than 22.21.0 fails, newer ones included (22.23.1 was supported until 2026-11-20). Use Node.js 22.21.0; on Windows, see the portable `.zip` under Prerequisites. |
 | `Trade Blotter could not start.` and a variable name | That environment variable has an invalid value. |
 | `EADDRINUSE`, or `Port 5173 is already in use` | The port is taken. Stop the other process, or choose another port (see [Ports](#ports-and-running-alongside-other-services)). |
 | `Database migration failed; no migration was applied.` | The reason follows. ``table `trades` already exists`` means `DATABASE_PATH` points at a file created by something else. Nothing was changed. |
@@ -365,11 +420,18 @@ in `.run/review/`, which Git ignores:
 The same commands, with no platform-specific source edits, are meant to work on Windows, Linux
 (WSL included) and macOS. The reviewer workflow is run in the environment being developed in.
 
-- **Windows 11 x64** (Node.js 22.23.1, npm 12.0.1, Chrome 157): every command, every test,
-  `check:ui`, both benchmarks and the seven reviewer steps, most recently on 2026-11-13.
-- **Linux under WSL 2** (Debian 11, Node.js 22.23.1, Chrome for Testing 156 in `~/.local`):
+- **Windows 11 x64** (Chrome 157), on Node.js 22.21.0 (npm 10.9.4, SQLite 3.50.4), the supported
+  version: `npm ci` and `npm run check:all` (the seven reviewer steps with `check:ui`, `db:check`
+  and both benchmarks, failure detection and the documentation checks), most recently on
+  2026-11-22 (run `20261122T020547.013Z-5fa17b`, after `check:fast` was added). Earlier, when 22.23.1 (npm 12.0.1, SQLite
+  3.51.3) was also supported, every command in this guide was run on it by 2026-11-13, and
+  `check:all` (full and quick) passed on both versions on 2026-11-20. One intermittent Windows
+  failure was seen: a reviewer test's clean-up failed with `kill EPERM` (once, on 2026-11-20). The
+  clean-up now confirms termination by the process's handle or token instead; it did not recur in
+  the eleven `check:all` runs since, nor in the five full runs of M4, the four of M5, the four of M6, the one of M7 or the one of M6 Phase 2, too few to rule it out.
+- **Linux under WSL 2** (Debian 11, Node.js 22.23.1, a version no longer supported, Chrome for Testing 156 in `~/.local`):
   `check:ui` ran there with Linux Node.js against the Windows checkout, finding the browser without
-  `CHROME_PATH` (44 of 44 on 2026-11-13, before the five checks added since); so did the process probe (`/proc`, including thread
+  `CHROME_PATH` (44 of 44 on 2026-11-13, before the eighteen checks added since); so did the process probe (`/proc`, including thread
   ids), the process manager with a stand-in application (start, tokens, process-group stop,
   reused ids, ports in use), and reviewer steps 01 and 02 and the ownership checks of 07, on a
   temporary folder. The full test suite, the build and the seven reviewer steps were not run there.
@@ -381,7 +443,7 @@ The same commands, with no platform-specific source edits, are meant to work on 
   lightningcss packages for your platform. The lockfile has them for Linux x64 and arm64 (glibc
   and musl), macOS x64 and arm64, Windows x64 and arm64, and FreeBSD x64. Platforms without a
   lightningcss package, such as Linux ppc64 or s390x, cannot build the frontend.
-- **Node.js type definitions.** `@types/node` 22.20.5 follows the Node.js 22 API, not the 22.23.1
-  release specifically.
+- **Node.js type definitions.** `@types/node` 22.20.5 follows the Node.js 22 API, not a specific
+  22.x release.
 - **Stopping the API on Windows.** Use Ctrl+C in its terminal; Windows cannot send SIGTERM to
   another process.

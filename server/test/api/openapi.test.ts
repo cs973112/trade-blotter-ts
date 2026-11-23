@@ -13,6 +13,7 @@ interface Schema {
 
 interface Operation {
   readonly operationId: string
+  readonly description?: string
   readonly requestBody?: { content: Record<string, { schema: { $ref: string } }> }
   readonly parameters?: { name: string; in: string; required: boolean; description: string; schema: Record<string, unknown> }[]
   readonly responses: Record<string, { description: string; content?: Record<string, { schema: unknown }> }>
@@ -59,13 +60,14 @@ describe('API: OpenAPI document', () => {
     expect(document.openapi).toBe('3.1.0')
   })
 
-  it('documents exactly the four endpoints', () => {
+  it('documents exactly the seven endpoints', () => {
     const operations = Object.entries(document.paths)
       .filter(([path]) => !path.startsWith('/documentation'))
       .flatMap(([path, methods]) => Object.entries(methods).map(([method, op]) => `${method.toUpperCase()} ${path} ${op.operationId}`))
 
     expect(operations.sort()).toEqual([
-      'GET /positions listPositions', 'GET /trades listTrades', 'GET /trades/page listTradePage', 'POST /trades createTrade',
+      'GET /positions listPositions', 'GET /trades listTrades', 'GET /trades/page listTradePage', 'GET /trades/{id}/audit tradeAudit',
+      'POST /trades createTrade', 'POST /trades/{id}/cancellation cancelTrade', 'POST /trades/{id}/execution executeTrade',
     ])
   })
 
@@ -95,17 +97,31 @@ describe('API: OpenAPI document', () => {
     expect(JSON.stringify(envelope.properties?.['items'])).toContain('#/components/schemas/Trade')
   })
 
-  it('documents the request body, its decimal rules and executedAt default', () => {
+  it('documents the request body: its decimal rules, Pending-only status and no executedAt', () => {
     const request = schema('CreateTradeRequest')
     const json = JSON.stringify(request)
 
     expect(operation('/trades', 'post').requestBody?.content['application/json']?.schema.$ref)
       .toBe('#/components/schemas/CreateTradeRequest')
-    expect(Object.keys(request.properties ?? {})).toEqual(['symbol', 'side', 'quantity', 'price', 'executedAt'])
+    expect(Object.keys(request.properties ?? {})).toEqual(['symbol', 'side', 'quantity', 'price', 'status'])
     expect(request.required).toEqual(['symbol', 'side', 'quantity', 'price'])
     expect(json).toContain('at most 10 decimal places')
-    expect(json).toContain('Omitted or null: the server clock')
-    expect(request.description).toContain('id, bookingSequence, createdAt and updatedAt are assigned by the server')
+    expect(json).toContain('omitted or null is Pending too')
+    expect(json).toContain('Executed is refused (a trade is executed with POST /trades/{id}/execution)')
+    expect(request.description).toContain('createdBy, updatedBy, originalTradeId and cancellationReason are set by the server')
+    expect(request.description).toContain('executedAt is not accepted')
+  })
+
+  it('documents POST /trades/{id}/execution: no body, the Trade on 200, and 400, 404 and 409 problems', () => {
+    const execution = operation('/trades/{id}/execution', 'post')
+    const json = JSON.stringify(execution)
+
+    expect(execution.requestBody).toBeUndefined()
+    expect(execution.responses['200']?.content?.['application/json']?.schema).toEqual({ $ref: '#/components/schemas/Trade' })
+    expect(Object.keys(execution.responses).sort()).toEqual(['200', '400', '404', '409', '415', '500'])
+    expect(json).toContain('read once the database write lock is held')
+    expect(json).toContain('not an authenticated identity')
+    expect(json).toContain('urn:trade-blotter:problem:invalid-execution')
   })
 
   it('documents the GET /trades query parameters, all optional, with their formats and defaults', () => {
@@ -113,7 +129,7 @@ describe('API: OpenAPI document', () => {
     const byName = Object.fromEntries(parameters.map((parameter) => [parameter.name, parameter]))
 
     expect(parameters.map((parameter) => [parameter.name, parameter.in, parameter.required])).toEqual([
-      ['symbol', 'query', false], ['symbolMatch', 'query', false], ['side', 'query', false], ['executedFrom', 'query', false],
+      ['symbol', 'query', false], ['symbolMatch', 'query', false], ['side', 'query', false], ['status', 'query', false], ['executedFrom', 'query', false],
       ['executedTo', 'query', false], ['sortBy', 'query', false], ['sortDirection', 'query', false],
     ])
     expect(byName['symbol']?.description).toContain('contains this text, anywhere in it, ignoring case')
@@ -128,17 +144,20 @@ describe('API: OpenAPI document', () => {
     expect(byName['sortBy']?.schema).toEqual({ enum: ['executedAt', 'symbol', 'quantity', 'price'], default: 'executedAt' })
     expect(byName['sortDirection']?.schema).toEqual({ enum: ['asc', 'desc'], default: 'desc' })
     expect(byName['sortBy']?.description).toContain('Ties are broken by executedAt, then bookingSequence')
+    expect(byName['sortBy']?.description).toContain('A trade without an execution time sorts before every executed trade in ascending order')
+    expect(byName['status']?.description).toContain('Only Pending, only Executed or only Cancelled trades')
   })
 
   it('marks the server-managed response fields read-only', () => {
     const trade = schema('Trade').properties ?? {}
     const readOnly = Object.entries(trade).filter(([, property]) => property.readOnly === true).map(([name]) => name)
 
-    expect(readOnly).toEqual(['id', 'bookingSequence', 'notional', 'createdAt', 'updatedAt'])
-    expect(Object.keys(trade)).toEqual(
-      ['id', 'bookingSequence', 'symbol', 'side', 'quantity', 'price', 'notional', 'executedAt', 'createdAt', 'updatedAt'],
-    )
-    expect(Object.keys(schema('Position').properties ?? {})).toEqual(['symbol', 'netQuantity', 'averageCost'])
+    expect(readOnly).toEqual(['id', 'bookingSequence', 'notional', 'createdAt', 'updatedAt', 'createdBy', 'updatedBy', 'originalTradeId', 'cancellationReason', 'cancellationTradeId'])
+    expect(Object.keys(trade)).toEqual([
+      'id', 'bookingSequence', 'symbol', 'side', 'quantity', 'price', 'notional', 'status', 'executedAt', 'createdAt', 'updatedAt',
+      'createdBy', 'updatedBy', 'originalTradeId', 'cancellationReason', 'cancellationTradeId',
+    ])
+    expect(Object.keys(schema('Position').properties ?? {})).toEqual(['symbol', 'netQuantity', 'averageCost', 'executedNetQuantity', 'pendingNetQuantity', 'projectedNetQuantity'])
   })
 
   it('documents error responses as problem details', () => {
@@ -153,7 +172,42 @@ describe('API: OpenAPI document', () => {
     for (const status of ['400', '500']) expect(list[status]?.content).toEqual({ 'application/problem+json': problemRef })
     expect(list['400']?.description).toContain('urn:trade-blotter:problem:invalid-query')
     expect(operation('/positions', 'get').responses['500']?.content).toEqual({ 'application/problem+json': problemRef })
-    expect(Object.keys(schema('Problem').properties ?? {})).toEqual(['type', 'title', 'status', 'detail', 'errors', 'symbol'])
+    expect(Object.keys(schema('Problem').properties ?? {})).toEqual(['type', 'title', 'status', 'detail', 'errors', 'tradeId', 'symbol'])
+  })
+
+  it('documents the cancellation: its body, response and every error', () => {
+    const cancel = operation('/trades/{id}/cancellation', 'post')
+    const problemRef = { schema: { $ref: '#/components/schemas/Problem' } }
+
+    expect(cancel.parameters?.map((parameter) => [parameter.name, parameter.in, parameter.required])).toEqual([['id', 'path', true]])
+    expect(cancel.requestBody?.content['application/json']?.schema.$ref).toBe('#/components/schemas/CancellationRequest')
+    expect(Object.keys(cancel.responses).sort()).toEqual(['201', '400', '404', '409', '415', '500'])
+    expect(cancel.responses['201']?.content?.['application/json']?.schema).toEqual({ $ref: '#/components/schemas/Cancellation' })
+    for (const status of ['400', '404', '409', '415', '500']) expect(cancel.responses[status]?.content).toEqual({ 'application/problem+json': problemRef })
+    expect(cancel.responses['400']?.description).toContain('urn:trade-blotter:problem:invalid-cancellation')
+    expect(cancel.responses['404']?.description).toContain('urn:trade-blotter:problem:trade-not-found')
+    expect(cancel.responses['409']?.description).toContain('urn:trade-blotter:problem:invalid-transition')
+    expect(schema('CancellationRequest').required).toEqual(['reason'])
+    expect(Object.keys(schema('Cancellation').properties ?? {})).toEqual(['trade', 'cancellationRecord'])
+  })
+
+  it('documents the audit history as read-only: one GET, its scopes, pages and snapshot of every trades column', () => {
+    const audit = document.paths['/trades/{id}/audit'] ?? {}
+    const read = operation('/trades/{id}/audit', 'get')
+
+    expect(Object.keys(audit)).toEqual(['get'])
+    expect(read.parameters?.map((parameter) => [parameter.name, parameter.in, parameter.required])).toEqual([
+      ['scope', 'query', false], ['page', 'query', false], ['pageSize', 'query', false], ['id', 'path', true],
+    ])
+    expect(read.parameters?.find((parameter) => parameter.name === 'scope')?.schema).toEqual({ enum: ['trade', 'logical'], default: 'trade' })
+    expect(Object.keys(read.responses).sort()).toEqual(['200', '400', '404', '500'])
+    expect(read.description).toContain('Read only: no endpoint writes, changes or removes an audit entry')
+    expect(Object.keys(schema('AuditEntry').properties ?? {})).toEqual(['auditId', 'auditAction', 'auditOn', 'auditBy', 'trade'])
+    expect(Object.keys(schema('AuditTradeSnapshot').properties ?? {})).toEqual([
+      'bookingSequence', 'id', 'symbol', 'side', 'quantity', 'price', 'executedAt', 'createdAt', 'updatedAt', 'quantityKey', 'priceKey',
+      'status', 'createdBy', 'updatedBy', 'originalTradeId', 'cancellationReason',
+    ])
+    expect(Object.keys(schema('AuditPage').properties ?? {})).toEqual(['tradeId', 'scope', 'tradeIds', 'items', 'page', 'pageSize', 'totalCount', 'totalPages'])
   })
 
   it('serves Swagger UI at /documentation', async () => {

@@ -42,11 +42,21 @@ export const STEPS: Readonly<Record<StepId, { readonly title: string; readonly r
 
 const isStepId = (id: string): id is StepId => (STEP_IDS as readonly string[]).includes(id)
 
+/** A step that did not finish within the deadline its caller set (check:all sets one for each step). */
+export class StepDeadlineError extends Error {
+  override readonly name = 'StepDeadlineError'
+}
+
 /** Runs one step in the current run (a new one for step 01): its log, its result, the run's summary. Returns the exit code. */
 export async function runReviewStep(
   id: StepId,
   context: ReviewContext,
-  options: { readonly steps?: Readonly<Record<StepId, { readonly title: string; readonly run: StepFunction }>>; readonly print?: (line: string) => void } = {},
+  options: {
+    readonly steps?: Readonly<Record<StepId, { readonly title: string; readonly run: StepFunction }>>
+    readonly print?: (line: string) => void
+    /** Told the step's report and log once it has finished (check:all counts the results from it). */
+    readonly onFinished?: (report: Report, log: string | undefined) => void
+  } = {},
 ): Promise<number> {
   const step = (options.steps ?? STEPS)[id]
   try {
@@ -56,6 +66,7 @@ export async function runReviewStep(
     const report = new Report(options.print ?? console.log)
     report.fail(`Reviewer folder ${context.root}`, `${error instanceof Error ? error.message : String(error)}\nNothing was created there.`)
     ;(options.print ?? console.log)(report.summary())
+    options.onFinished?.(report, undefined)
     return report.exitCode
   }
   const { run, log, archived } = beginStep(context, id)
@@ -71,13 +82,15 @@ export async function runReviewStep(
   try {
     await step.run(context, report)
   } catch (error) {
-    report.fail(`Step ${id} stopped by an unexpected error`, error instanceof Error ? (error.stack ?? error.message) : String(error))
+    if (error instanceof StepDeadlineError) report.fail(`Step ${id} stopped at its deadline`, error.message)
+    else report.fail(`Step ${id} stopped by an unexpected error`, error instanceof Error ? (error.stack ?? error.message) : String(error))
   }
   const finished = finishStep(context, run.id, id, report.exitCode)
   print('')
   print(report.summary())
   print(finished === undefined ? `Run ${run.id} was replaced by a newer run while this step ran; see ${context.logsDir}.` : runSummary(finished))
   print(`Log: ${log}`)
+  options.onFinished?.(report, log)
   return report.exitCode
 }
 

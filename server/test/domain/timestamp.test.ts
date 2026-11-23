@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { parseTimestamp, toUtcTimestamp } from '../../src/domain/timestamp.ts'
+import { isUtcTimestamp, parseTimestamp, toUtcTimestamp } from '../../src/domain/timestamp.ts'
 
 describe('domain: timestamps', () => {
   it.each([
@@ -70,5 +70,15 @@ describe('domain: timestamps', () => {
     const canonical = inputs.map((input) => parseTimestamp(input) ?? '')
 
     expect([...canonical].sort()).toEqual([...canonical].sort((a, b) => Date.parse(a) - Date.parse(b)))
+  })
+})
+
+describe('domain: recognising canonical UTC timestamps', () => {
+  it('accepts only canonical UTC text, exactly as parseTimestamp gives it', () => {
+    expect(isUtcTimestamp('2026-02-01T10:00:00.000Z')).toBe(true)
+    expect(isUtcTimestamp('0001-01-01T00:00:00.000Z')).toBe(true)
+    for (const value of ['2026-02-01T10:00:00Z', '2026-02-01T10:00:00.000z', '2026-02-01T11:00:00.000+01:00', '2026-02-30T10:00:00.000Z', '2026-02-01 10:00:00.000Z', '', 1, null, undefined]) {
+      expect(isUtcTimestamp(value), String(value)).toBe(false)
+    }
   })
 })

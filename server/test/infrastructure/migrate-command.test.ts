@@ -42,7 +42,7 @@ describe('infrastructure: the db:migrate command', () => {
     expect(result.stderr).toBe('')
     expect(result.status).toBe(0)
     expect(result.stdout).toContain(`Database is up to date: ${path}`)
-    expect(tables(path)).toEqual([{ name: '__drizzle_migrations' }, { name: 'trades' }])
+    expect(tables(path)).toEqual([{ name: '__drizzle_migrations' }, { name: 'trade_audit' }, { name: 'trades' }])
   })
 
   it('succeeds again when nothing is pending', () => {
@@ -50,7 +50,7 @@ describe('infrastructure: the db:migrate command', () => {
 
     expect(runMigrate(path).status).toBe(0)
     expect(runMigrate(path).status).toBe(0)
-    expect(tables(path)).toEqual([{ name: '__drizzle_migrations' }, { name: 'trades' }])
+    expect(tables(path)).toEqual([{ name: '__drizzle_migrations' }, { name: 'trade_audit' }, { name: 'trades' }])
   })
 
   it('exits with an error and leaves the database alone when a migration fails', () => {

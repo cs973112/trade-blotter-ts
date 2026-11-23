@@ -19,7 +19,7 @@ export interface TradeFilters {
 /** No filter: every trade. */
 export const DEFAULT_TRADE_FILTERS: Readonly<TradeFilters> = Object.freeze({ symbol: '', side: '', fromDate: '', toDate: '' })
 
-/** The filter members of a query: what narrows the list. */
+/** The filter members of a query: what narrows the list. The list has no status filter: each trade's status is shown in its row. */
 export type TradeFilterQuery = Pick<TradeQuery, 'symbol' | 'side' | 'executedFrom' | 'executedTo'>
 
 export interface TradeSort {
@@ -110,7 +110,8 @@ export function toTradeQuery(filters: TradeFilters, offsetAt: OffsetAt = browser
 
 /** Whether a query leaves out any trades, as opposed to only reordering them. */
 export function narrowsList(query: TradeQuery): boolean {
-  return query.symbol !== undefined || query.side !== undefined || query.executedFrom !== undefined || query.executedTo !== undefined
+  return query.symbol !== undefined || query.side !== undefined || query.status !== undefined || query.executedFrom !== undefined ||
+    query.executedTo !== undefined
 }
 
 /**
@@ -123,8 +124,10 @@ export function tradeMatchesFilters(trade: Trade, query: TradeQuery): boolean {
   const search = query.symbol?.trim().normalize('NFC').toUpperCase()
   return (search === undefined || search === '' || trade.symbol.includes(search)) &&
     (query.side === undefined || trade.side === query.side) &&
-    (query.executedFrom === undefined || trade.executedAt >= query.executedFrom) &&
-    (query.executedTo === undefined || trade.executedAt <= query.executedTo)
+    (query.status === undefined || trade.status === query.status) &&
+    // A trade without an execution time (Pending) never matches a date range, as on the server.
+    (query.executedFrom === undefined || (trade.executedAt !== null && trade.executedAt >= query.executedFrom)) &&
+    (query.executedTo === undefined || (trade.executedAt !== null && trade.executedAt <= query.executedTo))
 }
 
 const ARIA_SORT: Readonly<Record<SortDirection, 'ascending' | 'descending'>> = { asc: 'ascending', desc: 'descending' }

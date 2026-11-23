@@ -9,6 +9,17 @@ const PLAIN_DECIMAL = /^(?:0|[1-9][0-9]*)(?:[.][0-9]+)?$/
 
 export type DecimalInputProblem = 'required' | 'format' | 'zero'
 
+/**
+ * What a quantity or price field keeps of what was typed or pasted: digits and the first decimal
+ * point, nothing else (no letters, spaces, separators, signs or exponents). "1,234.5.6" keeps
+ * "1234.56"; "-5e3" keeps "53". The checks below still apply to what is kept.
+ */
+export function numericOnly(raw: string): string {
+  const kept = raw.replace(/[^0-9.]/g, '')
+  const point = kept.indexOf('.')
+  return point < 0 ? kept : kept.slice(0, point + 1) + kept.slice(point + 1).replace(/[.]/g, '')
+}
+
 /** Checks typed quantity or price text. Returns the trimmed text to send, or why it cannot be sent. */
 export function checkDecimalInput(raw: string): { ok: true; text: string } | { ok: false; problem: DecimalInputProblem } {
   const text = raw.trim()
